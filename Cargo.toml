@@ -25,7 +25,7 @@ copilot-security = { path = "packages/security" }
 # lib-rustauth: identity (users, sessions, roles, the `auth` schema). Use the facade only; members
 # enable the features they need (docs/integration.md in lib-rustauth). Pinned by commit until the
 # first release tag; a bump is its own commit (see docs/design/roadmap.md, "How Copilot Pins It").
-rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "c88666f8ff43281f6f04c6d68f1e39e287df1d7e", default-features = false }
+rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "6412ed3f2424d3e586b7d7aab413af85ea70ac63", default-features = false }
 
 # External crates. Versions and features: docs/research/dependencies.md (rmcp: docs/research/mcp.md).
 # Keep aws-lc-rs out of the tree (`cargo tree -i aws-lc-rs` prints nothing): sqlx uses ring, so
