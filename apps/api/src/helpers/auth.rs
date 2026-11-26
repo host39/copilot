@@ -178,8 +178,9 @@ fn build_error(error: BuildError) -> DomainError {
 #[cfg(test)]
 pub(crate) mod testing {
     use rustauth::testing::Fakes;
+    use rustauth::{AuthConfig, RustAuth};
 
-    use super::*;
+    use crate::helpers::auth::{Identity, IdentityConfig};
 
     /// The setup token of [`identity`].
     pub const SETUP_TOKEN: &str = "test-setup-token-0123456789";
