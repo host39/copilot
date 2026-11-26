@@ -11,7 +11,8 @@
     "check": "pnpm type-check && biome check .",
     "check:fix": "biome check --write .",
     "type-check": "tsc --noEmit",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "test": "rstest run"
   },
   "dependencies": {
     "@copilot/contracts": "workspace:*",
@@ -32,6 +33,7 @@
     "@biomejs/biome": "catalog:",
     "@rsbuild/core": "^2.3.5",
     "@rsbuild/plugin-react": "^2.1.1",
+    "@rstest/core": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "^19.3.3",
     "@types/react-dom": "^19.3.0",

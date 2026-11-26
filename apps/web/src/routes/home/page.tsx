@@ -1,6 +1,6 @@
 import { fetchHealth } from "@web/api/routes/health";
 import { PageTitle } from "@web/components/Layout/PageTitle";
-import { API_URL } from "@web/config";
+import { serverUrl } from "@web/config";
 import { useEffect, useState } from "react";
 
 const HomePage = () => {
@@ -55,7 +55,7 @@ const HomePage = () => {
         </div>
 
         <p className="mt-4 text-xs text-gray-500">
-          Fetched from <code>{API_URL}/health</code>
+          Fetched from <code>{serverUrl() ?? ""}/health</code>
         </p>
       </div>
     </div>
