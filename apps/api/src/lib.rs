@@ -1,8 +1,8 @@
 //! HTTP adapter: builds the axum app from its dependencies.
 //!
-//! Entrypoints live in `src/bin/` (`server` by default, `lambda` behind the `lambda` feature) and
-//! get their dependencies from [`helpers::bootstrap::ApiContext::create`], the composition root.
-//! Route handlers never wire services themselves.
+//! The one entrypoint is `src/bin/server.rs`, a long-running process (Copilot runs exactly one API
+//! process per install). It gets its dependencies from [`helpers::bootstrap::ApiContext::create`],
+//! the composition root. Route handlers never wire services themselves.
 
 pub mod config;
 pub mod helpers;

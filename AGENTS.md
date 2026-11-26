@@ -36,7 +36,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 
 | Path | Role |
 | --- | --- |
-| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), OpenAPI routes, `server` and `lambda` binaries |
+| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), OpenAPI routes, the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |

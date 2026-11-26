@@ -23,7 +23,7 @@ The template keeps the layout and tooling of our TypeScript starter (Hono API, R
 | Tests | Vitest | `cargo test` (colocated `#[cfg(test)]` modules), Bruno for HTTP |
 | Lint / format | Biome, markdownlint | rustfmt + Clippy (`-D warnings`) for Rust; Biome and markdownlint for the rest |
 | Boundaries | dependency-cruiser | `boundaries.config.mjs` checked against `cargo metadata` |
-| Serverless | `hono/aws-lambda` | `lambda_http`, behind the `lambda` Cargo feature |
+| Serverless | `hono/aws-lambda` | None: Copilot removed the template's `lambda_http` entrypoint, because it runs exactly one long-lived API process ([ADR-005](./005-copilot-architecture.md)) |
 
 Further choices:
 

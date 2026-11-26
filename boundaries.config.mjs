@@ -22,7 +22,6 @@ export default {
         "copilot-middleware",
         "axum",
         "hyper",
-        "lambda_http",
         "sqlx",
         "tower",
         "tower-http",
