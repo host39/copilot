@@ -18,9 +18,9 @@ pub use crate::domains::chat::{
     Approval, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepositories,
     ChatRepository, ChatService, ChatSummary, ChatUpdate, ContextHash, Decision, DecisionScope,
     FinishReason, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus, NewChat,
-    Page, Part, PreparedTurn, ResultContent, Role, RunMode, SKIPPED, SearchHit, SnapshotFile,
-    SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext, TurnContextRepository,
-    TurnInput, Usage, skipped_results,
+    Page, Part, PreparedTurn, Rendering, ResultContent, Role, RunMode, SKIPPED, SearchHit,
+    SnapshotFile, SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext,
+    TurnContextRepository, TurnInput, Usage, skipped_results,
 };
 pub use crate::domains::conversation::TurnEvent;
 pub use crate::domains::file::{

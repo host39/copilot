@@ -188,6 +188,7 @@ pub(super) async fn pause(f: &Fixture, caller: &Actor, chat: &Chat) -> Message {
             .collect(),
         files: Vec::new(),
         window_start_id: None,
+        reasoning: None,
     };
     f.store
         .save(caller.user_id, chat.id(), &snapshot)

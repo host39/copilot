@@ -15,6 +15,17 @@ pub const MCP_RESPONSE_MAX_BYTES: usize = 4_194_304;
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 /// Provider rounds per turn before tool calls get `cancelled` results.
 pub const MAX_TOOL_ROUNDS: u32 = 8;
+/// Output token limit of a model without one: this, or a quarter of its context window when
+/// that is smaller.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+/// Request size limits, as encoded bytes (base64 adds about 33%) and PDF pages. Rough values
+/// until P2.B verifies each provider; Gemini's OpenAI-compatible endpoint takes less.
+pub const REQUEST_MAX_BYTES: u64 = 32 * 1_024 * 1_024;
+pub const GEMINI_REQUEST_MAX_BYTES: u64 = 20 * 1_024 * 1_024;
+pub const REQUEST_MAX_PDF_PAGES: u32 = 100;
+/// Voice and format of spoken replies (`audio_out` models with Speak replies on).
+pub const AUDIO_OUT_VOICE: &str = "alloy";
+pub const AUDIO_OUT_FORMAT: &str = "pcm16";
 /// Live runs per user.
 pub const MAX_ACTIVE_RUNS_PER_USER: usize = 3;
 /// Scheduled runs that execute at once.
