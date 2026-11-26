@@ -306,7 +306,7 @@ impl ChatService {
             .with_reasoning(chat.reasoning())
             .with_builtin_tools(chat.builtin_tools().map(<[_]>::to_vec).unwrap_or_default())
             .with_tool_servers(servers);
-        self.stores.projects.create_from_chat(&project, id).await?;
+        self.stores.projects.insert_with_chat(&project, id).await?;
         Ok(project)
     }
 

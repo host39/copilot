@@ -71,7 +71,7 @@ impl ProjectRepository for MemoryStore {
         Ok(true)
     }
 
-    async fn create_from_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()> {
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()> {
         let mut tables = self.tables();
         if tables.projects.contains_key(&project.id()) {
             return Err(duplicate("projects"));

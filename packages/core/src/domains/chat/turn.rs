@@ -24,8 +24,12 @@ pub enum TurnInput {
         file_ids: Vec<FileId>,
         edit_from: Option<MessageId>,
     },
-    /// Answer the last user message again (also Retry on an error banner).
+    /// Answer the last user message again: every message after it is replaced.
     Regenerate,
+    /// Retry on an error banner: only the failed answer (and the results written for its calls)
+    /// is replaced. Earlier rounds of the turn and their tool results stay, so their tools never
+    /// run twice.
+    Retry,
     /// Decisions on the pending tool calls of `message_id`; the run continues from its snapshot.
     Decide {
         message_id: MessageId,

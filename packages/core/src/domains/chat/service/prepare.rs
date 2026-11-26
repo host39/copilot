@@ -36,6 +36,8 @@ use crate::shared::ids::{ChatId, FileId, MessageId, ModelId, ProjectId, ToolServ
 const MODEL_UNAVAILABLE: &str = "MODEL_UNAVAILABLE";
 /// Code of a decision on a message that does not wait for one.
 const NOT_AWAITING_APPROVAL: &str = "NOT_AWAITING_APPROVAL";
+/// Code of a Retry when the turn's last answer did not fail.
+const NOTHING_TO_RETRY: &str = "NOTHING_TO_RETRY";
 /// Longest reason for a denial, in characters.
 const REASON_MAX_CHARS: usize = 500;
 
@@ -114,6 +116,9 @@ impl ChatService {
     ///   closed first (pending calls denied with "Skipped by user.", a `tool` message written);
     ///   with it, the edited user message and everything after it are replaced.
     /// - `Regenerate`: deletes every message after the last user message.
+    /// - `Retry`: the turn's last answer must have failed (`error`). Deletes it and the results
+    ///   written for its calls; earlier rounds of the turn stay. With earlier rounds the turn
+    ///   continues from the failed answer's snapshot (like a decision), else it gets a new one.
     /// - `Decide`: the decisions must cover exactly the pending calls of the chat's latest
     ///   assistant message while it awaits approval; "Approve for this chat" adds the alias to
     ///   the chat. The turn continues from the paused message's snapshot.
@@ -135,6 +140,7 @@ impl ChatService {
                     .await
             }
             TurnInput::Regenerate => self.regenerate(actor, chat, loaded).await,
+            TurnInput::Retry => self.retry(actor, chat, loaded).await,
             TurnInput::Decide {
                 message_id,
                 decisions,
@@ -328,6 +334,68 @@ impl ChatService {
         self.stores
             .messages
             .delete_after(actor.user_id, chat.id(), loaded.history[last].id())
+            .await?;
+        self.finish(actor, chat, loaded, staged, RunMode::Interactive)
+            .await
+    }
+
+    async fn retry(&self, actor: &Actor, chat: Chat, loaded: Loaded) -> DomainResult<PreparedTurn> {
+        let history = &loaded.history;
+        let user = history
+            .iter()
+            .rposition(|message| message.role() == Role::User);
+        let answer = history
+            .iter()
+            .rposition(|message| message.role() == Role::Assistant);
+        let (start, failed) = match (user, answer) {
+            (Some(user), Some(answer))
+                if answer > user
+                    && history[answer].status() == MessageStatus::Error
+                    && history[answer + 1..]
+                        .iter()
+                        .all(|message| message.role() == Role::Tool) =>
+            {
+                (user, answer)
+            }
+            _ => {
+                return Err(DomainError::business_rule(
+                    "There is no failed answer to retry.",
+                    NOTHING_TO_RETRY,
+                ));
+            }
+        };
+        let planned = &history[..failed];
+        let earlier = planned[start + 1..]
+            .iter()
+            .any(|message| message.role() == Role::Assistant);
+        let snapshot = if earlier {
+            let failed = &history[failed];
+            let hash = failed
+                .context_hash()
+                .ok_or_else(|| missing_snapshot(failed.id()))?;
+            let snapshot = self
+                .stores
+                .contexts
+                .get(actor.user_id, chat.id(), hash)
+                .await?
+                .ok_or_else(|| missing_snapshot(failed.id()))?;
+            Some(snapshot)
+        } else {
+            None
+        };
+        let staged = self
+            .stage(
+                actor,
+                &chat,
+                &loaded,
+                RunMode::Interactive,
+                planned,
+                snapshot,
+            )
+            .await?;
+        self.stores
+            .messages
+            .delete_after(actor.user_id, chat.id(), history[failed - 1].id())
             .await?;
         self.finish(actor, chat, loaded, staged, RunMode::Interactive)
             .await
@@ -770,7 +838,7 @@ fn not_awaiting() -> DomainError {
 
 fn missing_snapshot(message: MessageId) -> DomainError {
     DomainError::Internal {
-        key: "core.chat.decide.snapshot-missing".to_owned(),
+        key: "core.chat.snapshot.missing".to_owned(),
         source: Some(format!("message {message}").into()),
     }
 }

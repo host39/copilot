@@ -21,7 +21,7 @@ pub trait ProjectRepository: Send + Sync {
     /// Save as project, in one transaction: inserts `project` with its tool server rows, moves the
     /// chat into it, moves the chat's attachments into the project as included project files (no
     /// copy), and clears the chat's instructions and tool server overrides.
-    async fn create_from_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()>;
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()>;
 }
 
 /// Which projects to list.

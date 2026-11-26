@@ -377,7 +377,7 @@ trait ProjectRepository {
     async fn insert(&self, project: &Project) -> DomainResult<()>;  // with project_tool_servers rows, one tx
     async fn update(&self, project: &Project) -> DomainResult<()>;  // replaces join rows, one tx
     async fn delete(&self, user: UserId, id: ProjectId) -> DomainResult<bool>; // cascades chats, files, schedules
-    async fn create_from_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()>; // Save as project, one tx
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()>; // Save as project, one tx
 }
 trait FileRepository {
     async fn list(&self, user: UserId, owner: FileOwner) -> DomainResult<Vec<StoredFile>>;
@@ -455,7 +455,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 - `Project` and `Chat` include their tool server selections, saved atomically with the join rows by their repository.
 - `Message` is its own aggregate keyed by `chat_id`; `Chat` never loads its message list.
 - Each provider round stores **one assistant message** (text, reasoning, audio, and tool-call parts) followed, when it called tools, by **one `tool` message** holding every result of that round in call order.
-- Use cases that write several rows get one repository method each, run as one sqlx transaction: `MessageRepository::replace_tail`, `MessageRepository::append` (with `chats.updated_at`), `MessageRepository::decide`, `ProjectRepository::create_from_chat`, `FileRepository::create`.
+- Use cases that write several rows get one repository method each, run as one sqlx transaction: `MessageRepository::replace_tail`, `MessageRepository::append` (with `chats.updated_at`), `MessageRepository::decide`, `ProjectRepository::insert_with_chat`, `FileRepository::create`.
 - Reads that a use case needs run before its transaction, at most 4 concurrently (`parallel-db-reads`).
 
 ## Conversation Engine
@@ -463,7 +463,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 ### Turn Lifecycle
 
 1. **Reserve.** The handler calls `RunRegistry::reserve(user, chat_id)`. A chat already answering fails with `DomainError::business_rule("This chat is already answering. Stop it or wait for it to finish.", "CHAT_BUSY")` (422). A user with `MAX_ACTIVE_RUNS_PER_USER` (3) live runs fails with `TOO_MANY_RUNS` (422).
-2. **Prepare.** `ChatService::prepare(actor, chat_id, input) -> PreparedTurn`, where `input` is `Send { text, file_ids, edit_from }`, `Regenerate`, or `Decide { message_id, decisions }`, and the scheduler claims due schedules with `ScheduleService::fire_due` and builds their turns with `ChatService::prepare_scheduled`. It loads the chat, user settings, project, model, provider, file metadata, and tool servers (at most 4 concurrent reads), validates (model set, enabled and available; attachments readable or warned; context and request budgets), decrypts the key through `SecretCipher`, and saves the user message (or the tail change). For `Send`, pending approvals in the chat are first resolved as denied ("Skipped by user."). For `Regenerate`, messages after the last user message are deleted (as is any errored answer on Retry). Prepare builds the `TurnContext` snapshot from the history as it will be after the writes, before writing anything, so a turn over the context or request budget fails and changes nothing; it then writes and saves the snapshot. `Decide` reloads the snapshot named by the paused message's `context_hash` instead. Every failure returns 4xx through `HttpError` and releases the reservation.
+2. **Prepare.** `ChatService::prepare(actor, chat_id, input) -> PreparedTurn`, where `input` is `Send { text, file_ids, edit_from }`, `Regenerate`, `Retry`, or `Decide { message_id, decisions }`, and the scheduler claims due schedules with `ScheduleService::fire_due` and builds their turns with `ChatService::prepare_scheduled`. It loads the chat, user settings, project, model, provider, file metadata, and tool servers (at most 4 concurrent reads), validates (model set, enabled and available; attachments readable or warned; context and request budgets), decrypts the key through `SecretCipher`, and saves the user message (or the tail change). For `Send`, pending approvals in the chat are first resolved as denied ("Skipped by user."). For `Regenerate`, messages after the last user message are deleted. For `Retry` (the error banner), the turn's last answer must be `error`: only it and the results written for its calls are deleted, earlier rounds of the turn and their tool results stay (their tools never run twice), and a turn with earlier rounds continues from the failed answer's snapshot, like a decision. Prepare builds the `TurnContext` snapshot from the history as it will be after the writes, before writing anything, so a turn over the context or request budget fails and changes nothing; it then writes and saves the snapshot. `Decide` reloads the snapshot named by the paused message's `context_hash` instead. Every failure returns 4xx through `HttpError` and releases the reservation.
 3. **Stream.** Only then does the response switch to SSE. The handler spawns `ChatEngine::run(turn, sink, cancel)` in the reserved slot. Provider and tool failures from here on become `error` events.
 4. **Rounds.** Up to `MAX_TOOL_ROUNDS` (8) rounds, counted from saved assistant messages with tool calls since the last user message (so the limit holds across approval pauses):
    1. Stream from `LlmGateway`, racing every `stream.next()` against `cancel.cancelled()` with `futures_util::future::select`. Emit events through `TurnSink`.
@@ -545,7 +545,7 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 | Output limit | Finish reason `length`; Continue offered |
 | New user message while calls are pending | Pending calls become `denied` ("Skipped by user."), a `tool` message is written, then the new user message |
 | API restart | `recover()` marks the message `error`; missing results are synthesized as `cancelled` before the next request |
-| Retry on an error banner | Deletes the errored answer and regenerates |
+| Retry on an error banner | Deletes the failed answer and the results written for its calls, then answers again from the rest of the turn; earlier tool rounds are kept and not run again |
 
 ### Run Registry
 
@@ -628,7 +628,7 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Models | `GET /models` (enabled and available, for the picker), `PATCH /models/{id}` (`enabled`, `displayName`, `capabilityOverrides`, `contextWindow`, `maxOutputTokens`) |
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
-| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
+| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
 | Search | `GET /search?q=` (titles and message text; returns `chatId`, `chatTitle`, `messageId`, `snippet`) |
 | Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list) |
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |

@@ -1888,3 +1888,113 @@ async fn a_chat_approval_stays_with_its_tool_when_the_alias_moves() {
     assert_eq!(asked.tool_name, "a.b");
     assert_eq!(f.host.calls().len(), 1);
 }
+
+#[tokio::test]
+async fn retry_keeps_the_turns_earlier_tool_rounds() {
+    let f = fixture();
+    let (chat, _) = f.tool_chat(ApprovalMode::Auto).await;
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.host.push_text("found");
+    let mut steps: Vec<Step> = call_reply(&[("github__delete", r#"{"id":1}"#)])
+        .into_iter()
+        .filter(|event| !matches!(event, LlmEvent::Finished { .. }))
+        .map(|event| Step::Event(Ok(event)))
+        .collect();
+    steps.push(Step::Event(Err(DomainError::business_rule(
+        "Rate limited. Try again in 20 seconds.",
+        "PROVIDER_RATE_LIMITED",
+    ))));
+    f.gateway.push_steps(steps);
+    let turn = f.prepare(&chat, send("Clean up")).await;
+    let hash = turn.context.hash;
+    let (outcome, _) = f.run(turn).await;
+    assert_eq!(outcome.status, MessageStatus::Error);
+    let history = f.history(&chat).await;
+    assert_eq!(
+        roles(&history),
+        [
+            Role::User,
+            Role::Assistant,
+            Role::Tool,
+            Role::Assistant,
+            Role::Tool
+        ]
+    );
+    assert_eq!(f.host.calls().len(), 1);
+
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                instructions: Some("Be brief.".to_owned()),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    let turn = f.prepare(&chat, TurnInput::Retry).await;
+    assert_eq!(turn.context.hash, hash, "the turn keeps its snapshot");
+    assert_eq!(
+        roles(&turn.history),
+        [Role::User, Role::Assistant, Role::Tool]
+    );
+    f.gateway.push_events(text_reply("Done"));
+    let (outcome, _) = f.run(turn).await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+    assert_eq!(
+        f.host.calls().len(),
+        1,
+        "the first round's tool never runs again"
+    );
+    let history = f.history(&chat).await;
+    assert_eq!(
+        roles(&history),
+        [Role::User, Role::Assistant, Role::Tool, Role::Assistant]
+    );
+    let retried = &f.gateway.requests()[2];
+    assert_eq!(
+        request_roles(retried),
+        [Role::User, Role::Assistant, Role::Tool]
+    );
+    assert!(!retried.system.contains("Be brief."));
+
+    let error = f
+        .chats
+        .prepare(&f.caller, chat.id(), TurnInput::Retry)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "NOTHING_TO_RETRY");
+}
+
+#[tokio::test]
+async fn retry_of_a_first_round_failure_answers_again_with_current_settings() {
+    let f = fixture();
+    let chat = f.chat(NewChat::default()).await;
+    f.gateway.push_stream_error(DomainError::business_rule(
+        "Key rejected: open provider settings.",
+        "PROVIDER_AUTH",
+    ));
+    f.send(&chat, "Hi").await;
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                instructions: Some("Be brief.".to_owned()),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    let turn = f.prepare(&chat, TurnInput::Retry).await;
+    f.gateway.push_events(text_reply("Hello"));
+    let (outcome, _) = f.run(turn).await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+    assert_eq!(
+        roles(&f.history(&chat).await),
+        [Role::User, Role::Assistant]
+    );
+    assert!(f.gateway.requests()[1].system.contains("Be brief."));
+}
