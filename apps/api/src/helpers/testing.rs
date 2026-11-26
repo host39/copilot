@@ -76,6 +76,11 @@ pub async fn app_on(db: DbPool) -> Router {
 /// The whole app on a throwaway database (`#[sqlx::test]`): migrated, rustauth on Postgres, and
 /// the real provider adapter on the hardened clients (tool servers stay unavailable).
 pub async fn live_app(db: DbPool) -> Router {
+    live_app_with(db, config()).await
+}
+
+/// [`live_app`] with another config (for example smaller file limits).
+pub async fn live_app_with(db: DbPool, config: AppConfig) -> Router {
     copilot_database::operations::migrate::run(&db)
         .await
         .expect("migrated");
@@ -83,7 +88,7 @@ pub async fn live_app(db: DbPool) -> Router {
         .await
         .expect("rustauth on Postgres");
     create_app(AppDependencies {
-        config: config(),
+        config,
         db,
         identity,
         adapters: Adapters::create().expect("the outbound clients build"),
@@ -278,4 +283,32 @@ pub async fn tool_server(db: &DbPool, user: &str, slug: &str) -> String {
     .await
     .expect("tool server inserted");
     id.to_string()
+}
+
+/// A `multipart/form-data` request with one part per `(field, file name, bytes)`.
+pub fn multipart(uri: &str, token: &str, parts: &[(&str, &str, &[u8])]) -> Request<Body> {
+    const BOUNDARY: &str = "copilot-test-boundary";
+    let mut body = Vec::new();
+    for (field, file_name, bytes) in parts {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{field}\"; \
+                 filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .expect("request")
 }

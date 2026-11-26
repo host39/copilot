@@ -1,0 +1,30 @@
+meta {
+  name: 06-15 Other User Upload to Chat
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/files
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:multipart-form {
+  file: @file(fixtures/notes.txt)
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/files` as user B
+
+  **This test verifies:** user B cannot attach a file to user A's chat.
+}

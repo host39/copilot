@@ -1,0 +1,32 @@
+meta {
+  name: 06-11 Move File Into Other User Project
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/files/{{fileId}}/move
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "projectId": "{{otherProjectId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/files/{id}/move` with user B's project id in the body
+
+  **This test verifies:** user A cannot move a file into user B's project.
+}

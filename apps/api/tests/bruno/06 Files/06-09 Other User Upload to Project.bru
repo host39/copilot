@@ -1,0 +1,30 @@
+meta {
+  name: 06-09 Other User Upload to Project
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/projects/{{projectId}}/files
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:multipart-form {
+  file: @file(fixtures/notes.txt)
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/projects/{id}/files` as user B
+
+  **This test verifies:** user B cannot plant a file in user A's project context.
+}
