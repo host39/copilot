@@ -155,13 +155,13 @@ fn rejected(error: rustauth::HttpError) -> HttpError {
         Some(error) => HttpError::from(to_domain(error)),
         None => HttpError::Status {
             status,
-            body: ErrorResponse {
+            body: Box::new(ErrorResponse {
                 error: body.error,
                 code: body.code,
                 field: body.field,
                 details: body.details,
                 request_id: body.request_id,
-            },
+            }),
         },
     }
 }

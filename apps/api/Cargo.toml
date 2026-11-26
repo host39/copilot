@@ -15,11 +15,14 @@ path = "src/bin/server.rs"
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+# Audio deltas in stream events.
+base64 = { workspace = true }
 copilot-contracts = { workspace = true }
 copilot-core = { workspace = true }
 copilot-database = { workspace = true }
 copilot-logger = { workspace = true }
 copilot-middleware = { workspace = true }
+copilot-providers = { workspace = true }
 copilot-security = { workspace = true }
 futures-util = { workspace = true }
 # Identity: the router, guard, and Postgres storage. Only `helpers/auth.rs` names it.
@@ -42,6 +45,8 @@ rustauth = { workspace = true, features = ["axum", "postgres", "testing"] }
 # `#[sqlx::test]` database tests (`make test-db`).
 sqlx = { workspace = true, features = ["macros", "migrate", "postgres", "runtime-tokio"] }
 tower = { workspace = true, features = ["util"] }
+# A model provider for the end-to-end turn test.
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

@@ -8,6 +8,7 @@ use copilot_database::DbPool;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
+use crate::helpers::runs::RunRegistry;
 
 /// Shared state handed to every handler via `State<AppState>`. The composition root
 /// (`helpers::bootstrap::wire`) builds every service once; handlers never build repositories or
@@ -28,4 +29,6 @@ pub struct AppState {
     pub schedules: Arc<ScheduleService>,
     /// Runs turns: the model, tool calls, and approvals.
     pub engine: Arc<ChatEngine>,
+    /// The chats that are answering now: one run per chat, a few per user.
+    pub runs: Arc<RunRegistry>,
 }

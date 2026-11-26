@@ -35,7 +35,8 @@ pub enum HttpError {
     /// A transport-level rejection (for example an oversized body) with a ready-made body.
     Status {
         status: StatusCode,
-        body: ErrorResponse,
+        /// Boxed, so handler results stay small.
+        body: Box<ErrorResponse>,
     },
 }
 
@@ -49,7 +50,7 @@ impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, mut body) = match &self {
             Self::Domain(error) => (status_code(error), format_error(error)),
-            Self::Status { status, body } => (*status, body.clone()),
+            Self::Status { status, body } => (*status, ErrorResponse::clone(body)),
         };
         body.request_id = request_id::current();
         log(&self, status, &body);
@@ -73,7 +74,7 @@ impl IntoResponse for HttpError {
 pub async fn not_found() -> Response {
     HttpError::Status {
         status: StatusCode::NOT_FOUND,
-        body: ErrorResponse::new("Not found", "NOT_FOUND"),
+        body: Box::new(ErrorResponse::new("Not found", "NOT_FOUND")),
     }
     .into_response()
 }

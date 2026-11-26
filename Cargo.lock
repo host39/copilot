@@ -366,11 +366,13 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "copilot-contracts",
  "copilot-core",
  "copilot-database",
  "copilot-logger",
  "copilot-middleware",
+ "copilot-providers",
  "copilot-security",
  "futures-util",
  "http-body-util",
@@ -385,6 +387,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

@@ -2,14 +2,18 @@
 //!
 //! [`router`] puts `/health` at the root and everything else under `/api`: lib-rustauth's routes
 //! and Copilot's, which [`Identity::api`] puts behind the guard. Handlers that later steps write
-//! (P1.9 the walking skeleton, P2.A the domains) answer [`pending`] (`501`) until then.
+//! (P2.A the domains, P3.1 the other streaming routes) answer [`pending`] (`501`) until then;
+//! the walking skeleton (P1.9) wrote the path of a first answer. [`convert`] maps core values to
+//! their wire forms, and [`path::Id`] reads `{id}`.
 
 pub mod chats;
+pub mod convert;
 pub mod docs;
 pub mod events;
 pub mod files;
 pub mod health;
 pub mod models;
+pub mod path;
 pub mod projects;
 pub mod providers;
 pub mod schedules;
@@ -56,7 +60,10 @@ pub fn api() -> OpenApiRouter<AppState> {
 pub fn pending() -> HttpError {
     HttpError::Status {
         status: StatusCode::NOT_IMPLEMENTED,
-        body: ErrorResponse::new("This feature is not available yet.", "NOT_IMPLEMENTED"),
+        body: Box::new(ErrorResponse::new(
+            "This feature is not available yet.",
+            "NOT_IMPLEMENTED",
+        )),
     }
 }
 
@@ -112,23 +119,75 @@ mod tests {
         assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     }
 
+    /// The operations the walking skeleton (P1.9) wrote; every other one answers `501` until
+    /// its step.
+    const WRITTEN: &[(&str, &str)] = &[
+        ("GET", "/api/providers"),
+        ("POST", "/api/providers"),
+        ("POST", "/api/providers/{id}/refresh"),
+        ("GET", "/api/providers/{id}/models"),
+        ("GET", "/api/models"),
+        ("PATCH", "/api/models/{id}"),
+        ("POST", "/api/chats"),
+        ("GET", "/api/chats/{id}"),
+        ("GET", "/api/chats/{id}/messages"),
+        ("POST", "/api/chats/{id}/messages"),
+    ];
+
+    fn written(method: &Method, uri: &str) -> bool {
+        let path = uri.replace(ID, "{id}");
+        WRITTEN
+            .iter()
+            .any(|(written, template)| method.as_str() == *written && path == *template)
+    }
+
     #[tokio::test]
     async fn signed_in_callers_reach_the_handlers() {
         let app = app().await;
         let token = register(&app, "alice").await;
+        let mut reached = 0;
         for (method, uri) in operations(&app).await {
             let response = send(
                 app.clone(),
                 request(method.clone(), &uri, Some(&token), None),
             )
             .await;
-            assert_eq!(
-                response.status,
-                StatusCode::NOT_IMPLEMENTED,
-                "{method} {uri}"
-            );
-            assert_eq!(response.body["code"], "NOT_IMPLEMENTED");
+            assert_ne!(response.status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+            if written(&method, &uri) {
+                reached += 1;
+                assert_ne!(
+                    response.status,
+                    StatusCode::NOT_IMPLEMENTED,
+                    "{method} {uri}"
+                );
+            } else {
+                assert_eq!(
+                    response.status,
+                    StatusCode::NOT_IMPLEMENTED,
+                    "{method} {uri}"
+                );
+                assert_eq!(response.body["code"], "NOT_IMPLEMENTED");
+            }
         }
+        assert_eq!(
+            reached,
+            WRITTEN.len(),
+            "every written operation is documented"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_ids_are_validation_errors() {
+        let app = app().await;
+        let token = register(&app, "alice").await;
+        let response = send(
+            app,
+            request(Method::GET, "/api/chats/not-a-uuid", Some(&token), None),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.body["code"], "VALIDATION_ERROR");
+        assert_eq!(response.body["field"], "id");
     }
 
     #[tokio::test]

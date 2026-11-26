@@ -12,12 +12,14 @@ use copilot_core::{
 };
 use copilot_database::{DbPool, Env, PgStore};
 use copilot_logger::LoggerOptions;
-use copilot_security::AesCipher;
+use copilot_providers::Gateway;
+use copilot_security::{AesCipher, Purpose};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
+use crate::helpers::runs::RunRegistry;
 use crate::helpers::unavailable::Unavailable;
 use crate::{AppDependencies, create_app};
 
@@ -49,7 +51,7 @@ impl ApiContext {
             config: config.clone(),
             db: db.clone(),
             identity,
-            adapters: Adapters::unavailable(),
+            adapters: Adapters::create()?,
             shutdown: shutdown.clone(),
         });
 
@@ -80,9 +82,18 @@ pub struct Adapters {
 }
 
 impl Adapters {
-    /// Stand-ins until Phase 2 builds `copilot-providers` and `copilot-mcp`. P2.F replaces them
-    /// with the real adapters, each given its own hardened clients
-    /// (`copilot_security::clients(Purpose::Providers)` and `clients(Purpose::Tools)`).
+    /// The model providers through `copilot-providers` on the hardened provider clients
+    /// (`copilot_security::clients(Purpose::Providers)`). Tool servers stay unavailable until
+    /// P2.F wires `copilot-mcp` on `clients(Purpose::Tools)`.
+    pub fn create() -> Result<Self, BoxError> {
+        let clients = copilot_security::clients(Purpose::Providers)?;
+        Ok(Self {
+            gateway: Arc::new(Gateway::new(clients)),
+            host: Arc::new(Unavailable),
+        })
+    }
+
+    /// Stand-ins for both adapters, for tests that never reach a provider or a tool server.
     pub fn unavailable() -> Self {
         Self {
             gateway: Arc::new(Unavailable),
@@ -157,6 +168,7 @@ pub fn wire(
         clock.clone(),
     );
     let chats = ChatService::new(stores, tools.clone(), cipher, clock, network);
+    let runs = RunRegistry::new(shutdown.clone());
 
     AppState {
         config,
@@ -171,5 +183,6 @@ pub fn wire(
         tools: Arc::new(tools),
         schedules: Arc::new(schedules),
         engine: Arc::new(engine),
+        runs: Arc::new(runs),
     }
 }

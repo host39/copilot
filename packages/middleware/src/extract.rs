@@ -33,14 +33,17 @@ fn reject(rejection: &JsonRejection) -> HttpError {
     match rejection.status() {
         StatusCode::PAYLOAD_TOO_LARGE => HttpError::Status {
             status: StatusCode::PAYLOAD_TOO_LARGE,
-            body: ErrorResponse::new("Request body is too large.", "PAYLOAD_TOO_LARGE"),
+            body: Box::new(ErrorResponse::new(
+                "Request body is too large.",
+                "PAYLOAD_TOO_LARGE",
+            )),
         },
         StatusCode::UNSUPPORTED_MEDIA_TYPE => HttpError::Status {
             status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            body: ErrorResponse::new(
+            body: Box::new(ErrorResponse::new(
                 "Request body must be JSON (Content-Type: application/json).",
                 "UNSUPPORTED_MEDIA_TYPE",
-            ),
+            )),
         },
         _ => HttpError::Domain(DomainError::validation(rejection.body_text())),
     }

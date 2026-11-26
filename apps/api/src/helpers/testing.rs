@@ -73,6 +73,24 @@ pub async fn app_on(db: DbPool) -> Router {
     app_with(config(), db).await
 }
 
+/// The whole app on a throwaway database (`#[sqlx::test]`): migrated, rustauth on Postgres, and
+/// the real provider adapter on the hardened clients (tool servers stay unavailable).
+pub async fn live_app(db: DbPool) -> Router {
+    copilot_database::operations::migrate::run(&db)
+        .await
+        .expect("migrated");
+    let identity = Identity::start(db.clone(), &identity_config())
+        .await
+        .expect("rustauth on Postgres");
+    create_app(AppDependencies {
+        config: config(),
+        db,
+        identity,
+        adapters: Adapters::create().expect("the outbound clients build"),
+        shutdown: CancellationToken::new(),
+    })
+}
+
 pub struct TestResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
@@ -80,6 +98,16 @@ pub struct TestResponse {
 }
 
 pub async fn send(app: Router, request: Request<Body>) -> TestResponse {
+    let (status, headers, bytes) = read(app, request).await;
+    TestResponse {
+        status,
+        headers,
+        body: serde_json::from_slice(bytes.as_bytes()).unwrap_or(Value::Null),
+    }
+}
+
+/// The status, headers, and whole body as text (an event stream ends when its run is done).
+pub async fn read(app: Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
     let response = app.oneshot(request).await.expect("infallible router");
     let status = response.status();
     let headers = response.headers().clone();
@@ -89,11 +117,8 @@ pub async fn send(app: Router, request: Request<Body>) -> TestResponse {
         .await
         .expect("body")
         .to_bytes();
-    TestResponse {
-        status,
-        headers,
-        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    }
+    let text = String::from_utf8(bytes.to_vec()).expect("a UTF-8 body");
+    (status, headers, text)
 }
 
 pub async fn get(app: Router, uri: &str) -> TestResponse {
