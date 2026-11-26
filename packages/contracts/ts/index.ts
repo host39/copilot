@@ -1,6 +1,14 @@
 // Zod schemas for the API contracts. The Rust structs in `packages/contracts/src/` are the source
 // of truth: `make contracts` regenerates the types in `ts/generated/`, and each schema below must
 // satisfy its generated type, so drift fails `make type-check`.
+//
+// Identity DTOs come from lib-rustauth. `@rustauth/contracts` is pinned to the same commit as the
+// `rustauth` crate (bump both together) and re-exported here, so `apps/web` imports only
+// `@copilot/contracts`. Names defined in this file take precedence over the re-export: the shared
+// envelopes, `errorResponseSchema`, and `REQUEST_ID_HEADER` match rustauth's (see
+// `test/auth.test.ts`).
+
+export * from "@rustauth/contracts";
 
 import type { ErrorResponse } from "@contracts/generated/ErrorResponse";
 import type { HealthResponse } from "@contracts/generated/HealthResponse";

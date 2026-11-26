@@ -4,6 +4,7 @@ packages:
 
 catalog:
   "@biomejs/biome": 2.5.14
+  "@rstest/core": 0.12.6
   "@tsconfig/node22": ^22.0.7
   "@types/node": ^26.6.11
   markdownlint-cli: 0.50.1
