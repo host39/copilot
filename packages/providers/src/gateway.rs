@@ -10,8 +10,8 @@ use reqwest::Client;
 
 use crate::openai;
 
-/// The code of a request this version cannot send yet (a protocol or a part type that Phase 2
-/// track B adds). Nothing reaches the provider.
+/// The code of a request this version cannot send (the Anthropic protocol until Phase 2 track B
+/// adds it, or a part the wire protocol cannot carry). Nothing reaches the provider.
 pub const UNSUPPORTED: &str = "PROVIDER_UNSUPPORTED";
 
 /// Every provider connection, through the three hardened clients the composition root builds

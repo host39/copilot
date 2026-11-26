@@ -1,61 +1,35 @@
 //! The OpenAI-compatible adapter: Chat Completions (`POST {base}/chat/completions`, data-only
 //! SSE) and the model list (`GET {base}/models`). Every preset of the `openai` kind uses it; the
-//! dialect sets the per-preset details (`copilot_core::Dialect`).
+//! dialect sets the per-preset details (`copilot_core::Dialect`, and Adapter Rules in
+//! `docs/design/copilot.md`).
 
+mod calls;
 mod decode;
+mod models;
+mod replay;
 mod request;
 
 use std::collections::VecDeque;
 
 use copilot_core::{
-    DomainResult, LlmEvent, LlmRequest, ModelTarget, Outbound, ProviderTarget, RemoteModel,
+    DomainError, DomainResult, LlmEvent, LlmRequest, ModelTarget, Outbound, ProviderTarget,
+    RemoteModel,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
-use reqwest::Client;
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
-use serde::Deserialize;
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use reqwest::{Client, Response};
+use serde_json::Value;
 
 use crate::http::{bad_response, bearer, body, client, send};
-use crate::openai::decode::{Decoder, Flow};
+use crate::openai::decode::{Decoder, Flow, failed};
 use crate::sse::events;
 
-/// `GET /models`.
-#[derive(Debug, Deserialize)]
-struct ModelList {
-    data: Vec<ListedModel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListedModel {
-    id: String,
-}
-
-/// The connection's models. The list carries no names or capabilities, so core applies the
-/// preset defaults (`Capabilities::defaults`).
+/// The connection's models, with what the provider reports about each.
 pub(crate) async fn models(
     clients: &Outbound<Client>,
     target: &ProviderTarget,
 ) -> DomainResult<Vec<RemoteModel>> {
-    let client = client(clients, target)?;
-    let mut request = client.get(format!("{}/models", target.base_url.as_str()));
-    if let Some(value) = bearer(target)? {
-        request = request.header(AUTHORIZATION, value);
-    }
-    let response = send(target, request).await?;
-    let bytes = body(target, response).await?;
-    let list: ModelList = serde_json::from_slice(&bytes).map_err(|error| {
-        tracing::warn!(provider_id = %target.provider_id, error = %error, "provider.models.invalid");
-        bad_response()
-    })?;
-    Ok(list
-        .data
-        .into_iter()
-        .map(|model| RemoteModel {
-            display_name: model.id.clone(),
-            remote_id: model.id,
-            ..RemoteModel::default()
-        })
-        .collect())
+    models::list(clients, target).await
 }
 
 /// Streams one answer. The request body is built before connecting, so a request the adapter
@@ -76,13 +50,54 @@ pub(crate) async fn stream(
         http = http.header(AUTHORIZATION, value);
     }
     let response = send(provider, http).await?;
+    if is_json(&response) {
+        return Err(json_reply(provider, response).await);
+    }
     let state = State {
         events: events(provider.provider_id, response.bytes_stream()),
-        decoder: Decoder::new(provider.provider_id),
+        decoder: Decoder::new(provider.provider_id, target.dialect),
         queue: VecDeque::new(),
         done: false,
     };
     Ok(stream::unfold(state, next).boxed())
+}
+
+/// Whether a success response is a JSON document rather than an event stream: some servers
+/// answer an error (or ignore `stream: true`) that way.
+fn is_json(response: &Response) -> bool {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
+        })
+}
+
+/// The error for a JSON reply to a streamed request: the provider's error, or a reply Copilot
+/// cannot read. The body is never echoed.
+async fn json_reply(provider: &ProviderTarget, response: Response) -> DomainError {
+    let bytes = match body(provider, response).await {
+        Ok(bytes) => bytes,
+        Err(error) => return error,
+    };
+    let reply: Option<Value> = serde_json::from_slice(&bytes).ok();
+    let error_reply = reply.as_ref().is_some_and(|reply| {
+        reply.get("error").is_some() || reply.get("object").and_then(Value::as_str) == Some("error")
+    });
+    tracing::warn!(
+        provider_id = %provider.provider_id,
+        error_reply,
+        "provider.stream.not-streamed"
+    );
+    if error_reply {
+        failed()
+    } else {
+        bad_response()
+    }
 }
 
 /// The decoding state of one answer.
@@ -115,7 +130,7 @@ async fn next(mut state: State) -> Option<(DomainResult<LlmEvent>, State)> {
                     state.queue.extend(out);
                 }
                 Some("error") => {
-                    state.queue.push_back(Err(state.decoder.failed()));
+                    state.queue.push_back(Err(state.decoder.error_event()));
                     state.done = true;
                 }
                 Some(_) => {}
@@ -125,7 +140,9 @@ async fn next(mut state: State) -> Option<(DomainResult<LlmEvent>, State)> {
                 state.done = true;
             }
             None => {
-                state.queue.extend(state.decoder.end().map(Ok));
+                let mut out = Vec::new();
+                state.decoder.end(&mut out);
+                state.queue.extend(out);
                 state.done = true;
             }
         }
