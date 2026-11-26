@@ -14,10 +14,19 @@ pub trait ScheduleRepository: Send + Sync {
     async fn list(&self, user: UserId, query: ScheduleQuery) -> DomainResult<Vec<Schedule>>;
     async fn get(&self, user: UserId, id: ScheduleId) -> DomainResult<Option<Schedule>>;
     async fn insert(&self, schedule: &Schedule) -> DomainResult<()>;
-    /// Writes the user's settings and `enabled`, `next_run_at`, `consecutive_failures`, and
-    /// `disabled_reason`. The run columns (`last_run_at`, `last_status`, `last_error`) belong to
-    /// `advance` and `record`.
+    /// Writes the user's settings only: name, prompt, instructions, model, reasoning, `on_ask`,
+    /// and `updated_at`. Never the rule or the columns the scheduler writes (`enabled`,
+    /// `next_run_at`, `consecutive_failures`, `disabled_reason`, and the run columns), so an
+    /// edit racing a claim or a run record cannot undo it.
     async fn update(&self, schedule: &Schedule) -> DomainResult<()>;
+    /// Writes what `update` writes plus the rule, `enabled`, `next_run_at`,
+    /// `consecutive_failures`, and `disabled_reason`, only while the stored `enabled`,
+    /// `next_run_at`, and `consecutive_failures` still equal `read`'s (a claim, a run record, or
+    /// a model pause since the read changes one of them): `UPDATE ... WHERE id = $id AND
+    /// user_id = $user AND enabled = $read_enabled AND next_run_at IS NOT DISTINCT FROM
+    /// $read_next AND consecutive_failures = $read_failures`. `false` when they changed, and
+    /// nothing is written. The run columns belong to `advance` and `record`.
+    async fn reschedule(&self, schedule: &Schedule, read: &Schedule) -> DomainResult<bool>;
     /// `false` when the user has no such schedule. Chats of its runs keep existing
     /// (`schedule_id` becomes null).
     async fn delete(&self, user: UserId, id: ScheduleId) -> DomainResult<bool>;

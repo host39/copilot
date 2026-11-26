@@ -20,6 +20,8 @@ use crate::shared::reasoning::ReasoningLevel;
 
 /// Runs shown by a preview.
 const PREVIEW_RUNS: usize = 3;
+/// Tries of an update whose state write lost a race with the scheduler.
+const UPDATE_TRIES: usize = 3;
 
 /// Input of [`ScheduleService::create`]. New schedules are enabled.
 #[derive(Clone, Debug, Default)]
@@ -116,15 +118,42 @@ impl ScheduleService {
     }
 
     /// A new rule moves the next run. Turning a schedule on checks the limit and the model again
-    /// and clears its failure count and pause reason.
+    /// and clears its failure count and pause reason. Settings alone never touch the columns the
+    /// scheduler writes; a new rule or an on/off switch is written only if no claim, run record,
+    /// or model pause changed the schedule since it was read, and is applied again to a fresh
+    /// read otherwise.
     pub async fn update(
         &self,
         actor: &Actor,
         id: ScheduleId,
         changes: ScheduleUpdate,
     ) -> DomainResult<Schedule> {
+        for _ in 0..UPDATE_TRIES {
+            let read = self.get(actor, id).await?;
+            let (schedule, rescheduled) = self.apply(actor, read.clone(), &changes).await?;
+            if !rescheduled {
+                self.schedules.update(&schedule).await?;
+                return Ok(schedule);
+            }
+            if self.schedules.reschedule(&schedule, &read).await? {
+                return Ok(schedule);
+            }
+        }
+        Err(DomainError::business_rule(
+            "This schedule is starting a run right now. Try again in a moment.",
+            "SCHEDULE_BUSY",
+        ))
+    }
+
+    /// `changes` applied to `schedule`, and whether they move its rule or switch it on or off.
+    async fn apply(
+        &self,
+        actor: &Actor,
+        mut schedule: Schedule,
+        changes: &ScheduleUpdate,
+    ) -> DomainResult<(Schedule, bool)> {
         let now = self.clock.now();
-        let mut schedule = self.get(actor, id).await?;
+        let mut rescheduled = false;
         if let Some(name) = &changes.name {
             schedule = schedule.with_name(name)?;
         }
@@ -142,6 +171,7 @@ impl ScheduleService {
                 .unwrap_or(schedule.rule().timezone());
             let rule = CronRule::parse(cron, timezone, now)?;
             schedule = schedule.with_rule(rule, now);
+            rescheduled = true;
         }
         if let Some(instructions) = &changes.instructions {
             schedule = schedule.with_instructions(instructions);
@@ -161,13 +191,15 @@ impl ScheduleService {
                 self.check_model(actor, schedule.model_id()).await?;
                 self.check_limit(actor).await?;
                 schedule = schedule.enabled_at(now);
+                rescheduled = true;
             }
-            Some(false) if schedule.enabled() => schedule = schedule.disabled(None),
+            Some(false) if schedule.enabled() => {
+                schedule = schedule.disabled(None);
+                rescheduled = true;
+            }
             _ => {}
         }
-        let schedule = schedule.touched(now);
-        self.schedules.update(&schedule).await?;
-        Ok(schedule)
+        Ok((schedule.touched(now), rescheduled))
     }
 
     /// The chats of its runs stay.
@@ -396,7 +428,7 @@ mod tests {
     };
     use crate::domains::schedule::builtin::ScheduleTool;
     use crate::domains::schedule::entities::{MODEL_REMOVED, MODEL_TURNED_OFF, RunStatus};
-    use crate::shared::ids::{ChatId, ProviderId};
+    use crate::shared::ids::{ChatId, ProviderId, UserId};
     use crate::shared::net::PrivateNetwork;
     use crate::testing::{
         FakeCipher, FixedClock, MemoryStore, ScriptedGateway, actor, admin, remote_model,
@@ -1096,5 +1128,172 @@ mod tests {
                 .is_ok()
         );
         assert!(ScheduleTool::List.spec().alias.is_builtin());
+    }
+
+    #[tokio::test]
+    async fn settings_written_from_a_stale_read_never_undo_a_claim_or_a_pause() {
+        let f = fixture();
+        let caller = actor();
+        let (model, _) = model(&f, &caller).await;
+        let schedule = f.service.create(&caller, daily(model)).await.unwrap();
+        let repository: &dyn ScheduleRepository = f.store.as_ref();
+
+        let stale = f.service.get(&caller, schedule.id()).await.unwrap();
+        assert_eq!(f.service.fire_due(at(9, 0), 4).await.unwrap().len(), 1);
+        repository
+            .update(&stale.clone().with_name("Renamed").unwrap())
+            .await
+            .unwrap();
+        assert!(
+            f.service.fire_due(at(9, 0), 4).await.unwrap().is_empty(),
+            "the claim stands: the same fire never runs twice"
+        );
+        let stored = f.service.get(&caller, schedule.id()).await.unwrap();
+        assert_eq!(stored.name(), "Renamed");
+
+        let stale = f.service.get(&caller, schedule.id()).await.unwrap();
+        let fail = || RunOutcome::Failed("Key rejected.".to_owned());
+        for _ in 0..3 {
+            f.service
+                .record(schedule.id(), fail(), at(9, 1))
+                .await
+                .unwrap();
+        }
+        repository.update(&stale).await.unwrap();
+        let rule = CronRule::parse("0 10 * * *", "UTC", at(9, 2)).unwrap();
+        let moved = stale.clone().with_rule(rule, at(9, 2));
+        assert!(!repository.reschedule(&moved, &stale).await.unwrap());
+        let stored = f.service.get(&caller, schedule.id()).await.unwrap();
+        assert!(!stored.enabled(), "a stale copy never turns it back on");
+        assert_eq!(stored.consecutive_failures(), 3);
+        assert_eq!(stored.disabled_reason(), Some("Failed 3 times in a row"));
+        assert_eq!(stored.rule().expression(), "0 9 * * *");
+    }
+
+    /// Records a failed run of the schedule before each of the first `races` reschedules, the
+    /// way a run ending between the service's read and its write would.
+    struct Racing {
+        store: Arc<MemoryStore>,
+        races: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ScheduleRepository for Racing {
+        async fn list(&self, user: UserId, query: ScheduleQuery) -> DomainResult<Vec<Schedule>> {
+            ScheduleRepository::list(self.store.as_ref(), user, query).await
+        }
+
+        async fn get(&self, user: UserId, id: ScheduleId) -> DomainResult<Option<Schedule>> {
+            ScheduleRepository::get(self.store.as_ref(), user, id).await
+        }
+
+        async fn insert(&self, schedule: &Schedule) -> DomainResult<()> {
+            ScheduleRepository::insert(self.store.as_ref(), schedule).await
+        }
+
+        async fn update(&self, schedule: &Schedule) -> DomainResult<()> {
+            ScheduleRepository::update(self.store.as_ref(), schedule).await
+        }
+
+        async fn reschedule(&self, schedule: &Schedule, read: &Schedule) -> DomainResult<bool> {
+            let race = self
+                .races
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |left| left.checked_sub(1),
+                )
+                .is_ok();
+            if race {
+                let failed = RunRecord::new(RunOutcome::Failed("Timed out.".to_owned()), at(9, 0));
+                self.store.record(schedule.id(), &failed).await?;
+            }
+            self.store.reschedule(schedule, read).await
+        }
+
+        async fn delete(&self, user: UserId, id: ScheduleId) -> DomainResult<bool> {
+            ScheduleRepository::delete(self.store.as_ref(), user, id).await
+        }
+
+        async fn count_enabled(&self, user: UserId) -> DomainResult<u32> {
+            self.store.count_enabled(user).await
+        }
+
+        async fn disable_for_model(
+            &self,
+            user: UserId,
+            model: ModelId,
+            reason: &str,
+        ) -> DomainResult<u64> {
+            self.store.disable_for_model(user, model, reason).await
+        }
+
+        async fn due(
+            &self,
+            now: DateTime<Utc>,
+            limit: u32,
+        ) -> DomainResult<Vec<(Schedule, Actor)>> {
+            self.store.due(now, limit).await
+        }
+
+        async fn advance(
+            &self,
+            id: ScheduleId,
+            expected: DateTime<Utc>,
+            next: DateTime<Utc>,
+            now: DateTime<Utc>,
+        ) -> DomainResult<bool> {
+            self.store.advance(id, expected, next, now).await
+        }
+
+        async fn record(&self, id: ScheduleId, outcome: &RunRecord) -> DomainResult<()> {
+            self.store.record(id, outcome).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_rule_is_applied_again_when_a_run_ends_in_between() {
+        let f = fixture();
+        let caller = actor();
+        let (model, _) = model(&f, &caller).await;
+        let schedule = f.service.create(&caller, daily(model)).await.unwrap();
+        let racing = Arc::new(Racing {
+            store: f.store.clone(),
+            races: std::sync::atomic::AtomicUsize::new(1),
+        });
+        let service = ScheduleService::new(
+            racing.clone(),
+            f.store.clone(),
+            f.store.clone(),
+            f.clock.clone(),
+        );
+        let ten = ScheduleUpdate {
+            cron: Some("0 10 * * *".to_owned()),
+            ..ScheduleUpdate::default()
+        };
+        let updated = service.update(&caller, schedule.id(), ten).await.unwrap();
+        assert_eq!(updated.rule().expression(), "0 10 * * *");
+        let stored = service.get(&caller, schedule.id()).await.unwrap();
+        assert_eq!(stored.rule().expression(), "0 10 * * *");
+        assert_eq!(
+            stored.consecutive_failures(),
+            1,
+            "the run recorded in between is kept"
+        );
+
+        racing
+            .races
+            .store(UPDATE_TRIES, std::sync::atomic::Ordering::SeqCst);
+        let nine = ScheduleUpdate {
+            cron: Some("0 9 * * *".to_owned()),
+            ..ScheduleUpdate::default()
+        };
+        let error = service
+            .update(&caller, schedule.id(), nine)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "SCHEDULE_BUSY");
+        let stored = service.get(&caller, schedule.id()).await.unwrap();
+        assert_eq!(stored.rule().expression(), "0 10 * * *");
     }
 }

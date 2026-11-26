@@ -64,6 +64,34 @@ impl ScheduleRepository for MemoryStore {
         if let Some(stored) = tables.schedules.get_mut(&schedule.id())
             && stored.user_id() == schedule.user_id()
         {
+            // The rule and the scheduler's columns belong to `reschedule`, `advance`, and
+            // `record`.
+            *stored = Schedule::restore(ScheduleParts {
+                rule: stored.rule().clone(),
+                enabled: stored.enabled(),
+                next_run_at: stored.next_run_at(),
+                consecutive_failures: stored.consecutive_failures(),
+                disabled_reason: stored.disabled_reason().map(str::to_owned),
+                last_run_at: stored.last_run_at(),
+                last_status: stored.last_status(),
+                last_error: stored.last_error().map(str::to_owned),
+                ..parts(schedule)
+            });
+        }
+        Ok(())
+    }
+
+    async fn reschedule(&self, schedule: &Schedule, read: &Schedule) -> DomainResult<bool> {
+        let mut tables = self.tables();
+        tables.check_schedule_references(schedule)?;
+        let Some(stored) = tables.schedules.get_mut(&schedule.id()) else {
+            return Ok(false);
+        };
+        let unchanged = stored.user_id() == schedule.user_id()
+            && stored.enabled() == read.enabled()
+            && stored.next_run_at() == read.next_run_at()
+            && stored.consecutive_failures() == read.consecutive_failures();
+        if unchanged {
             // The run columns belong to `advance` and `record`.
             *stored = Schedule::restore(ScheduleParts {
                 last_run_at: stored.last_run_at(),
@@ -72,7 +100,7 @@ impl ScheduleRepository for MemoryStore {
                 ..parts(schedule)
             });
         }
-        Ok(())
+        Ok(unchanged)
     }
 
     async fn delete(&self, user: UserId, id: ScheduleId) -> DomainResult<bool> {

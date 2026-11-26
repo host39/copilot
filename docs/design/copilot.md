@@ -423,7 +423,8 @@ trait ScheduleRepository {
     async fn list(&self, user: UserId, query: ScheduleQuery) -> DomainResult<Vec<Schedule>>;
     async fn get(&self, user: UserId, id: ScheduleId) -> DomainResult<Option<Schedule>>;
     async fn insert(&self, schedule: &Schedule) -> DomainResult<()>;
-    async fn update(&self, schedule: &Schedule) -> DomainResult<()>;
+    async fn update(&self, schedule: &Schedule) -> DomainResult<()>; // user settings only, never the rule or the scheduler's columns
+    async fn reschedule(&self, schedule: &Schedule, read: &Schedule) -> DomainResult<bool>; // settings + rule, enabled, next_run_at, consecutive_failures, disabled_reason, only while enabled, next_run_at, consecutive_failures still equal read's
     async fn delete(&self, user: UserId, id: ScheduleId) -> DomainResult<bool>;
     async fn count_enabled(&self, user: UserId) -> DomainResult<u32>;
     async fn disable_for_model(&self, user: UserId, model: ModelId, reason: &str) -> DomainResult<u64>;
