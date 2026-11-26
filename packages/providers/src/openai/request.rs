@@ -1,40 +1,55 @@
-//! Chat Completions request bodies (`POST {base}/chat/completions`, streamed).
+//! Chat Completions request bodies (`POST {base}/chat/completions`, streamed), per dialect
+//! (`docs/design/copilot.md`, Adapter Rules).
 //!
-//! The walking skeleton sends text only. Parts and features that need the full adapter (images,
-//! PDFs, audio, tool calls and results, tools, spoken replies) fail with `PROVIDER_UNSUPPORTED`
-//! before anything is sent, so a request never goes out with something silently dropped.
+//! - The system text goes under the dialect's role, the output limit under its field, and
+//!   `stream_options` where the dialect reports usage that way.
+//! - Tools are `{type: "function", function: {name, description, parameters, strict: false}}`,
+//!   with `tool_choice: "auto"` except on Ollama.
+//! - User parts: text, images as base64 data URLs, PDFs as `file` parts with a
+//!   `data:application/pdf;base64,` URL, audio as `input_audio` (`wav` or `mp3`). Core sends a
+//!   binary part only when the model has the capability.
+//! - Assistant messages carry their text and `tool_calls`; a replayed one also carries its
+//!   reasoning under the key it came under (OpenRouter: its `reasoning_details` instead, when it
+//!   has them) and, on Gemini, each call's extra fields (thought signatures).
+//! - Tool results are one `role: tool` message each, text only (an image becomes a notice);
+//!   text parts after them (results lowered to text) go out as user text. Adjacent user
+//!   messages are merged, for chat templates that need alternating roles.
+//!
+//! Anything the protocol cannot carry fails with `PROVIDER_UNSUPPORTED` before anything is
+//! sent, so a request never goes out with something silently dropped.
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use copilot_core::{
-    DomainError, DomainResult, LlmMessage, LlmPart, LlmRequest, ModelTarget, ReasoningLevel, Role,
+    Dialect, DomainError, DomainResult, LlmMessage, LlmPart, LlmRequest, ModelTarget,
+    ReasoningLevel, Role, ToolContent, ToolSpec,
 };
 use serde_json::{Map, Value, json};
 
 use crate::gateway::UNSUPPORTED;
+use crate::openai::calls::CALL_FIELDS;
+use crate::openai::replay::{REASONING, ReplayState};
 
-/// The request body for `request` in the target's dialect: the system text under the dialect's
-/// role, the output limit under its field, and `stream_options` where the dialect reports usage
-/// that way.
+/// The request body for `request` in the target's dialect.
 pub(crate) fn body(target: &ModelTarget, request: &LlmRequest) -> DomainResult<Value> {
-    if !request.tools.is_empty() {
-        return Err(unsupported("tools"));
-    }
-    if request.audio_out.is_some() {
-        return Err(unsupported("spoken replies"));
-    }
     let dialect = target.dialect;
-    let mut messages = Vec::with_capacity(request.messages.len() + 1);
+    let mut messages = Messages::default();
     if !request.system.is_empty() {
         let role = dialect.system_role().unwrap_or("system");
         messages.push(json!({ "role": role, "content": request.system }));
     }
     for item in &request.messages {
-        messages.push(message(item)?);
+        match item.role {
+            Role::User => messages.user(user_parts(&item.parts)?),
+            Role::Assistant => messages.push(assistant(dialect, item)?),
+            Role::Tool => tool(item, &mut messages)?,
+        }
     }
 
     let mut body = Map::new();
     body.insert("model".to_owned(), Value::from(request.model.as_str()));
     body.insert("stream".to_owned(), Value::Bool(true));
-    body.insert("messages".to_owned(), Value::Array(messages));
+    body.insert("messages".to_owned(), Value::Array(messages.finish()));
     body.insert(
         dialect.token_field().to_owned(),
         Value::from(request.max_output_tokens),
@@ -45,45 +60,266 @@ pub(crate) fn body(target: &ModelTarget, request: &LlmRequest) -> DomainResult<V
             json!({ "include_usage": true }),
         );
     }
+    if !request.tools.is_empty() {
+        body.insert(
+            "tools".to_owned(),
+            Value::Array(request.tools.iter().map(tool_spec).collect()),
+        );
+        if dialect.sends_tool_choice() {
+            body.insert("tool_choice".to_owned(), Value::from("auto"));
+        }
+    }
     if let Some(level) = request.reasoning {
-        body.insert("reasoning_effort".to_owned(), Value::from(effort(level)));
+        if dialect == Dialect::OpenRouter {
+            // OpenRouter's unified parameter; it maps the effort per model.
+            body.insert("reasoning".to_owned(), json!({ "effort": effort(level) }));
+        } else {
+            body.insert("reasoning_effort".to_owned(), Value::from(effort(level)));
+        }
+    }
+    if let Some(audio) = &request.audio_out {
+        body.insert("modalities".to_owned(), json!(["text", "audio"]));
+        body.insert(
+            "audio".to_owned(),
+            json!({ "voice": audio.voice, "format": audio.format }),
+        );
     }
     Ok(Value::Object(body))
 }
 
-/// One message: a user message with one text part sends a string, with several an array of
-/// `text` parts; an assistant message sends its text joined.
-fn message(message: &LlmMessage) -> DomainResult<Value> {
-    let role = match message.role {
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => return Err(unsupported("tool results")),
-    };
-    let mut texts = Vec::with_capacity(message.parts.len());
+/// The message list, merging adjacent user messages.
+#[derive(Default)]
+struct Messages {
+    entries: Vec<Entry>,
+}
+
+enum Entry {
+    /// The content parts of one user message.
+    User(Vec<Value>),
+    Other(Value),
+}
+
+impl Messages {
+    fn push(&mut self, message: Value) {
+        self.entries.push(Entry::Other(message));
+    }
+
+    fn user(&mut self, parts: Vec<Value>) {
+        if parts.is_empty() {
+            return;
+        }
+        if let Some(Entry::User(open)) = self.entries.last_mut() {
+            open.extend(parts);
+        } else {
+            self.entries.push(Entry::User(parts));
+        }
+    }
+
+    /// A user message of one text part sends a string, any other an array of parts.
+    fn finish(self) -> Vec<Value> {
+        self.entries
+            .into_iter()
+            .map(|entry| match entry {
+                Entry::Other(message) => message,
+                Entry::User(mut parts) => {
+                    let content = match parts.as_mut_slice() {
+                        [part] if part["type"] == "text" => part["text"].take(),
+                        _ => Value::Array(parts),
+                    };
+                    json!({ "role": "user", "content": content })
+                }
+            })
+            .collect()
+    }
+}
+
+/// The content parts of a user message.
+fn user_parts(parts: &[LlmPart]) -> DomainResult<Vec<Value>> {
+    parts
+        .iter()
+        .map(|part| match part {
+            LlmPart::Text(text) => Ok(text_part(text)),
+            LlmPart::Image { media_type, data } => Ok(json!({
+                "type": "image_url",
+                "image_url": { "url": data_url(media_type, data) },
+            })),
+            LlmPart::Pdf { name, data } => Ok(json!({
+                "type": "file",
+                "file": { "filename": name, "file_data": data_url("application/pdf", data) },
+            })),
+            LlmPart::Audio { format, data } => {
+                if !matches!(format.as_str(), "wav" | "mp3") {
+                    return Err(unsupported("this audio format"));
+                }
+                Ok(json!({
+                    "type": "input_audio",
+                    "input_audio": { "data": STANDARD.encode(data), "format": format },
+                }))
+            }
+            LlmPart::ToolCall { .. } | LlmPart::ToolResult { .. } => {
+                Err(unsupported("tool parts in a user message"))
+            }
+        })
+        .collect()
+}
+
+/// An assistant message: its text joined by blank lines, its tool calls, and what its replay
+/// state adds.
+fn assistant(dialect: Dialect, message: &LlmMessage) -> DomainResult<Value> {
+    let replay = message
+        .replay
+        .as_ref()
+        .map(ReplayState::read)
+        .unwrap_or_default();
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
     for part in &message.parts {
         match part {
             LlmPart::Text(text) => texts.push(text.as_str()),
-            LlmPart::Image { .. } => return Err(unsupported("images")),
-            LlmPart::Pdf { .. } => return Err(unsupported("PDF files")),
-            LlmPart::Audio { .. } => return Err(unsupported("audio")),
-            LlmPart::ToolCall { .. } => return Err(unsupported("tool calls")),
-            LlmPart::ToolResult { .. } => return Err(unsupported("tool results")),
+            LlmPart::ToolCall {
+                provider_call_id,
+                alias,
+                arguments,
+                ..
+            } => {
+                let mut call = Map::new();
+                if dialect.keeps_tool_call_extra()
+                    && let Some(Value::Object(extra)) = replay.extra.get(provider_call_id)
+                {
+                    for (key, value) in extra {
+                        if !CALL_FIELDS.contains(&key.as_str()) {
+                            call.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                call.insert("id".to_owned(), Value::from(provider_call_id.as_str()));
+                call.insert("type".to_owned(), Value::from("function"));
+                call.insert(
+                    "function".to_owned(),
+                    json!({ "name": alias, "arguments": arguments.to_string() }),
+                );
+                calls.push(Value::Object(call));
+            }
+            LlmPart::Image { .. } | LlmPart::Pdf { .. } | LlmPart::Audio { .. } => {
+                return Err(unsupported("files in an answer"));
+            }
+            LlmPart::ToolResult { .. } => return Err(unsupported("tool results in an answer")),
         }
     }
-    let content = match (message.role, texts.as_slice()) {
-        (Role::User, [text]) => Value::from(*text),
-        (Role::User, _) => Value::Array(
-            texts
-                .iter()
-                .map(|text| json!({ "type": "text", "text": text }))
-                .collect(),
-        ),
-        _ => Value::from(texts.concat()),
+
+    let mut out = Map::new();
+    out.insert("role".to_owned(), Value::from("assistant"));
+    let text = texts.join("\n\n");
+    // Chat Completions wants `content: null` next to tool calls that have no text.
+    let content = if text.is_empty() && !calls.is_empty() {
+        Value::Null
+    } else {
+        Value::from(text)
     };
-    Ok(json!({ "role": role, "content": content }))
+    out.insert("content".to_owned(), content);
+    if !calls.is_empty() {
+        out.insert("tool_calls".to_owned(), Value::Array(calls));
+    }
+    if dialect.replays_reasoning_details() && !replay.details.is_empty() {
+        out.insert(
+            "reasoning_details".to_owned(),
+            Value::Array(replay.details.clone()),
+        );
+    } else if !replay.reasoning.is_empty() {
+        out.insert(
+            replay.key.unwrap_or(REASONING).to_owned(),
+            Value::from(replay.reasoning.as_str()),
+        );
+    }
+    Ok(Value::Object(out))
 }
 
-/// `reasoning_effort`: `none` turns reasoning off.
+/// A tool message: one `role: tool` message per result, then its text parts as user text.
+fn tool(message: &LlmMessage, messages: &mut Messages) -> DomainResult<()> {
+    let mut texts = Vec::new();
+    for part in &message.parts {
+        match part {
+            LlmPart::ToolResult {
+                provider_call_id,
+                content,
+                ..
+            } => messages.push(json!({
+                "role": "tool",
+                "tool_call_id": provider_call_id,
+                "content": result_text(content),
+            })),
+            LlmPart::Text(text) => texts.push(text_part(text)),
+            _ => return Err(unsupported("files in a tool result")),
+        }
+    }
+    messages.user(texts);
+    Ok(())
+}
+
+/// A result as text: Chat Completions tool messages carry text only.
+fn result_text(content: &[ToolContent]) -> String {
+    content
+        .iter()
+        .map(|item| match item {
+            ToolContent::Text(text) => text.clone(),
+            ToolContent::Image { .. } => {
+                "[image omitted: tool results reach this model as text only]".to_owned()
+            }
+            ToolContent::Audio { .. } => {
+                "[audio omitted: tool results reach this model as text only]".to_owned()
+            }
+            ToolContent::Link { uri, name } => match name {
+                Some(name) => format!("{name}: {uri}"),
+                None => uri.clone(),
+            },
+            ToolContent::Binary { .. } => {
+                "[binary content omitted: tool results reach this model as text only]".to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A tool definition. The parameters are always an object schema: Chat Completions servers
+/// reject anything else.
+fn tool_spec(spec: &ToolSpec) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": spec.alias.as_str(),
+            "description": spec.description,
+            "parameters": object_schema(&spec.input_schema),
+            "strict": false,
+        },
+    })
+}
+
+/// `schema` with `type: "object"` and `properties`, as Chat Completions servers require.
+fn object_schema(schema: &Value) -> Value {
+    let mut schema = match schema {
+        Value::Object(schema) => schema.clone(),
+        _ => Map::new(),
+    };
+    schema
+        .entry("type")
+        .or_insert_with(|| Value::from("object"));
+    if schema.get("type") == Some(&Value::from("object")) {
+        schema
+            .entry("properties")
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+    Value::Object(schema)
+}
+
+fn text_part(text: &str) -> Value {
+    json!({ "type": "text", "text": text })
+}
+
+fn data_url(media_type: &str, data: &[u8]) -> String {
+    format!("data:{media_type};base64,{}", STANDARD.encode(data))
+}
+
+/// The effort value: `none` turns reasoning off.
 fn effort(level: ReasoningLevel) -> &'static str {
     match level {
         ReasoningLevel::Off => "none",
@@ -94,177 +330,8 @@ fn effort(level: ReasoningLevel) -> &'static str {
 }
 
 fn unsupported(what: &str) -> DomainError {
-    DomainError::upstream(
-        format!("This connection cannot send {what} yet."),
-        UNSUPPORTED,
-    )
+    DomainError::upstream(format!("This connection cannot send {what}."), UNSUPPORTED)
 }
 
 #[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-    use copilot_core::{
-        AudioOut, BaseUrl, Dialect, NetworkScope, Preset, ProviderId, ProviderKind, ProviderTarget,
-    };
-
-    use super::*;
-
-    fn target(preset: Preset) -> ModelTarget {
-        ModelTarget {
-            provider: ProviderTarget {
-                provider_id: ProviderId::generate(),
-                kind: ProviderKind::OpenAi,
-                preset,
-                base_url: BaseUrl::parse("https://api.example.com/v1", NetworkScope::Public)
-                    .expect("valid"),
-                api_key: None,
-                network: NetworkScope::Public,
-            },
-            remote_id: "model-1".to_owned(),
-            dialect: Dialect::new(ProviderKind::OpenAi, preset),
-        }
-    }
-
-    fn text(role: Role, parts: &[&str]) -> LlmMessage {
-        LlmMessage {
-            role,
-            parts: parts
-                .iter()
-                .map(|text| LlmPart::Text((*text).to_owned()))
-                .collect(),
-            replay: None,
-        }
-    }
-
-    fn request(messages: Vec<LlmMessage>) -> LlmRequest {
-        LlmRequest {
-            model: "model-1".to_owned(),
-            system: "Be brief.".to_owned(),
-            messages,
-            tools: Vec::new(),
-            max_output_tokens: 1_024,
-            reasoning: None,
-            audio_out: None,
-            cache_breakpoints: false,
-        }
-    }
-
-    #[test]
-    fn follows_the_openai_dialect() {
-        let body = body(
-            &target(Preset::OpenAi),
-            &request(vec![text(Role::User, &["Hi"])]),
-        )
-        .expect("text only");
-        assert_eq!(
-            body,
-            json!({
-                "model": "model-1",
-                "stream": true,
-                "messages": [
-                    { "role": "developer", "content": "Be brief." },
-                    { "role": "user", "content": "Hi" },
-                ],
-                "max_completion_tokens": 1_024,
-                "stream_options": { "include_usage": true },
-            })
-        );
-    }
-
-    #[test]
-    fn other_presets_use_system_and_max_tokens() {
-        for preset in [
-            Preset::Custom,
-            Preset::Ollama,
-            Preset::OpenRouter,
-            Preset::Gemini,
-        ] {
-            let body = body(&target(preset), &request(vec![text(Role::User, &["Hi"])]))
-                .expect("text only");
-            assert_eq!(body["messages"][0]["role"], "system", "{preset:?}");
-            assert_eq!(body["max_tokens"], 1_024, "{preset:?}");
-            assert!(body.get("max_completion_tokens").is_none());
-            assert!(body.get("stream_options").is_none());
-        }
-    }
-
-    #[test]
-    fn leaves_out_an_empty_system_text() {
-        let mut request = request(vec![text(Role::User, &["Hi"])]);
-        request.system.clear();
-        let body = body(&target(Preset::Custom), &request).expect("text only");
-        assert_eq!(body["messages"].as_array().expect("messages").len(), 1);
-        assert_eq!(body["messages"][0]["role"], "user");
-    }
-
-    #[test]
-    fn sends_several_user_parts_as_an_array_and_assistant_text_joined() {
-        let body = body(
-            &target(Preset::Custom),
-            &request(vec![
-                text(Role::User, &["<file name=\"a.txt\">a</file>", "Summarize."]),
-                text(Role::Assistant, &["Sure", "."]),
-                text(Role::User, &["Thanks"]),
-            ]),
-        )
-        .expect("text only");
-        assert_eq!(
-            body["messages"][1]["content"],
-            json!([
-                { "type": "text", "text": "<file name=\"a.txt\">a</file>" },
-                { "type": "text", "text": "Summarize." },
-            ])
-        );
-        assert_eq!(
-            body["messages"][2],
-            json!({ "role": "assistant", "content": "Sure." })
-        );
-        assert_eq!(body["messages"][3]["content"], "Thanks");
-    }
-
-    #[test]
-    fn maps_reasoning_levels_to_reasoning_effort() {
-        for (level, effort) in [
-            (ReasoningLevel::Off, "none"),
-            (ReasoningLevel::Low, "low"),
-            (ReasoningLevel::Medium, "medium"),
-            (ReasoningLevel::High, "high"),
-        ] {
-            let mut request = request(vec![text(Role::User, &["Hi"])]);
-            request.reasoning = Some(level);
-            let body = body(&target(Preset::OpenAi), &request).expect("text only");
-            assert_eq!(body["reasoning_effort"], effort);
-        }
-    }
-
-    #[test]
-    fn refuses_what_the_skeleton_cannot_send() {
-        let image = LlmMessage {
-            role: Role::User,
-            parts: vec![LlmPart::Image {
-                media_type: "image/png".to_owned(),
-                data: Bytes::from_static(b"png"),
-            }],
-            replay: None,
-        };
-        let error = body(&target(Preset::OpenAi), &request(vec![image])).expect_err("image");
-        assert_eq!(error.code(), UNSUPPORTED);
-        assert_eq!(error.to_string(), "This connection cannot send images yet.");
-
-        let tool = text(Role::Tool, &["result"]);
-        let error = body(&target(Preset::OpenAi), &request(vec![tool])).expect_err("tool");
-        assert_eq!(error.code(), UNSUPPORTED);
-
-        let mut spoken = request(vec![text(Role::User, &["Hi"])]);
-        spoken.audio_out = Some(AudioOut {
-            voice: "alloy".to_owned(),
-            format: "pcm16".to_owned(),
-        });
-        assert_eq!(
-            body(&target(Preset::OpenAi), &spoken)
-                .expect_err("audio out")
-                .code(),
-            UNSUPPORTED
-        );
-    }
-}
+mod tests;

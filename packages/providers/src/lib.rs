@@ -2,10 +2,12 @@
 //! protocols over `reqwest`, with SSE parsing by `sse-stream`. [`Gateway`] implements the
 //! `LlmGateway` port of `copilot-core`, which roadmap step P1.3 froze.
 //!
-//! Status: the walking skeleton (P1.9) streams text from OpenAI-compatible connections and lists
-//! their models. Phase 2 track B adds tools, reasoning fields, the per-preset dialect details,
-//! file and audio parts, and the Anthropic adapter; until then those requests fail with
-//! `PROVIDER_UNSUPPORTED` before anything is sent.
+//! Status: OpenAI-compatible connections stream text, reasoning (`reasoning`,
+//! `reasoning_content`, OpenRouter `reasoning_details`), tool calls, and spoken replies; send
+//! tools, tool results, images, PDFs, and `input_audio`; replay provider state per dialect; and
+//! list models with what the provider reports. The Anthropic adapter is still to come (Phase 2
+//! track B, part 2); until then Anthropic connections fail with `PROVIDER_UNSUPPORTED` before
+//! anything is sent, as does any part the protocol cannot carry.
 //!
 //! Rules (see "Adapter Rules" in `docs/design/copilot.md`):
 //!
