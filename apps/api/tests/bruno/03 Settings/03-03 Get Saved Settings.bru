@@ -1,0 +1,26 @@
+meta {
+  name: 03-03 Get Saved Settings
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.instructions: eq "Answer briefly."
+}
+
+docs {
+  **Endpoint:** `GET /api/settings`
+
+  **This test verifies:** the saved instructions read back.
+}

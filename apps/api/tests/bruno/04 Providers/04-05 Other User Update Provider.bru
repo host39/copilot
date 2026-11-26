@@ -1,0 +1,33 @@
+meta {
+  name: 04-05 Other User Update Provider
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/api/providers/{{providerId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "name": "Taken",
+    "apiKey": "sk-other"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/providers/{id}` as user B
+
+  **This test verifies:** user B cannot change user A's connection.
+}

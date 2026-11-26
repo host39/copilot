@@ -1,0 +1,31 @@
+meta {
+  name: 04-02 Get Provider
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/providers/{{providerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.id: eq {{providerId}}
+  res.body.data.key: eq set
+  res.body.data.usage.chats: eq 0
+  res.body.data.usage.projects: eq 0
+  res.body.data.usage.schedules: eq 0
+}
+
+docs {
+  **Endpoint:** `GET /api/providers/{id}`
+
+  **This test verifies:** the details carry the usage counts of the delete confirmation and
+  whether the stored key still opens.
+}

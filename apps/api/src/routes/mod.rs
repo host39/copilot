@@ -119,11 +119,16 @@ mod tests {
         assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     }
 
-    /// The operations the walking skeleton (P1.9) wrote; every other one answers `501` until
-    /// its step.
+    /// The operations the walking skeleton (P1.9) and roadmap step P2.A wrote; every other one
+    /// answers `501` until its step.
     const WRITTEN: &[(&str, &str)] = &[
+        ("GET", "/api/settings"),
+        ("PATCH", "/api/settings"),
         ("GET", "/api/providers"),
         ("POST", "/api/providers"),
+        ("GET", "/api/providers/{id}"),
+        ("PATCH", "/api/providers/{id}"),
+        ("DELETE", "/api/providers/{id}"),
         ("POST", "/api/providers/{id}/refresh"),
         ("GET", "/api/providers/{id}/models"),
         ("GET", "/api/models"),

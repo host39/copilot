@@ -1,0 +1,10 @@
+meta {
+  name: 04 Providers
+  seq: 5
+}
+
+docs {
+  `/api/providers` and `/api/models`: a connection is created, read with its usage counts,
+  changed, and deleted by its owner, while user B (`otherToken`) gets `404` for its id on every
+  route. No request reaches a provider: the folder never refreshes.
+}

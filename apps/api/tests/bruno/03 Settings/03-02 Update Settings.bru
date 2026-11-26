@@ -1,0 +1,32 @@
+meta {
+  name: 03-02 Update Settings
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/api/settings
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "instructions": "  Answer briefly.  "
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.instructions: eq "Answer briefly."
+}
+
+docs {
+  **Endpoint:** `PATCH /api/settings`
+
+  **This test verifies:** the instructions are saved without their surrounding whitespace.
+}

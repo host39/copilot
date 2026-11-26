@@ -1,0 +1,26 @@
+meta {
+  name: 04-09 Other User List Providers
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/providers
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: eq 0
+}
+
+docs {
+  **Endpoint:** `GET /api/providers` as user B
+
+  **This test verifies:** user B's list never holds user A's connection.
+}
