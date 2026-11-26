@@ -431,6 +431,8 @@ dependencies = [
  "copilot-core",
  "copilot-logger",
  "rustauth",
+ "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

@@ -15,6 +15,9 @@ copilot-core = { workspace = true }
 copilot-logger = { workspace = true }
 # The `auth` schema migrations only, which run before Copilot's (no HTTP or hashing crates).
 rustauth = { workspace = true, features = ["migrate"] }
+# The versioned JSON records of the `jsonb` columns (`records`).
+serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true, features = [
   "chrono",
   "json",
@@ -28,9 +31,6 @@ sqlx = { workspace = true, features = [
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-# Ids for the schema tests (`tests/schema`).
 uuid = { workspace = true }
 
 [lints]

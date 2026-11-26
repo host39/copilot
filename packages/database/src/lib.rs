@@ -8,6 +8,7 @@ pub mod client;
 pub mod config;
 pub mod env;
 pub mod operations;
+pub mod records;
 pub mod repositories;
 pub mod types;
 
