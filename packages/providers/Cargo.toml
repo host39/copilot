@@ -21,6 +21,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# The tests send through the real hardened clients, as the composition root injects them.
+copilot-security = { workspace = true }
 tokio = { workspace = true }
 wiremock = { workspace = true }
 

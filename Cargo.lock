@@ -487,6 +487,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "copilot-core",
+ "copilot-security",
  "futures-util",
  "reqwest",
  "serde",
