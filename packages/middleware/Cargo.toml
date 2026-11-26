@@ -1,0 +1,26 @@
+[package]
+name = "copilot-middleware"
+description = "HTTP cross-cutting concerns: CORS, auth, error handler, request id, request logger."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+copilot-contracts = { workspace = true }
+copilot-core = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,92 @@
+# AGENTS.md
+
+Monorepo starter: Rust (axum) API + Rsbuild/React web on clean/DDD layering. Health-check endpoints only; the structure is the product.
+
+## Commands
+
+Run these yourself from the repo root to verify work:
+
+| Command | Checks |
+| --- | --- |
+| `make lint` | rustfmt, Clippy (`-D warnings`), Rust import paths, Biome, markdownlint |
+| `make type-check` | `cargo check` (all targets, all features) + `tsc` |
+| `make test` | `cargo test --workspace` + TypeScript tests |
+| `make boundaries` | Crate dependency rules in `boundaries.config.mjs` |
+| `make contracts` | Regenerates `packages/contracts/ts/generated/` after contract changes |
+| `make check` | format + lint + type-check + test + boundaries |
+| `make test-db` | Tests marked `#[ignore]` that need Postgres |
+| `make test-bruno` | Bruno API tests (needs Postgres; starts the API when it is not running) |
+
+Run `make check` before considering work done. If a check needs infrastructure that is not running (Postgres for `test-db` / `test-bruno`), say so instead of skipping it silently.
+
+**User-only** (these start Docker, change the database, or delete data): give the user the command instead of running it.
+
+| Command | Purpose |
+| --- | --- |
+| `make setup` | Install, copy env, start Postgres, migrate, seed |
+| `make dev` / `make dev-api` | Start Postgres and run the apps |
+| `make migrate` | Apply migrations + readonly role grants |
+| `make seed` | Apply local SQL seed (`packages/database/seed/local/`) |
+| `make clean` | Remove build output, dependencies, and the database volume |
+
+After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` if Biome reports deprecated configuration fields. Keep the local `$schema` path (`node_modules/@biomejs/biome/configuration_schema.json`) in `biome.json` files.
+
+## Package Map
+
+| Path | Role |
+| --- | --- |
+| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), OpenAPI routes, `server` and `lambda` binaries |
+| `apps/web` | Rsbuild + React Router SPA |
+| `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
+| `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
+| `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas |
+| `packages/middleware` | CORS, auth guard, error handler, request id, request logger, `JsonBody` extractor |
+| `packages/logger` | tracing subscriber setup |
+
+## Non-Negotiables
+
+- Domain logic lives in `copilot-core`; sqlx adapters in `copilot-database`. No domain logic in repositories or handlers.
+- `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, contracts, database, middleware, logger, or apps (`make boundaries`).
+- Services fail with `DomainError` variants carrying human-readable messages; HTTP mapping lives in `copilot-middleware` (`HttpError`). Infrastructure failures use `DomainError::internal("<dotted.key>", error)`.
+- Wire services in the composition root (`ApiContext::create` / `create_app`), store them in `AppState`, and never construct repositories in handlers.
+- Contracts are for the API and the web app; core does not depend on contracts. After changing a contract struct, run `make contracts` and update the Zod schema in `packages/contracts/ts/index.ts` (it must `satisfies` the generated type).
+- `apps/web` only imports `@copilot/contracts` and talks to the API over HTTP.
+- Log with `tracing` macros and dotted keys; no `println!` / `eprintln!` / `dbg!` (Clippy denies them) and no `console.*` outside `apps/web/src/logging.ts` (Biome denies it).
+- TypeScript uses alias imports only (no `./` or `../`); Rust uses `crate::` paths (no `super::` outside test modules).
+- Committed migrations are immutable and only the developer applies migrations (see `no-migration-edits`).
+- Dev uses `apps/api/.env.local` (API port **3000**); the web dev server runs on **4000**.
+
+## Where to Look
+
+- Architecture and domain workflow: [docs/adr/001-domain-driven-design.md](./docs/adr/001-domain-driven-design.md)
+- Rust stack decisions: [docs/adr/003-rust-backend-stack.md](./docs/adr/003-rust-backend-stack.md)
+- Contracts and TypeScript bindings: [docs/adr/004-contracts-and-type-sharing.md](./docs/adr/004-contracts-and-type-sharing.md)
+- Migrations and seed: [docs/adr/002-database-migrations-and-seed.md](./docs/adr/002-database-migrations-and-seed.md)
+- Environment variables: [docs/env.md](./docs/env.md)
+- Dependency boundaries: [boundaries.config.mjs](./boundaries.config.mjs)
+
+## AI Assistants
+
+| Kind | Location |
+| --- | --- |
+| Rules | `.ai/rules/*.md`, loaded by path through `.claude/rules/*.md` and `.cursor/rules/*.mdc` wrappers |
+| Skills | `.claude/skills/`: `/add-domain`, `/architecture`, `/api-response-patterns`, `/bruno-tests`, `/dotted-error-messages`, `/undraw-illustrations` |
+| Hooks | `.ai/hooks/deny-migration-edits.py`, wired in `.claude/settings.json` and `.cursor/hooks.json` |
+| Permissions | `.claude/settings.json`: checks pre-allowed; infrastructure and database commands ask first |
+
+Use skills when adding domains, API routes, Bruno tests, or reviewing layer boundaries. Dotted keys are for logs and infrastructure errors only; client-facing `DomainError` messages stay human-readable.
+
+## Project Rules
+
+| Rule | Topic |
+| --- | --- |
+| `import-paths` | TypeScript alias imports; no `./` or `../` |
+| `rust-imports` | `crate::` paths; no `super::` outside test modules |
+| `naming` | Short names; no `From` / `Of` connectors in function names |
+| `no-migration-edits` | Committed migrations are read-only; developer applies migrations |
+| `postgres-column-alignment` | Column order in `CREATE TABLE` for row alignment |
+| `structured-logging` | Dotted keys for tracing logs and infrastructure errors |
+| `markdown-title-case` | Title case for Markdown headings |
+| `document-titles` | `Copilot \| <Action>` via `PageTitle` |
+| `shared-css-styles` | Shared Tailwind classes in `main.css`, not TS exports |
+| `parallel-db-reads` | Parallel SELECTs outside transactions, bounded by the pool |

@@ -1,0 +1,8 @@
+---
+description: Column order in CREATE TABLE for row alignment
+globs: packages/database/migrations/**
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/postgres-column-alignment.md

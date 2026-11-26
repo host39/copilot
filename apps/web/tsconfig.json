@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "paths": {
+      "@contracts/*": ["../../packages/contracts/ts/*"],
+      "@web/*": ["./src/*"]
+    },
+    "lib": ["DOM", "ES2022"],
+    "jsx": "react-jsx",
+    "target": "ES2022",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleDetection": "force",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noUncheckedSideEffectImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "include": ["src", "rsbuild.config.ts"]
+}

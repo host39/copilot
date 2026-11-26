@@ -1,0 +1,8 @@
+---
+description: Absolute crate:: paths; no super:: imports outside test modules
+globs: **/*.rs
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/rust-imports.md

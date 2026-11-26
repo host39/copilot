@@ -1,0 +1,15 @@
+.git
+.github
+.claude
+.cursor
+.ai
+.husky
+.vscode
+target
+**/node_modules
+**/dist
+**/.run
+**/.env
+**/.env*.local
+apps/web
+docs

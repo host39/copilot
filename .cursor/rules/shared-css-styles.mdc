@@ -1,0 +1,8 @@
+---
+description: Shared Tailwind classes live in main.css, not TS exports
+globs: apps/web/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/shared-css-styles.md

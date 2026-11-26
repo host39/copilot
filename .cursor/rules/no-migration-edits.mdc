@@ -1,0 +1,8 @@
+---
+description: Committed sqlx migrations are read-only for AI; developer applies migrations
+globs: packages/database/migrations/**, packages/database/src/repositories/**
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/no-migration-edits.md

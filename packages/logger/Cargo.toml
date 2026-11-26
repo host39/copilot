@@ -1,0 +1,17 @@
+[package]
+name = "copilot-logger"
+description = "Installs the tracing subscriber: human-readable lines locally, JSON elsewhere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+copilot-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
+
+[lints]
+workspace = true

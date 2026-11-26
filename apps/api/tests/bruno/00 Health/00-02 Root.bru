@@ -1,0 +1,24 @@
+meta {
+  name: 00-02 Root
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ok
+  res.body.environment: isString
+  res.headers["x-request-id"]: isDefined
+}
+
+docs {
+  **Endpoint:** `GET /`
+
+  **This test verifies:** API info and the generated `X-Request-Id` response header.
+}

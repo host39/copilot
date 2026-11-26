@@ -1,0 +1,8 @@
+---
+description: Parallel SELECTs outside transactions, bounded by the pool
+globs: packages/database/**/*.rs, packages/core/**/services/**/*.rs
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/parallel-db-reads.md

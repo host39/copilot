@@ -1,0 +1,8 @@
+---
+description: Alias-based imports; no relative ./ or ../ paths in TypeScript
+globs: **/*.{ts,tsx,js,mjs}
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/import-paths.md

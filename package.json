@@ -1,0 +1,40 @@
+{
+  "name": "copilot",
+  "version": "0.0.0",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "prepare": "husky",
+    "check": "biome check --changed",
+    "check:all": "biome check .",
+    "check:fix": "biome check --changed --write",
+    "check:fix:all": "biome check --write .",
+    "check:markdown": "markdownlint \"**/*.md\"",
+    "check:markdown:fix": "markdownlint \"**/*.md\" --fix",
+    "type-check": "pnpm -r --parallel type-check",
+    "test": "pnpm -r --if-present test",
+    "test:bruno": "cd apps/api/tests/bruno && bru run --env development",
+    "db:start": "docker compose up -d --wait",
+    "db:stop": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait",
+    "boundaries": "node scripts/boundaries.mjs",
+    "update": "pnpm up -r",
+    "update-latest": "pnpm up -r --latest"
+  },
+  "lint-staged": {
+    "*": "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true",
+    "*.rs": "rustfmt --edition 2024"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@tsconfig/node22": "catalog:",
+    "@types/node": "catalog:",
+    "@usebruno/cli": "^4.4.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.2",
+    "markdownlint-cli": "catalog:",
+    "typescript": "catalog:"
+  }
+}

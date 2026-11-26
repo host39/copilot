@@ -1,0 +1,8 @@
+---
+description: Title case for Markdown headings
+globs: **/*.md
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/markdown-title-case.md

@@ -1,0 +1,32 @@
+{
+  "$schema": "../../node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["../../biome.json"],
+  "root": false,
+  "files": {
+    "includes": ["!dist"]
+  },
+  "overrides": [
+    {
+      "includes": ["src/logging.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ],
+  "css": {
+    "parser": {
+      "cssModules": true,
+      "tailwindDirectives": true
+    },
+    "linter": {
+      "enabled": false
+    },
+    "formatter": {
+      "enabled": false
+    }
+  }
+}

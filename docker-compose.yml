@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:18.1
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: copilot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./scripts/init-local-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d copilot"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

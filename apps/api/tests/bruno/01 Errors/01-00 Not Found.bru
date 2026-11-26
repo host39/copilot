@@ -1,0 +1,28 @@
+meta {
+  name: 01-00 Not Found
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/does-not-exist
+  body: none
+  auth: none
+}
+
+headers {
+  X-Request-Id: bruno-not-found
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: eq Not found
+  res.body.code: eq NOT_FOUND
+  res.body.requestId: eq bruno-not-found
+}
+
+docs {
+  **Endpoint:** any unknown path
+
+  **This test verifies:** unknown routes return the shared error envelope with the request id.
+}

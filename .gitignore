@@ -1,0 +1,36 @@
+# dependencies
+node_modules
+
+# build artifacts
+target
+dist
+out
+
+# env files
+.env
+.env*.local
+
+# Bruno
+.run/
+
+# Claude Code personal overrides
+CLAUDE.local.md
+.claude/settings.local.json
+
+# editor
+.idea
+*.swp
+*.swo
+*~
+
+# os
+.DS_Store
+Thumbs.db
+
+# tmp files
+.#*
+*.tmp
+*.temp
+
+# Python (hook scripts)
+__pycache__/

@@ -1,0 +1,8 @@
+---
+description: Dotted keys for tracing logs and infrastructure errors
+globs: apps/**/*.{rs,ts,tsx}, packages/**/*.{rs,ts}
+alwaysApply: false
+---
+# Cursor Rule
+
+Read @../../.ai/rules/structured-logging.md
