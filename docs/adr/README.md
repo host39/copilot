@@ -14,3 +14,4 @@ To add a new ADR:
 - [002 - Database Migrations and Local Seed](./002-database-migrations-and-seed.md)
 - [003 - Rust Backend Stack](./003-rust-backend-stack.md)
 - [004 - Contracts and Type Sharing](./004-contracts-and-type-sharing.md)
+- [005 - Copilot Architecture](./005-copilot-architecture.md)
