@@ -6,6 +6,7 @@
 
 mod cipher;
 mod clock;
+mod file;
 mod gateway;
 mod project;
 mod provider;

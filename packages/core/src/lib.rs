@@ -14,6 +14,10 @@ pub mod shared;
 pub mod testing;
 
 // Domains
+pub use crate::domains::file::{
+    Capacity, CapacityLevel, FileKind, FileLimits, FileOwner, FileRepository, FileService,
+    FileUpdate, Measured, MediaType, OCTET_STREAM, StoredFile, StoredFileParts, served_type,
+};
 pub use crate::domains::project::{
     NewProject, Project, ProjectParts, ProjectQuery, ProjectRepository, ProjectService,
     ProjectUpdate,

@@ -8,14 +8,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 
+use crate::domains::file::{FileOwner, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Model, Provider, ProviderUsage};
 use crate::domains::settings::UserSettings;
 use crate::ports::clock::Clock;
 use crate::shared::errors::DomainError;
-use crate::shared::ids::{ModelId, ProjectId, ProviderId, UserId};
+use crate::shared::ids::{FileId, ModelId, ProjectId, ProviderId, UserId};
 
 pub struct MemoryStore {
     clock: Arc<dyn Clock>,
@@ -30,6 +32,7 @@ pub(crate) struct Tables {
     pub(crate) providers: BTreeMap<ProviderId, Provider>,
     pub(crate) models: BTreeMap<ModelId, Model>,
     pub(crate) projects: BTreeMap<ProjectId, Project>,
+    pub(crate) files: BTreeMap<FileId, (StoredFile, Bytes)>,
 }
 
 impl MemoryStore {
@@ -73,9 +76,12 @@ impl Tables {
         }
     }
 
-    /// Deletes a project and what cascades with it (its files, later its chats and schedules).
+    /// Deletes a project and what cascades with it: its files (and, once those domains exist,
+    /// its chats and schedules).
     pub(crate) fn delete_project(&mut self, id: ProjectId) {
         self.projects.remove(&id);
+        self.files
+            .retain(|_, (file, _)| file.owner() != FileOwner::Project(id));
     }
 }
 

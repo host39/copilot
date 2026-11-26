@@ -310,9 +310,11 @@ name = "copilot-core"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
  "futures-util",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "url",
