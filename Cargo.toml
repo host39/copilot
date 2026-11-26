@@ -69,6 +69,7 @@ utoipa = "6.0.0"
 utoipa-axum = "0.3.0"
 uuid = { version = "1.29.3", features = ["v4", "v7", "serde"] }
 wiremock = "0.6.5"
+zeroize = { version = "1.9.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
