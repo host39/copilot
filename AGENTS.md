@@ -78,10 +78,10 @@ Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency)
 | Kind | Location |
 | --- | --- |
 | Rules | `.ai/rules/*.md`, loaded by path through `.claude/rules/*.md` and `.cursor/rules/*.mdc` wrappers |
-| Skills | `.claude/skills/`: `/add-domain`, `/architecture`, `/api-response-patterns`, `/bruno-tests`, `/dotted-error-messages`, `/undraw-illustrations` |
+| Skills | `.claude/skills/`: `/add-domain`, `/architecture`, `/api-response-patterns`, `/bruno-tests`, `/dotted-error-messages`, `/undraw-illustrations`, `/agent-workflows` |
 | Permissions | `.claude/settings.json`: checks and `make migrate` pre-allowed; other infrastructure and database commands ask first |
 
-Use skills when adding domains, API routes, Bruno tests, or reviewing layer boundaries. Dotted keys are for logs and infrastructure errors only; client-facing `DomainError` messages stay human-readable.
+Use skills when adding domains, API routes, Bruno tests, or reviewing layer boundaries. Use `/agent-workflows` whenever you plan or run multiple agents, reviews, or CI jobs: it holds the owner's standing limits (2 agents at a time, risk-based reviews, when a smaller model is allowed, smallest CI runners). Dotted keys are for logs and infrastructure errors only; client-facing `DomainError` messages stay human-readable.
 
 ## Project Rules
 

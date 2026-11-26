@@ -1198,7 +1198,7 @@ mod tests {
         async fn reschedule(&self, schedule: &Schedule, read: &Schedule) -> DomainResult<bool> {
             let race = self
                 .races
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |left| left.checked_sub(1),
