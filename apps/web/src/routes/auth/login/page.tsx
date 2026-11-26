@@ -1,7 +1,7 @@
 import { loginRequestSchema } from "@copilot/contracts";
 import { login } from "@web/api/routes/auth";
 import type { FromState } from "@web/auth/guards";
-import { useSetupStatus, useSignIn } from "@web/auth/session";
+import { useSetupStatus, useSignIn, useToken } from "@web/auth/session";
 import { AuthCard } from "@web/components/Auth/AuthCard";
 import { SubmitButton } from "@web/components/Auth/SubmitButton";
 import { FormAlert } from "@web/components/Form/FormAlert";
@@ -20,6 +20,7 @@ const schema = loginRequestSchema.extend({
 
 export default function LoginPage() {
   const setup = useSetupStatus();
+  const signedIn = useToken() !== null;
   const signIn = useSignIn();
   const navigate = useNavigate();
   const from = (useLocation().state as FromState | null)?.from;
@@ -28,7 +29,7 @@ export default function LoginPage() {
     navigate(from ?? path.home, { replace: true });
   });
 
-  if (setup.data?.needsSetup) return <Navigate to={path.setup} replace />;
+  if (setup.data?.needsSetup && !signedIn) return <Navigate to={path.setup} replace />;
 
   return (
     <AuthCard

@@ -1,6 +1,6 @@
 import { registerRequestSchema } from "@copilot/contracts";
 import { register } from "@web/api/routes/auth";
-import { useSetupStatus, useSignIn } from "@web/auth/session";
+import { useSetupStatus, useSignIn, useToken } from "@web/auth/session";
 import { AccountFields, accountInput } from "@web/components/Auth/AccountFields";
 import { AuthCard } from "@web/components/Auth/AuthCard";
 import { SubmitButton } from "@web/components/Auth/SubmitButton";
@@ -21,6 +21,7 @@ const schema = registerRequestSchema.extend({
 /** The first account, which becomes the administrator. It needs the server's setup token. */
 export default function SetupPage() {
   const setup = useSetupStatus();
+  const signedIn = useToken() !== null;
   const signIn = useSignIn();
   const navigate = useNavigate();
   const form = useSubmit(schema, register, (response) => {
@@ -29,7 +30,9 @@ export default function SetupPage() {
   });
 
   if (setup.isPending) return <PageLoading />;
-  if (setup.data && !setup.data.needsSetup) return <Navigate to={path.login} replace />;
+  // Once signed in here the screen is on its way to the first-run setup: no other redirect.
+  if (setup.data && !setup.data.needsSetup && !signedIn)
+    return <Navigate to={path.login} replace />;
 
   return (
     <AuthCard

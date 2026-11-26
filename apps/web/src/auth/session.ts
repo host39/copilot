@@ -69,7 +69,11 @@ export function useSignIn(): (response: SignInResponse) => void {
   return useCallback(
     (response: SignInResponse) => {
       client.setQueryData(meKey(response.token), response.user);
-      client.removeQueries({ queryKey: ["auth", "setup"] });
+      // An account exists now; updating the cache (not refetching) keeps the screen in place.
+      client.setQueryData<SetupStatusResponse>(
+        ["auth", "setup"],
+        (status) => status && { ...status, needsSetup: false }
+      );
       setToken(response.token);
     },
     [client]

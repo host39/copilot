@@ -1,6 +1,6 @@
 import { registerRequestSchema } from "@copilot/contracts";
 import { register } from "@web/api/routes/auth";
-import { useSetupStatus, useSignIn } from "@web/auth/session";
+import { useSetupStatus, useSignIn, useToken } from "@web/auth/session";
 import { AccountFields, accountInput } from "@web/components/Auth/AccountFields";
 import { AuthCard } from "@web/components/Auth/AuthCard";
 import { SubmitButton } from "@web/components/Auth/SubmitButton";
@@ -13,6 +13,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 /** Sign-up, offered only while the server's registration is open. */
 export default function RegisterPage() {
   const setup = useSetupStatus();
+  const signedIn = useToken() !== null;
   const signIn = useSignIn();
   const navigate = useNavigate();
   const form = useSubmit(registerRequestSchema, register, (response) => {
@@ -21,7 +22,7 @@ export default function RegisterPage() {
   });
 
   if (setup.isPending) return <PageLoading />;
-  if (setup.data?.needsSetup) return <Navigate to={path.setup} replace />;
+  if (setup.data?.needsSetup && !signedIn) return <Navigate to={path.setup} replace />;
 
   const signInLink = (
     <>

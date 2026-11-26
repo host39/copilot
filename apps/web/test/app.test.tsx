@@ -7,8 +7,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError, apiRequest, resetTransport, setTransport } from "@web/api/client";
 import { describeError } from "@web/api/errors";
 import { shouldRetry } from "@web/api/query";
-import { GuestOnly, RequireAdmin, RequireSession } from "@web/auth/guards";
-import { clearToken, setToken } from "@web/auth/token";
+import { GuestOnly, guestView, RequireAdmin, RequireSession } from "@web/auth/guards";
+import { useSignIn } from "@web/auth/session";
+import { clearToken, getToken, setToken } from "@web/auth/token";
 import { fieldErrors } from "@web/forms";
 import { installNativeTransport } from "@web/native";
 import path, { link } from "@web/routes/path";
@@ -101,6 +102,38 @@ describe("guards", () => {
     );
     expect(render("/login", routes)).toContain("sign-in form");
     expect(render("/login", routes, user("user"))).not.toContain("sign-in form");
+  });
+
+  test("a sign-in made on a sign-in screen is left to that screen", () => {
+    expect(guestView("signed-in", true)).toBe("redirect");
+    expect(guestView("signed-in", false)).toBe("screen");
+    expect(guestView("loading", true)).toBe("wait");
+    expect(guestView("signed-out", true)).toBe("screen");
+    expect(guestView("unreachable", true)).toBe("screen");
+  });
+
+  test("signing in stores the token and the user, and marks setup done without a refetch", () => {
+    clearToken();
+    const client = new QueryClient();
+    client.setQueryData(["auth", "setup"], { needsSetup: true, registrationOpen: false });
+    let signIn: ReturnType<typeof useSignIn> | undefined;
+    function Probe() {
+      signIn = useSignIn();
+      return null;
+    }
+    renderToString(
+      <QueryClientProvider client={client}>
+        <Probe />
+      </QueryClientProvider>
+    );
+    const admin = user("administrator");
+    signIn?.({ token: "fresh", expiresAt: "2026-12-26T10:00:00Z", user: admin });
+    expect(getToken()).toBe("fresh");
+    expect(client.getQueryData(["auth", "me", "fresh"])).toEqual(admin);
+    expect(client.getQueryData(["auth", "setup"])).toEqual({
+      needsSetup: false,
+      registrationOpen: false,
+    });
   });
 
   test("only administrators see the Users screens", () => {

@@ -1,11 +1,12 @@
 // Route guards for the table in `routes/index.tsx`.
 
-import { isAdmin, useSession } from "@web/auth/session";
+import { isAdmin, type Session, useSession, useToken } from "@web/auth/session";
 import { ErrorView } from "@web/components/Error/ErrorView";
 import { DefaultLoading } from "@web/components/Suspense/DefaultLoading";
 import { isNative, serverUrl } from "@web/config";
 import NotFoundPage from "@web/routes/not-found/page";
 import path from "@web/routes/path";
+import { useEffect, useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 /** Where a guard sent the user from, so signing in can return there. */
@@ -42,15 +43,37 @@ export function RequireSession() {
   }
 }
 
-/** Sign-in, setup, and register: a signed-in user goes on to where they were headed. */
+/**
+ * What a sign-in screen shows: a user who arrived signed in goes on to where they were headed. A
+ * sign-in made on the screen itself is left to the screen, which moves on to its own target (the
+ * first-run setup after registering): React Router applies navigations as transitions, after the
+ * token's synchronous update, so a redirect from the guard would win that race.
+ */
+export function guestView(status: Session["status"], arrivedSignedIn: boolean) {
+  if (status === "signed-in") return arrivedSignedIn ? "redirect" : "screen";
+  return status === "loading" ? "wait" : "screen";
+}
+
+/** Sign-in, setup, and register (see `guestView`). */
 export function GuestOnly() {
   const session = useSession();
   const location = useLocation();
+  const token = useToken();
+  const arrivedSignedIn = useRef(token !== null);
   const from = (location.state as FromState | null)?.from;
 
-  if (session.status === "signed-in") return <Navigate to={from ?? path.home} replace />;
-  if (session.status === "loading") return <DefaultLoading />;
-  return <Outlet />;
+  useEffect(() => {
+    if (token === null) arrivedSignedIn.current = false;
+  }, [token]);
+
+  switch (guestView(session.status, arrivedSignedIn.current)) {
+    case "redirect":
+      return <Navigate to={from ?? path.home} replace />;
+    case "wait":
+      return <DefaultLoading />;
+    default:
+      return <Outlet />;
+  }
 }
 
 /** Administrator screens (Settings, Users); others see "not found", as the server answers. */
