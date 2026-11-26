@@ -7,15 +7,21 @@
 //! | --- | --- |
 //! | `Validation` | 400 |
 //! | `Domain` | 400 |
+//! | `Unauthorized` | 401 (with `WWW-Authenticate: Bearer`) |
 //! | `Forbidden` | 403 |
 //! | `EntityNotFound` | 404 |
 //! | `BusinessRule` | 422 |
+//! | `RateLimited` | 429 (with `Retry-After`, repeated as `details.retryAfterSecs`) |
 //! | `Internal` | 500 (generic message; details only in logs) |
+//! | `Upstream` | 502 |
+//!
+//! The bodies and headers match lib-rustauth's, so clients parse one error shape for both.
 
 use std::error::Error as _;
 
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::header::{RETRY_AFTER, WWW_AUTHENTICATE};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use copilot_contracts::ErrorResponse;
 use copilot_core::DomainError;
@@ -47,7 +53,19 @@ impl IntoResponse for HttpError {
         };
         body.request_id = request_id::current();
         log(&self, status, &body);
-        (status, Json(body)).into_response()
+        let retry_after = match &self {
+            Self::Domain(error) => error.retry_after_secs(),
+            Self::Status { .. } => None,
+        };
+        let mut response = (status, Json(body)).into_response();
+        let headers = response.headers_mut();
+        if let Some(secs) = retry_after {
+            headers.insert(RETRY_AFTER, HeaderValue::from(secs));
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            headers.insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        response
     }
 }
 
@@ -62,19 +80,25 @@ pub async fn not_found() -> Response {
 
 pub fn status_code(error: &DomainError) -> StatusCode {
     match error {
+        DomainError::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
         DomainError::Forbidden { .. } => StatusCode::FORBIDDEN,
         DomainError::EntityNotFound { .. } => StatusCode::NOT_FOUND,
         DomainError::Validation { .. } | DomainError::Domain { .. } => StatusCode::BAD_REQUEST,
         DomainError::BusinessRule { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        DomainError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         DomainError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        DomainError::Upstream { .. } => StatusCode::BAD_GATEWAY,
     }
 }
 
 pub fn format_error(error: &DomainError) -> ErrorResponse {
     match error {
-        DomainError::Forbidden { message, .. } => ErrorResponse {
-            error: message.clone(),
-            ..ErrorResponse::default()
+        DomainError::Forbidden { message, .. }
+        | DomainError::Unauthorized { message, .. }
+        | DomainError::Upstream { message, .. } => ErrorResponse::new(message, error.code()),
+        DomainError::RateLimited { message, .. } => ErrorResponse {
+            details: Some(error.context()),
+            ..ErrorResponse::new(message, error.code())
         },
         DomainError::Validation { message, field, .. } => ErrorResponse {
             error: message.clone(),
@@ -157,7 +181,57 @@ mod tests {
     fn maps_forbidden_to_403() {
         let error = DomainError::forbidden("Not allowed");
         assert_eq!(status_code(&error), StatusCode::FORBIDDEN);
-        assert_eq!(json_body(&error), json!({ "error": "Not allowed" }));
+        assert_eq!(
+            json_body(&error),
+            json!({ "error": "Not allowed", "code": "FORBIDDEN" })
+        );
+    }
+
+    #[test]
+    fn maps_unauthorized_to_401() {
+        let error = DomainError::unauthorized("Sign in to continue.");
+        assert_eq!(status_code(&error), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            json_body(&error),
+            json!({ "error": "Sign in to continue.", "code": "UNAUTHORIZED" })
+        );
+    }
+
+    #[test]
+    fn maps_rate_limited_to_429_with_the_wait() {
+        let error = DomainError::rate_limited("Too many requests. Try again in 7 seconds.", 7);
+        assert_eq!(status_code(&error), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            json_body(&error),
+            json!({
+                "error": "Too many requests. Try again in 7 seconds.",
+                "code": "RATE_LIMITED",
+                "details": { "retryAfterSecs": 7 }
+            })
+        );
+    }
+
+    #[test]
+    fn maps_upstream_to_502() {
+        let error = DomainError::upstream("The provider did not answer.", "PROVIDER_UNREACHABLE");
+        assert_eq!(status_code(&error), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            json_body(&error),
+            json!({ "error": "The provider did not answer.", "code": "PROVIDER_UNREACHABLE" })
+        );
+    }
+
+    #[test]
+    fn sends_the_identity_headers() {
+        let response =
+            HttpError::from(DomainError::unauthorized("Sign in to continue.")).into_response();
+        assert_eq!(response.headers()[WWW_AUTHENTICATE], "Bearer");
+        assert!(response.headers().get(RETRY_AFTER).is_none());
+
+        let response = HttpError::from(DomainError::rate_limited("Slow down.", 30)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[RETRY_AFTER], "30");
+        assert!(response.headers().get(WWW_AUTHENTICATE).is_none());
     }
 
     #[test]
