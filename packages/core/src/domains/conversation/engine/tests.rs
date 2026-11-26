@@ -37,6 +37,7 @@ use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::MCP_RESULT_MAX_BYTES;
 use crate::shared::ids::{ModelId, ProjectId, ToolServerId, UserId};
 use crate::shared::net::PrivateNetwork;
+use crate::shared::reasoning::ReasoningLevel;
 use crate::testing::{
     CallStep, FakeCipher, FixedClock, MemoryStore, RecordedCall, RecordingSink, ScriptedGateway,
     ScriptedToolHost, Step, actor, call_reply, remote_model, remote_tool, text_reply,
@@ -1662,4 +1663,108 @@ async fn prepare_and_run_read_at_most_four_rows_at_once() {
     );
     let sent = format!("{:?}", f.gateway.requests()[0].messages);
     assert!(sent.contains("Note 7") && sent.contains("Draft 3"));
+}
+
+#[tokio::test]
+async fn a_decision_after_a_model_switch_sends_no_reasoning_the_model_cannot_take() {
+    let f = fixture();
+    let server = f.server(ApprovalMode::Ask).await;
+    let thinking = ReportedCapabilities {
+        reasoning: Some(true),
+        ..ReportedCapabilities::default()
+    };
+    let chat = f
+        .chat_with(
+            thinking,
+            NewChat {
+                reasoning: Some(ReasoningLevel::High),
+                tool_overrides: vec![ServerOverride {
+                    server_id: server.id(),
+                    enabled: true,
+                }],
+                ..NewChat::default()
+            },
+        )
+        .await;
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.send(&chat, "Search").await;
+    let paused = f.history(&chat).await[1].clone();
+    assert_eq!(
+        f.gateway.requests()[0].reasoning,
+        Some(ReasoningLevel::High)
+    );
+
+    let plain = f.model(ReportedCapabilities::default()).await;
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                model_id: Some(Some(plain)),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    let turn = f.prepare(&chat, approve(&paused)).await;
+    assert!(!turn.capabilities.reasoning);
+    f.host.push_text("found");
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+    assert_eq!(
+        f.gateway.requests()[1].reasoning,
+        None,
+        "the snapshot's level only goes to a model with reasoning"
+    );
+}
+
+#[tokio::test]
+async fn a_server_added_again_under_the_same_slug_gets_a_new_snapshot() {
+    let f = fixture();
+    let (chat, old) = f.tool_chat(ApprovalMode::Ask).await;
+    f.gateway.push_events(text_reply("Hello"));
+    let turn = f.prepare(&chat, send("Hi")).await;
+    let first = turn.context.hash;
+    f.run(turn).await;
+
+    f.tools.delete(&f.caller, old.id()).await.unwrap();
+    let new = f.server(ApprovalMode::Ask).await;
+    assert_eq!(new.slug(), old.slug());
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                tool_overrides: Some(vec![ServerOverride {
+                    server_id: new.id(),
+                    enabled: true,
+                }]),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    let turn = f.prepare(&chat, send("Search")).await;
+    assert_ne!(turn.context.hash, first);
+    f.run(turn).await;
+    let paused = f.history(&chat).await[3].clone();
+    assert_eq!(paused.calls().next().unwrap().server_id, Some(new.id()));
+
+    let turn = f.prepare(&chat, approve(&paused)).await;
+    let ids: Vec<_> = turn
+        .context
+        .tools
+        .iter()
+        .filter_map(|tool| tool.server_id)
+        .collect();
+    assert_eq!(ids, [new.id(), new.id()]);
+    f.host.push_text("found");
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+    let calls = f.host.calls();
+    assert_eq!(calls.len(), 1, "the working server runs the approved call");
+    assert_eq!(calls[0].server_id, new.id());
 }

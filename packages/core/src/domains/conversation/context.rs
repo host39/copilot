@@ -77,7 +77,11 @@ pub fn build(inputs: &ContextInputs<'_>) -> DomainResult<TurnContext> {
     let sends_tools = !tools.is_empty();
     let schedules = tools.iter().any(|tool| tool.server_id.is_none());
     let system = system(inputs, schedules);
-    let reasoning = reasoning(inputs, sends_tools);
+    let reasoning = reasoning(
+        inputs,
+        sends_tools,
+        inputs.chat.effective_reasoning(inputs.project),
+    );
     let files: Vec<SnapshotFile> = inputs
         .project_files
         .iter()
@@ -132,8 +136,8 @@ pub fn build(inputs: &ContextInputs<'_>) -> DomainResult<TurnContext> {
 }
 
 /// A request of the turn that `context` snapshots: its system text, tools (when the model still
-/// has tool use), preamble, window start, and reasoning level, with the history lowered and the
-/// replay rules applied. Fails when the request cannot fit the provider's size limit.
+/// has tool use), preamble, window start, and reasoning level (when the model still has
+/// reasoning), with the history lowered and the replay rules applied. Fails when the request cannot fit the provider's size limit.
 pub fn request(inputs: &ContextInputs<'_>, context: &TurnContext) -> DomainResult<Draft> {
     let sends_tools = inputs.capabilities.tools && !context.tools.is_empty();
     let start = context
@@ -182,7 +186,9 @@ pub fn request(inputs: &ContextInputs<'_>, context: &TurnContext) -> DomainResul
         messages,
         tools,
         max_output_tokens: output_limit(inputs.model),
-        reasoning: context.reasoning,
+        // The snapshot's level, checked against the current model: a decision continues on the
+        // chat's model, which may have changed since the pause.
+        reasoning: reasoning(inputs, sends_tools, context.reasoning),
         audio_out,
         cache_breakpoints: dialect == Dialect::Anthropic,
     })
@@ -288,14 +294,20 @@ fn snapshot_tools(inputs: &ContextInputs<'_>) -> Vec<SnapshotTool> {
 
 /// The reasoning level of the turn: `None` for models without reasoning; `off` on presets that
 /// need it whenever tools are sent; else the chat's, or its project's, or the model default.
-fn reasoning(inputs: &ContextInputs<'_>, sends_tools: bool) -> Option<ReasoningLevel> {
+/// `level` as the current model may take it: none without the `reasoning` capability, and `off`
+/// where the preset needs it whenever tools are sent.
+fn reasoning(
+    inputs: &ContextInputs<'_>,
+    sends_tools: bool,
+    level: Option<ReasoningLevel>,
+) -> Option<ReasoningLevel> {
     if !inputs.capabilities.reasoning {
         return None;
     }
     if sends_tools && reasoning_off_with_tools(inputs.provider.preset(), inputs.model.remote_id()) {
         return Some(ReasoningLevel::Off);
     }
-    inputs.chat.effective_reasoning(inputs.project)
+    level
 }
 
 fn dialect(inputs: &ContextInputs<'_>) -> Dialect {

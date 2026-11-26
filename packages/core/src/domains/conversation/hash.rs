@@ -10,7 +10,9 @@ use crate::domains::provider::Capabilities;
 use crate::shared::ids::MessageId;
 use crate::shared::reasoning::ReasoningLevel;
 
-/// Everything a turn's requests depend on besides the messages themselves.
+/// Everything a turn's requests depend on besides the messages themselves. Each tool counts with
+/// its server id and original name, so a server deleted and added again under the same slug never
+/// shares a hash (and a stored snapshot) with the old one.
 pub(crate) struct HashInput<'a> {
     pub(crate) system: &'a str,
     pub(crate) tools: &'a [SnapshotTool],
@@ -28,7 +30,15 @@ pub(crate) fn hash(input: &HashInput<'_>) -> ContextHash {
         "tools": input
             .tools
             .iter()
-            .map(|tool| json!([tool.alias.as_str(), tool.description, tool.input_schema]))
+            .map(|tool| {
+                json!([
+                    tool.alias.as_str(),
+                    tool.server_id.map(|id| id.to_string()),
+                    tool.name,
+                    tool.description,
+                    tool.input_schema,
+                ])
+            })
             .collect::<Vec<_>>(),
         "files": input
             .files
@@ -91,7 +101,7 @@ mod tests {
     use super::*;
     use crate::domains::chat::Rendering;
     use crate::domains::tool::ToolAlias;
-    use crate::shared::ids::FileId;
+    use crate::shared::ids::{FileId, ToolServerId};
 
     fn tool(schema: Value) -> SnapshotTool {
         SnapshotTool {
@@ -148,7 +158,17 @@ mod tests {
             vision: true,
             ..Capabilities::default()
         };
+        let other_server = [SnapshotTool {
+            server_id: Some(ToolServerId::generate()),
+            ..first[0].clone()
+        }];
+        let other_name = [SnapshotTool {
+            name: "list".to_owned(),
+            ..first[0].clone()
+        }];
         let changes = [
+            input(&other_server, &files, &capabilities),
+            input(&other_name, &files, &capabilities),
             HashInput {
                 system: "Be long.",
                 ..input(&first, &files, &capabilities)
