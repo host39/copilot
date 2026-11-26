@@ -50,7 +50,7 @@ With sqlx there is no schema DSL to generate migrations from: the migration SQL 
 
 ### Neutral
 
-- Tests that need Postgres are marked `#[ignore]` and run with `make test-db`.
+- Tests that need Postgres are marked `#[ignore]` and run with `make test-db`. They use `#[sqlx::test(migrations = false)]` and call `copilot_database::operations::migrate::run` first; `make test-db` points `DATABASE_URL` at the `postgres` maintenance database, so each test gets a throwaway database.
 
 ## Alternatives Considered
 

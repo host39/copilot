@@ -73,11 +73,11 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use copilot_core::RejectingTokenVerifier;
-    use copilot_database::{DbConfig, Env};
+    use copilot_database::DbPool;
     use copilot_middleware::REQUEST_ID_HEADER;
     use serde_json::json;
 
-    use crate::helpers::testing::{app, app_with, config, get, send};
+    use crate::helpers::testing::{app, app_on, app_with, config, get, send};
 
     #[tokio::test]
     async fn root_returns_api_info() {
@@ -106,15 +106,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[sqlx::test(migrations = false)]
     #[ignore = "requires Postgres: run `make test-db`"]
-    async fn ready_returns_healthy_when_the_database_is_reachable() {
-        let db = DbConfig::parse(&Env::load()).expect("DB_* variables are set");
-        let response = get(
-            app_with(crate::AppConfig { db, ..config() }, None),
-            "/health/ready",
-        )
-        .await;
+    async fn ready_returns_healthy_when_the_database_is_reachable(pool: DbPool) {
+        let response = get(app_on(pool), "/health/ready").await;
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(
             response.body,

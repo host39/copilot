@@ -7,7 +7,7 @@
 | API | `apps/api/.env.sample` | `apps/api/.env.local` |
 | Web | `apps/web/.env.example` | `apps/web/.env.local` |
 
-Rust binaries read the process environment only. `scripts/with-env.sh <file> <command>` loads a file first (variables already set in the shell win), which is how `make dev`, `make migrate`, `make seed`, and `make test-db` use `apps/api/.env.local`.
+Rust binaries read the process environment only. `scripts/with-env.sh <file> <command>` loads a file first (variables already set in the shell win), which is how `make dev`, `make migrate`, `make seed`, and `make test-db` use `apps/api/.env.local`. `make test-db` also sets `DATABASE_URL` to the `postgres` maintenance database on the `DB_*` server, where `#[sqlx::test]` creates one throwaway database per test.
 
 Invalid or missing variables stop the process with a dotted key and every offending name, for example `api.config.env.invalid ENVIRONMENT, PORT`.
 

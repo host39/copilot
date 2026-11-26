@@ -14,7 +14,7 @@ Run these yourself from the repo root to verify work:
 | `make boundaries` | Crate dependency rules in `boundaries.config.mjs` |
 | `make contracts` | Regenerates `packages/contracts/ts/generated/` after contract changes |
 | `make check` | format + lint + type-check + test + boundaries |
-| `make test-db` | Tests marked `#[ignore]` that need Postgres |
+| `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs Postgres; starts the API when it is not running) |
 | `make migrations name=<name>` | Scaffolds a migration pair |
 | `make migrate` | Applies migrations + readonly role grants (needs Postgres) |

@@ -37,6 +37,8 @@ utoipa-axum = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+# `#[sqlx::test]` database tests (`make test-db`).
+sqlx = { workspace = true, features = ["macros", "migrate", "postgres", "runtime-tokio"] }
 tower = { workspace = true, features = ["util"] }
 
 [lints]

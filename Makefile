@@ -20,7 +20,7 @@ help:
 	@echo "  migrations     Scaffold a migration pair (name=<name>)"
 	@echo "  contracts      Regenerate TypeScript bindings from Rust contracts"
 	@echo "  test           Rust and TypeScript unit tests"
-	@echo "  test-db        Tests that need Postgres (ignored by default)"
+	@echo "  test-db        Tests that need Postgres (ignored by default; one throwaway database each)"
 	@echo "  test-bruno     Bruno API tests (starts the API if needed)"
 	@echo "  lint           rustfmt, clippy, Rust import paths, Biome, markdownlint"
 	@echo "  format         Auto-fix formatting and lint"
@@ -82,7 +82,7 @@ test:
 	pnpm test
 
 test-db:
-	$(WITH_API_ENV) cargo test --workspace -- --ignored
+	$(WITH_API_ENV) bash scripts/test-db.sh
 
 test-bruno:
 	bash scripts/test-bruno.sh

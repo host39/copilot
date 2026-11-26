@@ -250,6 +250,7 @@ dependencies = [
  "http-body-util",
  "lambda_http",
  "serde_json",
+ "sqlx",
  "tokio",
  "tower",
  "tracing",

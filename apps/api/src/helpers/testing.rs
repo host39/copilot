@@ -7,7 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use copilot_core::{Environment, LogLevel, TokenVerifier};
-use copilot_database::{DbConfig, DbSsl};
+use copilot_database::{DbConfig, DbPool, DbSsl};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -48,6 +48,15 @@ pub fn app_with(config: AppConfig, token_verifier: Option<Arc<dyn TokenVerifier>
 
 pub fn app() -> Router {
     app_with(config(), None)
+}
+
+/// The app on an existing pool, for `#[sqlx::test]` tests that get a throwaway database.
+pub fn app_on(db: DbPool) -> Router {
+    create_app(AppDependencies {
+        config: config(),
+        db,
+        token_verifier: None,
+    })
 }
 
 pub struct TestResponse {
