@@ -245,8 +245,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -307,10 +309,12 @@ dependencies = [
 name = "copilot-contracts"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "ts-rs",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -2564,9 +2568,11 @@ version = "12.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
+ "chrono",
  "serde_json",
  "thiserror",
  "ts-rs-macros",
+ "uuid",
 ]
 
 [[package]]
@@ -2703,6 +2709,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+ "uuid",
 ]
 
 [[package]]

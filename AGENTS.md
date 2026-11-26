@@ -40,7 +40,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `apps/web` | Rsbuild + React Router SPA |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
-| `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas |
+| `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas; re-exports `@rustauth/contracts` for the web app; Rstest tests in `test/` |
 | `packages/middleware` | CORS, error handler, request id, request logger, `JsonBody` extractor (authentication comes from lib-rustauth's guard) |
 | `packages/logger` | tracing subscriber setup |
 | `packages/providers` | `copilot-providers`: OpenAI-compatible and Anthropic wire protocols over reqwest (implements `LlmGateway`) |

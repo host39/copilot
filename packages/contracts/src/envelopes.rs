@@ -21,6 +21,17 @@ pub struct DetailsResponse<T> {
     pub data: T,
 }
 
+/// `200` cursor page, for lists that grow while the user reads them (chats): `{ items, next }`.
+/// Pass `next` back as the `cursor` query parameter for the following page; it is `null` on the
+/// last page. The cursor is opaque to clients.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PageResponse<T> {
+    pub items: Vec<T>,
+    pub next: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,6 +45,18 @@ mod tests {
         assert_eq!(
             serde_json::to_value(body).expect("serializes"),
             serde_json::json!({ "items": ["a"], "total": 1 })
+        );
+    }
+
+    #[test]
+    fn serializes_the_last_page_with_null_next() {
+        let body = PageResponse {
+            items: vec!["a"],
+            next: None,
+        };
+        assert_eq!(
+            serde_json::to_value(body).expect("serializes"),
+            serde_json::json!({ "items": ["a"], "next": null })
         );
     }
 
