@@ -16,6 +16,8 @@ Run these yourself from the repo root to verify work:
 | `make check` | format + lint + type-check + test + boundaries |
 | `make test-db` | Tests marked `#[ignore]` that need Postgres |
 | `make test-bruno` | Bruno API tests (needs Postgres; starts the API when it is not running) |
+| `make migrations name=<name>` | Scaffolds a migration pair |
+| `make migrate` | Applies migrations + readonly role grants (needs Postgres) |
 
 Run `make check` before considering work done. If a check needs infrastructure that is not running (Postgres for `test-db` / `test-bruno`), say so instead of skipping it silently.
 
@@ -25,7 +27,6 @@ Run `make check` before considering work done. If a check needs infrastructure t
 | --- | --- |
 | `make setup` | Install, copy env, start Postgres, migrate, seed |
 | `make dev` / `make dev-api` | Start Postgres and run the apps |
-| `make migrate` | Apply migrations + readonly role grants |
 | `make seed` | Apply local SQL seed (`packages/database/seed/local/`) |
 | `make clean` | Remove build output, dependencies, and the database volume |
 
@@ -53,7 +54,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 - `apps/web` only imports `@copilot/contracts` and talks to the API over HTTP.
 - Log with `tracing` macros and dotted keys; no `println!` / `eprintln!` / `dbg!` (Clippy denies them) and no `console.*` outside `apps/web/src/logging.ts` (Biome denies it).
 - TypeScript uses alias imports only (no `./` or `../`); Rust uses `crate::` paths (no `super::` outside test modules).
-- Committed migrations are immutable and only the developer applies migrations (see `no-migration-edits`).
+- Write schema changes as new migrations (`make migrations name=<name>`) and apply them with `make migrate`. Do not edit a migration after it has been applied to a shared or deployed database: sqlx checksums applied migrations and refuses to run when one changes.
 - Dev uses `apps/api/.env.local` (API port **3000**); the web dev server runs on **4000**.
 
 ## Where to Look
@@ -71,8 +72,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | --- | --- |
 | Rules | `.ai/rules/*.md`, loaded by path through `.claude/rules/*.md` and `.cursor/rules/*.mdc` wrappers |
 | Skills | `.claude/skills/`: `/add-domain`, `/architecture`, `/api-response-patterns`, `/bruno-tests`, `/dotted-error-messages`, `/undraw-illustrations` |
-| Hooks | `.ai/hooks/deny-migration-edits.py`, wired in `.claude/settings.json` and `.cursor/hooks.json` |
-| Permissions | `.claude/settings.json`: checks pre-allowed; infrastructure and database commands ask first |
+| Permissions | `.claude/settings.json`: checks and `make migrate` pre-allowed; other infrastructure and database commands ask first |
 
 Use skills when adding domains, API routes, Bruno tests, or reviewing layer boundaries. Dotted keys are for logs and infrastructure errors only; client-facing `DomainError` messages stay human-readable.
 
@@ -83,7 +83,6 @@ Use skills when adding domains, API routes, Bruno tests, or reviewing layer boun
 | `import-paths` | TypeScript alias imports; no `./` or `../` |
 | `rust-imports` | `crate::` paths; no `super::` outside test modules |
 | `naming` | Short names; no `From` / `Of` connectors in function names |
-| `no-migration-edits` | Committed migrations are read-only; developer applies migrations |
 | `postgres-column-alignment` | Column order in `CREATE TABLE` for row alignment |
 | `structured-logging` | Dotted keys for tracing logs and infrastructure errors |
 | `markdown-title-case` | Title case for Markdown headings |

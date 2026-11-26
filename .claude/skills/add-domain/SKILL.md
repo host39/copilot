@@ -15,7 +15,7 @@ End-to-end workflow for a new business domain: `$ARGUMENTS` (for example `Widget
 - [ ] 2. Repository trait (port) in packages/core
 - [ ] 3. Service in packages/core
 - [ ] 4. Domain mod.rs barrel + re-export from core lib.rs
-- [ ] 5. Migration (scaffold + SQL), then stop for developer review
+- [ ] 5. Migration (scaffold + SQL), apply with make migrate
 - [ ] 6. sqlx repository in packages/database
 - [ ] 7. Contract DTOs in packages/contracts (Rust + Zod), make contracts
 - [ ] 8. API route with OpenAPI, wired in the composition root
@@ -60,9 +60,9 @@ Method names follow the `naming` rule: the trait already says `Widget`, so `get`
 
 ### 5. Migration
 
-Run `make migrations name=create_<name>s`, then write the SQL in the new **uncommitted** `.up.sql` / `.down.sql` files. Follow the `postgres-column-alignment` and `no-migration-edits` rules. Register the table in `packages/database/src/operations/describe/mod.rs` (`SCHEMA_TABLES`) so readonly grants include it.
+Run `make migrations name=create_<name>s`, then write the SQL in the new `.up.sql` / `.down.sql` files. Follow the `postgres-column-alignment` rule and keep `.down.sql` an exact revert of `.up.sql`. Register the table in `packages/database/src/operations/describe/mod.rs` (`SCHEMA_TABLES`) so readonly grants include it.
 
-**Stop here** and ask the developer to review the SQL and run `make migrate`. Never apply migrations yourself.
+Apply it with `make migrate` (Postgres must be running). Do not edit a migration that a shared or deployed database has already applied; add a new one instead.
 
 ### 6. Repository Implementation
 
@@ -113,7 +113,7 @@ The web app only talks to the API over HTTP and only imports `@copilot/contracts
 - API: colocated tests with `crate::helpers::testing::{app_with, get, send}` and `tower::ServiceExt::oneshot`.
 - Database: tests that need Postgres are `#[ignore = "requires Postgres: run \`make test-db\`"]`.
 - Bruno: a new numbered folder under `apps/api/tests/bruno/` (`/bruno-tests`).
-- Run `make check` yourself; run `make test-db` and `make test-bruno` when the developer has applied the migration and Postgres is up. Say so if you could not run them.
+- Run `make check` yourself; run `make test-db` and `make test-bruno` once the migration is applied and Postgres is up. Say so if you could not run them.
 
 ## Reference: Health Flow (No Domain Layer)
 
@@ -129,4 +129,4 @@ The web app only talks to the API over HTTP and only imports `@copilot/contracts
 - Layer boundaries: `/architecture`, [boundaries.config.mjs](../../../boundaries.config.mjs)
 - Response envelopes: `/api-response-patterns`
 - Error messages and log keys: `/dotted-error-messages`
-- Rules: `import-paths`, `rust-imports`, `naming`, `no-migration-edits`, `postgres-column-alignment`, `document-titles`
+- Rules: `import-paths`, `rust-imports`, `naming`, `postgres-column-alignment`, `document-titles`

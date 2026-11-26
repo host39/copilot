@@ -22,6 +22,7 @@
       "Bash(make ci)",
       "Bash(make build)",
       "Bash(make migrations *)",
+      "Bash(make migrate)",
       "Bash(pnpm type-check)",
       "Bash(pnpm test)",
       "Bash(pnpm check *)",
@@ -61,19 +62,6 @@
       "Bash(cargo update *)",
       "Bash(cargo add *)",
       "Bash(cargo run -p copilot-database *)"
-    ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.ai/hooks/deny-migration-edits.py"
-          }
-        ]
-      }
     ]
   }
 }

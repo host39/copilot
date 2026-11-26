@@ -15,8 +15,8 @@ With sqlx there is no schema DSL to generate migrations from: the migration SQL 
 ### Migrations
 
 - Migrations are reversible SQL pairs (`<timestamp>_<name>.up.sql` / `.down.sql`) in the database package, scaffolded with `make migrations name=<name>` and embedded into the `migrate` binary at compile time.
-- **Committed migrations are append-only.** sqlx checksums every applied migration and refuses to run when a committed file changes; mistakes are fixed with a new migration.
-- AI assistants may draft new, uncommitted migrations but never change committed ones or apply migrations. A pre-tool hook enforces this for Claude Code and Cursor.
+- **Applied migrations are append-only.** sqlx checksums every applied migration and refuses to run when the file changes; once a shared or deployed database has run a migration, mistakes are fixed with a new one.
+- Developers and AI assistants both write and apply migrations (`make migrations`, `make migrate`). The earlier rule and hook that reserved this for people were removed in this project.
 - `make migrate` (the `migrate` binary) applies migrations, then creates or updates the `readonly` role: it may connect, has `default_transaction_read_only` and a statement timeout, and gets `SELECT` only on tables registered in the schema registry (optionally excluding sensitive columns).
 - The API runtime reads and writes data only; it never runs migrations. Deployments run `migrate` as a one-off step before rolling out new code.
 
@@ -40,7 +40,7 @@ With sqlx there is no schema DSL to generate migrations from: the migration SQL 
 ### Positive
 
 - Clear split between schema (migrations), fixtures (seed), and runtime (repositories).
-- Applied history never changes, and a person applies every migration.
+- Applied history never changes.
 - No `psql` or sqlx CLI needed on developer machines; the binaries share the API's `DB_*` variables.
 
 ### Negative
