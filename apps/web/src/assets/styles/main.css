@@ -72,6 +72,11 @@ body {
     @apply font-medium text-accent underline-offset-4 hover:underline;
   }
 
+  /* A radio or checkbox drawn as a selectable card; the input itself is visually hidden. */
+  .choice-card {
+    @apply flex cursor-pointer rounded-lg border border-line px-3 py-2 text-sm has-checked:border-accent has-checked:bg-accent/10 has-focus-visible:outline-2 has-focus-visible:outline-accent;
+  }
+
   .nav-item {
     @apply flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-raised aria-[current=page]:bg-raised aria-[current=page]:font-medium;
   }

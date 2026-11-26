@@ -37,6 +37,38 @@ export function parseServerUrl(value: string): string | undefined {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
+/** Whether `host` (a URL's hostname) is loopback or a private address: RFC 1918, CGNAT, unique local IPv6. */
+export function isPrivateHost(host: string): boolean {
+  const name = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (name === "localhost" || name.endsWith(".localhost")) return true;
+  if (name === "::1") return true;
+  if (/^f[cd][0-9a-f]{0,2}:/.test(name)) return true;
+  const octets = name.split(".").map(Number);
+  if (
+    octets.length !== 4 ||
+    !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)
+  ) {
+    return false;
+  }
+  const [a = 0, b = 0] = octets;
+  return (
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+/**
+ * Whether connecting to `url` needs the user's explicit consent first: plain `http` sends the
+ * password and token unencrypted, which is only acceptable on loopback and private addresses.
+ */
+export function needsHttpWarning(url: string): boolean {
+  const parsed = new URL(url);
+  return parsed.protocol === "http:" && !isPrivateHost(parsed.hostname);
+}
+
 /** The server URL fixed at build time: "" (same origin) unless `PUBLIC_API_URL` is set. */
 export function buildServerUrl(): string {
   const value = import.meta.env.PUBLIC_API_URL?.trim();

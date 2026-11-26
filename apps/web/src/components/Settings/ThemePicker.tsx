@@ -16,10 +16,7 @@ export function ThemePicker() {
         {THEMES.map((option) => {
           const Icon = ICONS[option];
           return (
-            <label
-              key={option}
-              className="flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border border-line px-3 py-3 text-sm has-checked:border-accent has-checked:bg-accent/10 has-focus-visible:outline-2 has-focus-visible:outline-accent"
-            >
+            <label key={option} className="choice-card flex-col items-center gap-1.5 py-3">
               <input
                 type="radio"
                 name="theme"
