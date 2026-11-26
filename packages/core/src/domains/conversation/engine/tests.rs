@@ -914,6 +914,51 @@ async fn provider_errors_are_saved_as_errors() {
 }
 
 #[tokio::test]
+async fn an_answer_past_its_output_limit_ends_as_a_bad_response() {
+    let f = fixture();
+    let chat = f.chat(NewChat::default()).await;
+    // The model reports no limits, so the answer may stream 8192 tokens of 16 bytes.
+    let chunk = "x".repeat(65_536);
+    f.gateway.push_events(vec![
+        LlmEvent::TextDelta {
+            index: 0,
+            text: chunk.clone(),
+        },
+        LlmEvent::TextDelta {
+            index: 0,
+            text: chunk.clone(),
+        },
+        LlmEvent::TextDelta {
+            index: 0,
+            text: "y".to_owned(),
+        },
+        LlmEvent::Finished {
+            reason: FinishReason::Stop,
+            refusal: None,
+        },
+    ]);
+    let (outcome, events) = f.send(&chat, "Hi").await;
+    assert_eq!(outcome.status, MessageStatus::Error);
+    assert_eq!(outcome.error.as_deref(), Some(answer::TOO_LONG));
+    assert!(events.contains(&TurnEvent::Error {
+        message: answer::TOO_LONG.to_owned(),
+        code: "PROVIDER_BAD_RESPONSE".to_owned(),
+    }));
+    let deltas = events
+        .iter()
+        .filter(|event| matches!(event, TurnEvent::TextDelta { .. }))
+        .count();
+    assert_eq!(deltas, 2, "the refused delta is never sent");
+    let saved = f.history(&chat).await[1].clone();
+    assert_eq!(saved.status(), MessageStatus::Error);
+    assert_eq!(
+        saved.parts(),
+        [text_part(&chunk.repeat(2))],
+        "what streamed is kept"
+    );
+}
+
+#[tokio::test]
 async fn a_refusal_is_saved_and_left_out_of_later_requests() {
     let f = fixture();
     let chat = f.chat(NewChat::default()).await;

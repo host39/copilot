@@ -31,7 +31,7 @@ use crate::domains::chat::{
 };
 use crate::domains::conversation::approval::{Policy, TOOL_OFF, Verdict, decide};
 use crate::domains::conversation::context::{self, ContextInputs};
-use crate::domains::conversation::engine::answer::Answer;
+use crate::domains::conversation::engine::answer::{Answer, Ceiling};
 use crate::domains::conversation::engine::calls::{builtin, convert, failed, human};
 use crate::domains::conversation::events::TurnEvent;
 use crate::domains::file::{FileService, StoredFile};
@@ -228,7 +228,9 @@ impl Run<'_> {
             });
         }
         let started = self.start().await?;
-        self.stopped(&started, Answer::new(started.id())).await
+        let ceiling = Ceiling::new(context::output_limit(&self.turn.model));
+        self.stopped(&started, Answer::new(started.id(), ceiling))
+            .await
     }
 
     /// Resolves the round a decision left open (the paused message, now `complete`): approved
@@ -302,7 +304,8 @@ impl Run<'_> {
     async fn round(&mut self, round: u32) -> DomainResult<Next> {
         let turn = self.turn;
         let started = self.start().await?;
-        let mut answer = Answer::new(started.id());
+        let ceiling = Ceiling::new(context::output_limit(&turn.model));
+        let mut answer = Answer::new(started.id(), ceiling);
         let request = match self.request().await {
             Ok(request) => request,
             Err(error) => return self.failed(&started, answer, &error).await,
@@ -326,7 +329,10 @@ impl Run<'_> {
                 Some(Some(Err(error))) => return self.failed(&started, answer, &error).await,
                 Some(Some(Ok(event))) => {
                     let finished = matches!(event, LlmEvent::Finished { .. });
-                    answer.apply(event, &turn.context, self.sink);
+                    if let Err(error) = answer.apply(event, &turn.context, self.sink) {
+                        drop(stream);
+                        return self.failed(&started, answer, &error).await;
+                    }
                     if finished {
                         break;
                     }

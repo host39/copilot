@@ -1,4 +1,5 @@
-//! An assistant message while it streams: provider events become stored parts and live events.
+//! An assistant message while it streams: provider events become stored parts and live events,
+//! within the answer's [`Ceiling`].
 
 use std::collections::HashMap;
 
@@ -9,12 +10,47 @@ use crate::domains::conversation::events::TurnEvent;
 use crate::domains::tool::ToolAlias;
 use crate::ports::llm_gateway::{LlmEvent, PartKind, Refusal};
 use crate::ports::turn_sink::TurnSink;
-use crate::shared::constants::AUDIO_OUT_FORMAT;
+use crate::shared::constants::{
+    ANSWER_MAX_BYTES, ANSWER_MAX_PARTS, ANSWER_SLACK, AUDIO_OUT_FORMAT, AUDIO_OUT_MAX_BYTES,
+    BYTES_PER_TOKEN,
+};
+use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{CallId, MessageId};
+
+/// The error of an answer past its [`Ceiling`].
+pub const TOO_LONG: &str = "The provider sent more than this model's output limit allows.";
+/// Its code: the provider did not keep to the request.
+pub const TOO_LONG_CODE: &str = "PROVIDER_BAD_RESPONSE";
+
+/// What one answer may stream before the engine ends it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Ceiling {
+    /// Text, reasoning, transcripts, and tool call names, ids, and arguments, in bytes.
+    pub(crate) bytes: u64,
+    /// Spoken reply audio, in bytes.
+    pub(crate) audio: u64,
+    pub(crate) parts: usize,
+}
+
+impl Ceiling {
+    /// The ceiling of an answer requested with `output_tokens` as its token limit.
+    pub(crate) fn new(output_tokens: u32) -> Self {
+        Self {
+            bytes: (u64::from(output_tokens) * BYTES_PER_TOKEN * ANSWER_SLACK)
+                .min(ANSWER_MAX_BYTES),
+            audio: AUDIO_OUT_MAX_BYTES,
+            parts: ANSWER_MAX_PARTS,
+        }
+    }
+}
 
 /// The parts, state, usage, and finish of one streamed answer.
 pub(crate) struct Answer {
     message_id: MessageId,
+    ceiling: Ceiling,
+    /// What counts toward `ceiling.bytes` and `ceiling.audio` so far.
+    streamed: u64,
+    audio: u64,
     pub(crate) parts: Vec<Part>,
     /// The adapter's part index to the stored part's position.
     slots: HashMap<u32, usize>,
@@ -26,9 +62,12 @@ pub(crate) struct Answer {
 }
 
 impl Answer {
-    pub(crate) fn new(message_id: MessageId) -> Self {
+    pub(crate) fn new(message_id: MessageId, ceiling: Ceiling) -> Self {
         Self {
             message_id,
+            ceiling,
+            streamed: 0,
+            audio: 0,
             parts: Vec::new(),
             slots: HashMap::new(),
             transcript: None,
@@ -39,8 +78,15 @@ impl Answer {
     }
 
     /// Applies one provider event and reports what changed. A tool call takes its server and
-    /// original name from the snapshot (an unknown alias keeps the alias as its name).
-    pub(crate) fn apply(&mut self, event: LlmEvent, context: &TurnContext, sink: &dyn TurnSink) {
+    /// original name from the snapshot (an unknown alias keeps the alias as its name). An event
+    /// that would take the answer past its ceiling changes nothing and fails with [`TOO_LONG`].
+    pub(crate) fn apply(
+        &mut self,
+        event: LlmEvent,
+        context: &TurnContext,
+        sink: &dyn TurnSink,
+    ) -> DomainResult<()> {
+        self.admit(&event)?;
         match event {
             LlmEvent::PartStarted { index, kind } => match kind {
                 PartKind::Text | PartKind::Reasoning => {
@@ -138,6 +184,62 @@ impl Answer {
                 self.finish = Some((reason, refusal));
             }
         }
+        Ok(())
+    }
+
+    /// Counts `event` toward the ceiling, or refuses it when it would go past.
+    fn admit(&mut self, event: &LlmEvent) -> DomainResult<()> {
+        let (bytes, audio, opens) = match event {
+            LlmEvent::PartStarted { index, kind } => match kind {
+                PartKind::Text | PartKind::Reasoning => (0, 0, self.opens(*index, *kind)),
+                PartKind::ToolCall | PartKind::Audio => (0, 0, false),
+            },
+            LlmEvent::TextDelta { index, text } => {
+                (size(text), 0, self.opens(*index, PartKind::Text))
+            }
+            LlmEvent::ReasoningDelta { index, text } => {
+                (size(text), 0, self.opens(*index, PartKind::Reasoning))
+            }
+            LlmEvent::AudioDelta { data, transcript } => {
+                let text = transcript.as_deref().unwrap_or_default();
+                let opens = self.transcript.is_none() && !text.is_empty();
+                (size(text), data.len() as u64, opens)
+            }
+            LlmEvent::ToolCallStarted {
+                provider_call_id,
+                alias,
+                ..
+            } => (
+                provider_call_id.as_deref().map_or(0, size) + size(alias),
+                0,
+                true,
+            ),
+            LlmEvent::ToolCallArgs { json, .. } => (size(json), 0, false),
+            LlmEvent::ToolCallEnded { .. }
+            | LlmEvent::ReplayState(_)
+            | LlmEvent::Usage(_)
+            | LlmEvent::Finished { .. } => (0, 0, false),
+        };
+        let streamed = self.streamed + bytes;
+        let audio = self.audio + audio;
+        let parts = self.parts.len() + usize::from(opens);
+        if streamed > self.ceiling.bytes || audio > self.ceiling.audio || parts > self.ceiling.parts
+        {
+            return Err(DomainError::new(TOO_LONG, TOO_LONG_CODE));
+        }
+        self.streamed = streamed;
+        self.audio = audio;
+        Ok(())
+    }
+
+    /// Whether adapter index `index` as `kind` starts a new part (see [`Answer::slot`]).
+    fn opens(&self, index: u32, kind: PartKind) -> bool {
+        self.slots.get(&index).is_none_or(|&position| {
+            !matches!(
+                (&self.parts[position], kind),
+                (Part::Text { .. }, PartKind::Text) | (Part::Reasoning { .. }, PartKind::Reasoning)
+            )
+        })
     }
 
     /// The tool calls, in call order.
@@ -153,14 +255,10 @@ impl Answer {
 
     /// The part for adapter index `index`, started as `kind` when it is new or of another kind.
     fn slot(&mut self, index: u32, kind: PartKind, sink: &dyn TurnSink) -> usize {
-        if let Some(&position) = self.slots.get(&index) {
-            let same = matches!(
-                (&self.parts[position], kind),
-                (Part::Text { .. }, PartKind::Text) | (Part::Reasoning { .. }, PartKind::Reasoning)
-            );
-            if same {
-                return position;
-            }
+        if !self.opens(index, kind)
+            && let Some(&position) = self.slots.get(&index)
+        {
+            return position;
         }
         let part = match kind {
             PartKind::Reasoning => Part::Reasoning {
@@ -217,6 +315,169 @@ fn end(call: &mut ToolCallPart) {
     };
 }
 
+fn size(text: &str) -> u64 {
+    text.len() as u64
+}
+
 fn wire(position: usize) -> u32 {
     u32::try_from(position).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::domains::chat::ContextHash;
+    use crate::testing::RecordingSink;
+
+    fn context() -> TurnContext {
+        TurnContext {
+            hash: ContextHash::new([0; 32]),
+            system: String::new(),
+            tools: Vec::new(),
+            files: Vec::new(),
+            window_start_id: None,
+            reasoning: None,
+        }
+    }
+
+    fn small(bytes: u64, audio: u64, parts: usize) -> Answer {
+        Answer::new(
+            MessageId::generate(),
+            Ceiling {
+                bytes,
+                audio,
+                parts,
+            },
+        )
+    }
+
+    fn text(index: u32, text: &str) -> LlmEvent {
+        LlmEvent::TextDelta {
+            index,
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_ceiling_follows_the_output_limit_up_to_the_maximum() {
+        let ceiling = Ceiling::new(8_192);
+        assert_eq!(ceiling.bytes, 8_192 * BYTES_PER_TOKEN * ANSWER_SLACK);
+        assert_eq!(ceiling.audio, AUDIO_OUT_MAX_BYTES);
+        assert_eq!(ceiling.parts, ANSWER_MAX_PARTS);
+        assert_eq!(Ceiling::new(u32::MAX).bytes, ANSWER_MAX_BYTES);
+    }
+
+    #[test]
+    fn text_past_the_ceiling_is_refused_and_changes_nothing() {
+        let sink = RecordingSink::new();
+        let mut answer = small(10, 0, 4);
+        answer.apply(text(0, "Hello"), &context(), &sink).unwrap();
+        answer.apply(text(0, " you"), &context(), &sink).unwrap();
+        let error = answer.apply(text(0, "!!"), &context(), &sink).unwrap_err();
+        assert_eq!(error.to_string(), TOO_LONG);
+        assert_eq!(error.code(), TOO_LONG_CODE);
+        assert_eq!(
+            answer.parts,
+            [Part::Text {
+                text: "Hello you".to_owned()
+            }]
+        );
+        assert_eq!(sink.events().len(), 3, "part.started and two deltas");
+        answer.apply(text(0, "!"), &context(), &sink).unwrap();
+    }
+
+    #[test]
+    fn reasoning_and_tool_calls_count_toward_the_ceiling() {
+        let sink = RecordingSink::new();
+        let mut answer = small(12, 0, 4);
+        answer
+            .apply(
+                LlmEvent::ReasoningDelta {
+                    index: 0,
+                    text: "think".to_owned(),
+                },
+                &context(),
+                &sink,
+            )
+            .unwrap();
+        answer
+            .apply(
+                LlmEvent::ToolCallStarted {
+                    index: 1,
+                    provider_call_id: Some("c1".to_owned()),
+                    alias: "a__b".to_owned(),
+                },
+                &context(),
+                &sink,
+            )
+            .unwrap();
+        let refused = answer.apply(
+            LlmEvent::ToolCallArgs {
+                index: 1,
+                json: "{}".to_owned(),
+            },
+            &context(),
+            &sink,
+        );
+        assert!(refused.is_err(), "5 + 6 + 2 bytes is past 12");
+    }
+
+    #[test]
+    fn parts_past_the_ceiling_are_refused() {
+        let sink = RecordingSink::new();
+        let mut answer = small(100, 0, 2);
+        answer.apply(text(0, "a"), &context(), &sink).unwrap();
+        answer.apply(text(0, "b"), &context(), &sink).unwrap();
+        answer
+            .apply(
+                LlmEvent::PartStarted {
+                    index: 1,
+                    kind: PartKind::Reasoning,
+                },
+                &context(),
+                &sink,
+            )
+            .unwrap();
+        let refused = answer.apply(
+            LlmEvent::PartStarted {
+                index: 2,
+                kind: PartKind::Text,
+            },
+            &context(),
+            &sink,
+        );
+        assert!(refused.is_err());
+        let refused = answer.apply(
+            LlmEvent::ToolCallStarted {
+                index: 3,
+                provider_call_id: None,
+                alias: "x".to_owned(),
+            },
+            &context(),
+            &sink,
+        );
+        assert!(refused.is_err());
+        answer.apply(text(1, "c"), &context(), &sink).unwrap_err();
+        assert_eq!(answer.parts.len(), 2);
+    }
+
+    #[test]
+    fn spoken_audio_has_its_own_ceiling() {
+        let sink = RecordingSink::new();
+        let mut answer = small(100, 4, 4);
+        let audio = |data: &'static [u8]| LlmEvent::AudioDelta {
+            data: Bytes::from_static(data),
+            transcript: Some("hi".to_owned()),
+        };
+        answer.apply(audio(b"abcd"), &context(), &sink).unwrap();
+        answer.apply(audio(b"e"), &context(), &sink).unwrap_err();
+        assert_eq!(
+            answer.parts,
+            [Part::Text {
+                text: "hi".to_owned()
+            }]
+        );
+    }
 }

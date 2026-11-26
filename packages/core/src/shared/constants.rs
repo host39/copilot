@@ -29,6 +29,16 @@ pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 pub const TOOL_CACHE_MAX_TTL_SECS: u64 = 86_400;
 /// Provider rounds per turn before tool calls get `cancelled` results.
 pub const MAX_TOOL_ROUNDS: u32 = 8;
+/// An answer may stream text, reasoning, and tool calls of up to its output token limit times
+/// `BYTES_PER_TOKEN` times this, and never more than `ANSWER_MAX_BYTES`; past that the engine
+/// ends it as a bad response and keeps what streamed. Providers that ignore the limit cannot
+/// grow one answer without bound.
+pub const ANSWER_SLACK: u64 = 4;
+pub const ANSWER_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
+/// Parts (text, reasoning, tool calls) of one answer.
+pub const ANSWER_MAX_PARTS: usize = 256;
+/// Spoken reply audio of one answer: five minutes of 24 kHz PCM16 (**verify** in P2.B).
+pub const AUDIO_OUT_MAX_BYTES: u64 = 300 * 24_000 * 2;
 /// Output token limit of a model without one: this, or a quarter of its context window when
 /// that is smaller.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;

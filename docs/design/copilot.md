@@ -554,7 +554,7 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 `RunRegistry` (in `apps/api/src/helpers/runs.rs`, an `AppState` field) maps `chat_id` to a run: owner, run id, a `tokio::sync::broadcast` sender, a replay buffer of the current run's events, and a child `CancellationToken` of the root shutdown token.
 
 - `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`). User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
-- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values, then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. A stream that falls behind the broadcast channel catches up from the buffer, so it never skips or repeats an event. A run whose task panics still ends its streams with an `error` event and `done`.
+- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
 - Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. Handlers load the chat with the caller's `UserId` before touching the registry.
 - The registry also fans out the per-user `GET /api/events` stream.
 
@@ -936,7 +936,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 4. Always blocked, whatever the setting: `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200`, `0.0.0.0/8`, `::`, multicast, and broadcast.
 5. `ALLOW_PRIVATE_NETWORK` (`none`, `admins`, `all`; default `admins`): which connections may reach private and loopback ranges (RFC 1918, loopback, unique local `fc00::/7`, CGNAT `100.64.0.0/10`). With `admins`, only connections owned by an admin (rustauth role `administrator`) may.
 6. `redirect::Policy::none()` and `.no_proxy()` on every client; `connect_timeout` `OUTBOUND_CONNECT_TIMEOUT_SECS` (10); `read_timeout` as an idle timeout (`PROVIDER_IDLE_TIMEOUT_SECS`, 300, for providers; `MCP_IDLE_TIMEOUT_SECS`, 60, for MCP); no total timeout (it would cut streams); `pool_max_idle_per_host(0)` for MCP. The MCP set is `clients(Purpose::Tools)`, the provider set `clients(Purpose::Providers)`.
-7. Response caps: `MCP_RESPONSE_MAX_BYTES` (4 MiB) passed to rmcp's `max_json_response_size` and `max_sse_event_size`; the same per-event cap on provider SSE through core's `cap_events` (bytes between blank lines, LF, CRLF, or CR line endings), and whole provider bodies through `read_capped` (a larger `Content-Length` fails before reading).
+7. Response caps: `MCP_RESPONSE_MAX_BYTES` (4 MiB) passed to rmcp's `max_json_response_size` and `max_sse_event_size`; the same per-event cap on provider SSE through core's `cap_events` (bytes between blank lines, LF, CRLF, or CR line endings), and whole provider bodies through `read_capped` (a larger `Content-Length` fails before reading). A streamed answer as a whole is capped by the engine (see [Limits](#limits)), whatever the provider does with the token limit it was sent.
 8. Failed fetches never echo response bodies or resolved IPs to the client; they are logged as `provider.http.blocked`, `mcp.http.blocked` (when `Blocked::find` finds a refusal in the error's source chain), or `*.http.failed`.
 
 ### Tools and Prompt Injection
@@ -975,6 +975,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 | Scheduled runs at once | `MAX_SCHEDULED_RUNS` (2) |
 | Enabled schedules per user, shortest gap | 20; 15 minutes |
 | Storage per user | `MAX_STORAGE_MB_PER_USER` (1024) |
+| One streamed answer | Text, reasoning, transcripts, and tool call names, ids, and arguments up to the request's output token limit times `BYTES_PER_TOKEN` times `ANSWER_SLACK` (4), at most `ANSWER_MAX_BYTES` (8 MiB); `ANSWER_MAX_PARTS` (256) parts; `AUDIO_OUT_MAX_BYTES` of spoken audio. The event that would pass a cap is dropped, and the answer ends as an `error` ("The provider sent more than this model's output limit allows.", `PROVIDER_BAD_RESPONSE`) with what streamed kept |
 
 ### CORS
 
@@ -1026,6 +1027,8 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
 | `MAX_TOOL_ROUNDS` | 8 |
+| `ANSWER_SLACK`, `ANSWER_MAX_BYTES`, `ANSWER_MAX_PARTS` | 4, 8 MiB, 256 |
+| `AUDIO_OUT_MAX_BYTES` | 14400000 (five minutes of 24 kHz PCM16; **verify** in P2.B) |
 | `DEFAULT_MAX_OUTPUT_TOKENS` | 8192 (or a quarter of a known context window, when smaller) |
 | `REQUEST_MAX_BYTES`, `GEMINI_REQUEST_MAX_BYTES`, `REQUEST_MAX_PDF_PAGES` | 32 MiB, 20 MiB, 100 (**verify** per provider in P2.B) |
 | `AUDIO_OUT_VOICE`, `AUDIO_OUT_FORMAT` | `alloy`, `pcm16` |

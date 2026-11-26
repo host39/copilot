@@ -5,7 +5,10 @@
 //! has at most `MAX_ACTIVE_RUNS_PER_USER` runs. The slot is released when the run sends `done`
 //! (so a client that saw `done` can send again at once) or when the reservation is dropped (a
 //! failed `prepare`, or the engine's task ending). Its [`RunSink`] numbers every event
-//! (`seq`), keeps it in the run's replay buffer, and broadcasts it to the attached streams.
+//! (`seq`), keeps it in the run's replay buffer, and broadcasts it to the attached streams. The
+//! buffer merges consecutive deltas of one part into one event that carries the last merged
+//! `seq`, so it grows with the answer's text (which the engine caps), not with the number of
+//! deltas; a replay may skip `seq` values but never text.
 //! Disconnecting a stream never cancels the run; the root shutdown token does (each run gets a
 //! child token).
 //!
@@ -151,9 +154,95 @@ pub struct RunSink {
 
 #[derive(Debug)]
 struct Buffer {
-    events: Vec<ChatStreamEvent>,
+    events: Vec<Buffered>,
+    /// The last `seq` given out.
+    seq: u64,
+    /// The bytes of text each part has streamed so far.
+    lengths: HashMap<PartKey, usize>,
     sender: broadcast::Sender<ChatStreamEvent>,
     done: bool,
+}
+
+/// A part of a message: its id and its index.
+type PartKey = (Uuid, u32);
+
+/// A buffered event. A text or reasoning delta may hold several merged deltas of its part; it
+/// starts `start` bytes into the part's text.
+#[derive(Clone, Debug)]
+struct Buffered {
+    event: ChatStreamEvent,
+    start: usize,
+}
+
+impl Buffer {
+    /// Keeps `event`, merging a delta into the previous one when both belong to the same part.
+    fn keep(&mut self, event: &ChatStreamEvent) {
+        let Some((key, text)) = delta(event) else {
+            self.events.push(Buffered {
+                event: event.clone(),
+                start: 0,
+            });
+            return;
+        };
+        let length = self.lengths.entry(key).or_default();
+        let start = *length;
+        *length += text.len();
+        if let Some(last) = self.events.last_mut()
+            && same_part(&last.event, event)
+        {
+            merge(&mut last.event, text, event.seq());
+            return;
+        }
+        self.events.push(Buffered {
+            event: event.clone(),
+            start,
+        });
+    }
+}
+
+/// The part and text of a text or reasoning delta.
+fn delta(event: &ChatStreamEvent) -> Option<(PartKey, &str)> {
+    match event {
+        ChatStreamEvent::TextDelta {
+            message_id,
+            index,
+            text,
+            ..
+        }
+        | ChatStreamEvent::ReasoningDelta {
+            message_id,
+            index,
+            text,
+            ..
+        } => Some(((*message_id, *index), text)),
+        _ => None,
+    }
+}
+
+/// Whether both are deltas of the same kind and part.
+fn same_part(first: &ChatStreamEvent, second: &ChatStreamEvent) -> bool {
+    std::mem::discriminant(first) == std::mem::discriminant(second)
+        && matches!((delta(first), delta(second)), (Some((a, _)), Some((b, _))) if a == b)
+}
+
+/// Appends `more` to a delta and gives it `seq`.
+fn merge(event: &mut ChatStreamEvent, more: &str, next: u64) {
+    if let ChatStreamEvent::TextDelta { seq, text, .. }
+    | ChatStreamEvent::ReasoningDelta { seq, text, .. } = event
+    {
+        text.push_str(more);
+        *seq = next;
+    }
+}
+
+/// A delta without its first `skip` bytes.
+fn cut(mut event: ChatStreamEvent, skip: usize) -> ChatStreamEvent {
+    if let ChatStreamEvent::TextDelta { text, .. } | ChatStreamEvent::ReasoningDelta { text, .. } =
+        &mut event
+    {
+        *text = text.get(skip..).unwrap_or_default().to_owned();
+    }
+    event
 }
 
 impl RunSink {
@@ -162,6 +251,8 @@ impl RunSink {
         Self {
             state: Arc::new(Mutex::new(Buffer {
                 events: Vec::new(),
+                seq: 0,
+                lengths: HashMap::new(),
                 sender,
                 done: false,
             })),
@@ -183,8 +274,15 @@ impl RunSink {
             receiver: buffer.sender.subscribe(),
             state: Arc::clone(&self.state),
             last: 0,
+            delivered: HashMap::new(),
             finished: false,
         }
+    }
+
+    /// Events in the replay buffer.
+    #[cfg(test)]
+    fn buffered(&self) -> usize {
+        lock(&self.state).events.len()
     }
 }
 
@@ -194,13 +292,13 @@ impl TurnSink for RunSink {
         if buffer.done {
             return;
         }
-        let seq = buffer.events.len() as u64 + 1;
-        let event = serializer::event(event, seq);
+        buffer.seq += 1;
+        let event = serializer::event(event, buffer.seq);
         buffer.done = matches!(event, ChatStreamEvent::Done { .. });
         if buffer.done {
             self.registry.release(self.chat, self.run);
         }
-        buffer.events.push(event.clone());
+        buffer.keep(&event);
         // No receiver is not an error: the stream may have disconnected.
         let _ = buffer.sender.send(event);
     }
@@ -213,10 +311,13 @@ fn lock(state: &Mutex<Buffer>) -> MutexGuard<'_, Buffer> {
 /// One attached stream: the replay buffer first, then live events, without gaps or repeats.
 #[derive(Debug)]
 pub struct Subscription {
-    replay: VecDeque<ChatStreamEvent>,
+    replay: VecDeque<Buffered>,
     receiver: broadcast::Receiver<ChatStreamEvent>,
     state: Arc<Mutex<Buffer>>,
+    /// The `seq` of the last event sent.
     last: u64,
+    /// The bytes of each part's text sent so far, to cut a merged delta it has partly sent.
+    delivered: HashMap<PartKey, usize>,
     finished: bool,
 }
 
@@ -234,8 +335,11 @@ impl Subscription {
             return None;
         }
         let event = loop {
-            if let Some(event) = self.replay.pop_front() {
-                if event.seq() > self.last {
+            if let Some(entry) = self.replay.pop_front() {
+                if entry.event.seq() <= self.last {
+                    continue;
+                }
+                if let Some(event) = self.rest(entry) {
                     break event;
                 }
                 continue;
@@ -249,7 +353,7 @@ impl Subscription {
                     self.replay = lock(&self.state)
                         .events
                         .iter()
-                        .filter(|event| event.seq() > last)
+                        .filter(|entry| entry.event.seq() > last)
                         .cloned()
                         .collect();
                 }
@@ -257,8 +361,27 @@ impl Subscription {
             }
         };
         self.last = event.seq();
+        if let Some((key, text)) = delta(&event) {
+            *self.delivered.entry(key).or_default() += text.len();
+        }
         self.finished = matches!(event, ChatStreamEvent::Done { .. });
         Some(event)
+    }
+
+    /// The part of a buffered event this stream has not sent yet (`None` when it sent it all).
+    fn rest(&self, entry: Buffered) -> Option<ChatStreamEvent> {
+        let Some((key, text)) = delta(&entry.event) else {
+            return Some(entry.event);
+        };
+        let sent = self.delivered.get(&key).copied().unwrap_or_default();
+        let skip = sent.saturating_sub(entry.start);
+        if skip == 0 {
+            Some(entry.event)
+        } else if skip < text.len() {
+            Some(cut(entry.event, skip))
+        } else {
+            None
+        }
     }
 }
 
@@ -365,6 +488,103 @@ mod tests {
             .collect()
             .await;
         assert_eq!(late, vec![1, 2, 3], "a late stream replays the run");
+    }
+
+    fn delta(message_id: MessageId, index: u32, text: &str) -> TurnEvent {
+        TurnEvent::TextDelta {
+            message_id,
+            index,
+            text: text.to_owned(),
+        }
+    }
+
+    /// The text of a stream's text deltas, and their `seq` values.
+    fn texts(events: &[ChatStreamEvent]) -> (String, Vec<u64>) {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ChatStreamEvent::TextDelta { seq, text, .. } => Some((text.as_str(), *seq)),
+                _ => None,
+            })
+            .fold(
+                (String::new(), Vec::new()),
+                |(mut all, mut seqs), (text, seq)| {
+                    all.push_str(text);
+                    seqs.push(seq);
+                    (all, seqs)
+                },
+            )
+    }
+
+    #[tokio::test]
+    async fn the_buffer_merges_the_deltas_of_a_part() {
+        let registry = registry(3);
+        let reservation = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+        let sink = reservation.sink();
+        let message = MessageId::generate();
+        let mut expected = String::new();
+        for index in 0..1_000 {
+            let piece = (index % 10).to_string();
+            expected.push_str(&piece);
+            sink.emit(delta(message, 0, &piece));
+        }
+        sink.emit(TurnEvent::ReasoningDelta {
+            message_id: message,
+            index: 1,
+            text: "why".to_owned(),
+        });
+        sink.emit(delta(message, 0, "!"));
+        sink.emit(TurnEvent::Done);
+        assert_eq!(sink.buffered(), 4, "text, reasoning, text, done");
+
+        let late: Vec<ChatStreamEvent> = reservation.subscribe().into_stream().collect().await;
+        let (text, seqs) = texts(&late);
+        assert_eq!(text, format!("{expected}!"));
+        assert_eq!(
+            seqs,
+            vec![1_000, 1_002],
+            "each merged delta keeps its last seq"
+        );
+        assert_eq!(late.last().map(ChatStreamEvent::seq), Some(1_003));
+    }
+
+    #[tokio::test]
+    async fn a_stream_behind_a_merged_delta_gets_only_the_text_it_missed() {
+        let registry = registry(3);
+        let reservation = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+        let sink = reservation.sink();
+        let message = MessageId::generate();
+        let mut stream = Box::pin(reservation.subscribe().into_stream());
+        let mut expected = String::new();
+        for index in 0..10 {
+            let piece = format!("{index},");
+            expected.push_str(&piece);
+            sink.emit(delta(message, 0, &piece));
+        }
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(stream.next().await.expect("a live event"));
+        }
+        for index in 10..(CHANNEL_CAPACITY * 2) {
+            let piece = format!("{index},");
+            expected.push_str(&piece);
+            sink.emit(delta(message, 0, &piece));
+        }
+        sink.emit(TurnEvent::Done);
+        seen.extend(stream.collect::<Vec<_>>().await);
+
+        let (text, seqs) = texts(&seen);
+        assert_eq!(text, expected, "no text repeated or skipped");
+        assert_eq!(seqs[..5], [1, 2, 3, 4, 5]);
+        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            seen.last().map(ChatStreamEvent::seq),
+            Some(CHANNEL_CAPACITY as u64 * 2 + 1)
+        );
     }
 
     #[tokio::test]
