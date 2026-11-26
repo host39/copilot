@@ -6,6 +6,7 @@
 //! [`fixtures::migrated`], which runs the same `migrate::run` as a real install.
 
 mod constraints;
+mod deletes;
 mod fixtures;
 mod migrations;
 mod readonly;
