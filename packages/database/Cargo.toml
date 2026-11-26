@@ -8,6 +8,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
 copilot-core = { workspace = true }
 copilot-logger = { workspace = true }
 # The `auth` schema migrations only, which run before Copilot's (no HTTP or hashing crates).

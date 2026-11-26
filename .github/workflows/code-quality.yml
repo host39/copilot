@@ -103,7 +103,7 @@ jobs:
           cargo fetch --locked
 
       - name: Prepare API env for CI
-        run: cp apps/api/.env.sample apps/api/.env.local
+        run: bash scripts/env-local.sh
 
       - name: Check Rust formatting
         run: cargo fmt --all --check

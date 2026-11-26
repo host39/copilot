@@ -11,7 +11,7 @@ help:
 	@echo "  install        Install pnpm and Cargo dependencies"
 	@echo "  update         Update dependencies within semver ranges"
 	@echo "  update-latest  Update pnpm dependencies to latest stable (Cargo: see README)"
-	@echo "  setup          Install, copy env, start Postgres, migrate, seed"
+	@echo "  setup          Install, create env files (with a SECRET_KEY), start Postgres, migrate, seed"
 	@echo "  dev            Start Postgres, then run API (:3000) + web (:4000)"
 	@echo "  dev-api        Start Postgres, then run the API only"
 	@echo "  dev-web        Run the web dev server only"
@@ -44,8 +44,7 @@ update-latest:
 	cargo update
 
 setup: install
-	cp -n apps/api/.env.sample apps/api/.env.local 2>/dev/null || true
-	cp -n apps/web/.env.example apps/web/.env.local 2>/dev/null || true
+	bash scripts/env-local.sh
 	pnpm db:start
 	$(MAKE) --no-print-directory migrate
 	$(MAKE) --no-print-directory seed

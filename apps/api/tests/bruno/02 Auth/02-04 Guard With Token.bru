@@ -1,0 +1,27 @@
+meta {
+  name: 02-04 Guard With Token
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: neq 401
+  res.status: neq 500
+}
+
+docs {
+  **Endpoint:** `GET /api/settings`, a Copilot route
+
+  **This test verifies:** the guard lets a signed-in caller through to Copilot's handler (which
+  answers `501` until roadmap step P2.A writes it).
+}

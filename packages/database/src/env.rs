@@ -27,6 +27,12 @@ impl Env {
         std::env::vars().collect()
     }
 
+    /// Every variable, for parsers that take a map (lib-rustauth's `AuthConfig::parse`, which
+    /// also treats blank values as unset).
+    pub fn vars(&self) -> &HashMap<String, String> {
+        &self.0
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0
             .get(name)

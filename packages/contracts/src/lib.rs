@@ -48,7 +48,7 @@ pub use crate::file::{
     Capacity, CapacityLevel, FileResponse, MoveFileRequest, UPLOAD_FIELD, UpdateFileRequest,
     UploadFileForm,
 };
-pub use crate::health::{HealthResponse, ReadyResponse, RootResponse};
+pub use crate::health::{HealthResponse, ReadyResponse};
 pub use crate::message::{
     Approval, FinishReason, MessagePartDto, MessageResponse, MessageStatus, ResultContent, Role,
     ToolStatus, Usage,

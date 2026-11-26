@@ -1,0 +1,27 @@
+meta {
+  name: 02-02 Me
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/auth/me
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.id: eq {{userId}}
+  res.body.data.username: eq {{username}}
+}
+
+docs {
+  **Endpoint:** `GET /api/auth/me`
+
+  **This test verifies:** the stored session token signs the caller in.
+}

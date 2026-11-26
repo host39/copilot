@@ -1,14 +1,7 @@
+//! Health checks at the root (`/health`, `/health/ready`), for probes. The web bundle owns `/`.
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-
-/// `GET /`: API info.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct RootResponse {
-    pub status: String,
-    pub environment: String,
-}
 
 /// `GET /health`: liveness check.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

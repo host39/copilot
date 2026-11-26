@@ -1,0 +1,42 @@
+meta {
+  name: 02-01 Register
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "username": "{{username}}",
+    "password": "{{password}}",
+    "displayName": "Bruno",
+    "setupToken": "{{setupToken}}"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("token", res.body.data.token);
+    bru.setVar("userId", res.body.data.user.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.token: isString
+  res.body.data.expiresAt: isString
+  res.body.data.user.username: eq {{username}}
+}
+
+docs {
+  **Endpoint:** `POST /api/auth/register` (public)
+
+  **This test verifies:** a run-unique account registers (with the setup token while the
+  database has no account, through open registration afterwards) and its session token is
+  stored as `token`.
+}

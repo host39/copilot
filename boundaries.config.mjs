@@ -10,7 +10,8 @@
 // `features`.
 //
 // Identity comes from lib-rustauth, through its `rustauth` facade only (the inner crates may
-// change in any release). Only `apps/api` and `copilot-database` may depend on it, and
+// change in any release). Only `apps/api` and `copilot-database` may depend on it: `apps/api`
+// with the `axum` and `postgres` features (and only in `helpers/auth.rs`, which a test checks),
 // `copilot-database` only with the `migrate` feature, for the `auth` migrations.
 
 const RUSTAUTH = [
@@ -113,6 +114,14 @@ export default {
       to: ["copilot-database", "sqlx"],
     },
     {
+      name: "api-rustauth-facade-only",
+      severity: "error",
+      comment:
+        "apps/api uses lib-rustauth through its rustauth facade only, never the inner crates",
+      from: "copilot-api",
+      to: RUSTAUTH.filter((crate) => crate !== "rustauth"),
+    },
+    {
       name: "contracts-no-infrastructure",
       severity: "error",
       comment:
@@ -130,6 +139,15 @@ export default {
     },
   ],
   limited: [
+    {
+      name: "api-rustauth-axum-postgres",
+      severity: "error",
+      comment:
+        'apps/api uses the rustauth facade for its router, guard, and Postgres storage: default-features = false, features = ["axum", "postgres"] (dev-dependencies may add "testing")',
+      from: "copilot-api",
+      to: "rustauth",
+      features: ["axum", "postgres"],
+    },
     {
       name: "database-rustauth-migrate-only",
       severity: "error",

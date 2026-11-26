@@ -8,6 +8,13 @@
 #
 # With BASE_URL set explicitly, it tests the server already running there and starts nothing.
 #
+# The "02 Auth" folder registers a run-unique account and later folders use its session token.
+# On a database without accounts that first registration needs the setup token, and the account
+# becomes the administrator; afterwards it needs open registration. So the server this script
+# starts gets AUTH_REGISTRATION_OPEN=true and AUTH_SETUP_TOKEN (the env file's, or a generated
+# one), unless the shell sets them. Against BASE_URL, pass the server's AUTH_SETUP_TOKEN in the
+# shell or the env file when its database has no account yet.
+#
 # Usage: bash scripts/test-bruno.sh                                  (or `make test-bruno`)
 #        BASE_URL=http://localhost:3001 bash scripts/test-bruno.sh
 set -euo pipefail
@@ -47,6 +54,15 @@ else
     exit 1
   fi
 
+  export AUTH_REGISTRATION_OPEN="${AUTH_REGISTRATION_OPEN:-true}"
+  if [[ -z "${AUTH_SETUP_TOKEN:-}" ]]; then
+    AUTH_SETUP_TOKEN="$(bash scripts/with-env.sh "$ENV_FILE" bash -c 'printf "%s" "${AUTH_SETUP_TOKEN:-}"')"
+  fi
+  if [[ -z "$AUTH_SETUP_TOKEN" ]]; then
+    AUTH_SETUP_TOKEN="bruno-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+  export AUTH_SETUP_TOKEN
+
   cargo build -q -p copilot-api --bin server
   bash scripts/with-env.sh "$ENV_FILE" "${CARGO_TARGET_DIR:-target}/debug/server" >"$RUN_DIR/api.log" 2>&1 &
   api_pid=$!
@@ -66,5 +82,12 @@ else
   fi
 fi
 
+setup_token="${AUTH_SETUP_TOKEN:-}"
+if [[ -z "$setup_token" && -f "$ENV_FILE" ]]; then
+  setup_token="$(bash scripts/with-env.sh "$ENV_FILE" bash -c 'printf "%s" "${AUTH_SETUP_TOKEN:-}"')"
+fi
+
 cd apps/api/tests/bruno
-"$ROOT/node_modules/.bin/bru" run --env development --env-var "baseUrl=$BASE_URL"
+"$ROOT/node_modules/.bin/bru" run --env development \
+  --env-var "baseUrl=$BASE_URL" \
+  --env-var "setupToken=$setup_token"

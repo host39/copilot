@@ -1,0 +1,29 @@
+meta {
+  name: 02-03 Guard Without Token
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: none
+}
+
+headers {
+  X-Request-Id: bruno-guard
+}
+
+assert {
+  res.status: eq 401
+  res.body.code: eq UNAUTHORIZED
+  res.body.requestId: eq bruno-guard
+  res.headers["www-authenticate"]: eq Bearer
+}
+
+docs {
+  **Endpoint:** `GET /api/settings`, a Copilot route
+
+  **This test verifies:** rustauth's guard answers `401` with the shared error envelope when the
+  request has no bearer token.
+}

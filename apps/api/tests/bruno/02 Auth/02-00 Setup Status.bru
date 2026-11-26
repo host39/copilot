@@ -1,0 +1,30 @@
+meta {
+  name: 02-00 Setup Status
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/auth/setup
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  bru.setVar("username", `bruno_${suffix}`);
+  bru.setVar("password", `bruno-password-${suffix}`);
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.needsSetup: isBoolean
+  res.body.data.registrationOpen: isBoolean
+}
+
+docs {
+  **Endpoint:** `GET /api/auth/setup` (public)
+
+  **This test verifies:** rustauth's router is mounted under `/api`, and picks this run's
+  username and password.
+}

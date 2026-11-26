@@ -1,9 +1,10 @@
-//! Health routes: API info, liveness, and readiness (database connectivity).
+//! Health routes at the root, for probes: liveness and readiness (database connectivity). They
+//! are public; the web bundle owns `/`.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use copilot_contracts::{HealthResponse, ReadyResponse, RootResponse};
+use copilot_contracts::{HealthResponse, ReadyResponse};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -11,27 +12,14 @@ use crate::config::AppState;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(root))
         .routes(routes!(health))
         .routes(routes!(ready))
 }
 
 #[utoipa::path(
     get,
-    path = "/",
-    tag = "health",
-    responses((status = OK, description = "API info", body = RootResponse))
-)]
-pub async fn root(State(state): State<AppState>) -> Json<RootResponse> {
-    Json(RootResponse {
-        status: "ok".to_owned(),
-        environment: state.config.environment.to_string(),
-    })
-}
-
-#[utoipa::path(
-    get,
     path = "/health",
+    operation_id = "health",
     tag = "health",
     responses((status = OK, description = "Liveness check", body = HealthResponse))
 )]
@@ -44,6 +32,7 @@ pub async fn health() -> Json<HealthResponse> {
 #[utoipa::path(
     get,
     path = "/health/ready",
+    operation_id = "health_ready",
     tag = "health",
     responses(
         (status = OK, description = "Readiness check: database connectivity", body = ReadyResponse),
@@ -77,25 +66,15 @@ mod tests {
     use crate::helpers::testing::{app, app_on, get, send};
 
     #[tokio::test]
-    async fn root_returns_api_info() {
-        let response = get(app(), "/").await;
-        assert_eq!(response.status, StatusCode::OK);
-        assert_eq!(
-            response.body,
-            json!({ "status": "ok", "environment": "local" })
-        );
-    }
-
-    #[tokio::test]
     async fn health_returns_healthy_status() {
-        let response = get(app(), "/health").await;
+        let response = get(app().await, "/health").await;
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.body, json!({ "status": "healthy" }));
     }
 
     #[tokio::test]
     async fn ready_returns_503_when_the_database_is_unreachable() {
-        let response = get(app(), "/health/ready").await;
+        let response = get(app().await, "/health/ready").await;
         assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             response.body,
@@ -106,7 +85,7 @@ mod tests {
     #[sqlx::test(migrations = false)]
     #[ignore = "requires Postgres: run `make test-db`"]
     async fn ready_returns_healthy_when_the_database_is_reachable(pool: DbPool) {
-        let response = get(app_on(pool), "/health/ready").await;
+        let response = get(app_on(pool).await, "/health/ready").await;
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(
             response.body,
@@ -121,13 +100,13 @@ mod tests {
             .header(REQUEST_ID_HEADER, "ray-health")
             .body(Body::empty())
             .expect("request");
-        let response = send(app(), request).await;
+        let response = send(app().await, request).await;
         assert_eq!(response.headers[REQUEST_ID_HEADER], "ray-health");
     }
 
     #[tokio::test]
     async fn unknown_routes_return_the_error_envelope() {
-        let response = get(app(), "/missing").await;
+        let response = get(app().await, "/missing").await;
         assert_eq!(response.status, StatusCode::NOT_FOUND);
         assert_eq!(response.body["error"], "Not found");
         assert_eq!(response.body["code"], "NOT_FOUND");

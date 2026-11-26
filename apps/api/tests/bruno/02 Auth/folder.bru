@@ -1,0 +1,12 @@
+meta {
+  name: 02 Auth
+  seq: 3
+}
+
+docs {
+  lib-rustauth's routes under `/api`, and its guard in front of Copilot's routes.
+
+  Registers a run-unique account (the administrator when the database has none yet, with the
+  `setupToken` that `scripts/test-bruno.sh` passes in) and stores its session token as `token`
+  for later folders: `auth: bearer` with `token: {{token}}`.
+}

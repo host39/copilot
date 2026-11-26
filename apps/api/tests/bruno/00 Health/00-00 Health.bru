@@ -13,10 +13,12 @@ get {
 assert {
   res.status: eq 200
   res.body.status: eq healthy
+  res.headers["x-request-id"]: isDefined
 }
 
 docs {
   **Endpoint:** `GET /health`
 
-  **This test verifies:** the liveness check answers without touching the database.
+  **This test verifies:** the liveness check answers without touching the database, with a
+  generated `X-Request-Id` response header.
 }

@@ -3,9 +3,10 @@
 #
 #   ../copilot-<track> on branch claude/copilot-p2-<track>, branched from the p1-frozen tag
 #
-# then installs the pnpm dependencies, copies the env samples, and gives the worktree its own API
-# port (the lowest free one from 3001 up, skipping ports other worktrees already use). The web
-# client and `make test-bruno` follow that port, so tracks run their servers side by side.
+# then installs the pnpm dependencies, creates the env files (scripts/env-local.sh, which also
+# generates a SECRET_KEY), and gives the worktree its own API port (the lowest free one from 3001
+# up, skipping ports other worktrees already use). The web client and `make test-bruno` follow
+# that port, so tracks run their servers side by side.
 #
 # Usage: bash scripts/worktree.sh <track> [base]   (base defaults to p1-frozen)
 set -euo pipefail
@@ -57,8 +58,7 @@ cd "$dir"
 
 pnpm install --frozen-lockfile
 
-cp apps/api/.env.sample apps/api/.env.local
-cp apps/web/.env.example apps/web/.env.local
+bash scripts/env-local.sh
 
 # Sets KEY=value in an env file, replacing an existing line or appending one.
 set_var() {

@@ -38,7 +38,7 @@ make setup          # install, copy .env.local files, start Postgres, migrate + 
 make dev            # Postgres, API on :3000 + web on :4000
 ```
 
-Open <http://localhost:4000>; the home page calls the API's `/health` endpoint and shows its status. The OpenAPI document is at <http://localhost:3000/doc> and Swagger UI at <http://localhost:3000/ui>.
+Open <http://localhost:4000>; the home page calls the API's `/health` endpoint and shows its status. The OpenAPI document is at <http://localhost:3000/api/doc> and Swagger UI at <http://localhost:3000/api/ui>.
 
 For a single app:
 
@@ -121,7 +121,7 @@ Pass `--skip-git-init` to keep your own git setup.
 
 ## Environment Variables
 
-See [docs/env.md](./docs/env.md) for the full reference. `make setup` copies `apps/api/.env.sample` to `apps/api/.env.local` and `apps/web/.env.example` to `apps/web/.env.local`.
+See [docs/env.md](./docs/env.md) for the full reference. `make setup` creates `apps/api/.env.local` from `apps/api/.env.sample` and `apps/web/.env.local` from `apps/web/.env.example` when they are missing, and fills in a generated `SECRET_KEY` (`scripts/env-local.sh`).
 
 ---
 

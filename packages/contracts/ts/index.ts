@@ -65,7 +65,6 @@ import type { RefreshResponse } from "@contracts/generated/RefreshResponse";
 import type { Refusal } from "@contracts/generated/Refusal";
 import type { ResultContent } from "@contracts/generated/ResultContent";
 import type { Role } from "@contracts/generated/Role";
-import type { RootResponse } from "@contracts/generated/RootResponse";
 import type { RunStatus } from "@contracts/generated/RunStatus";
 import type { ScheduleListQuery } from "@contracts/generated/ScheduleListQuery";
 import type { SchedulePreviewRequest } from "@contracts/generated/SchedulePreviewRequest";
@@ -149,7 +148,6 @@ export type { RefreshResponse } from "@contracts/generated/RefreshResponse";
 export type { Refusal } from "@contracts/generated/Refusal";
 export type { ResultContent } from "@contracts/generated/ResultContent";
 export type { Role } from "@contracts/generated/Role";
-export type { RootResponse } from "@contracts/generated/RootResponse";
 export type { RunStatus } from "@contracts/generated/RunStatus";
 export type { ScheduleListQuery } from "@contracts/generated/ScheduleListQuery";
 export type { SchedulePreviewRequest } from "@contracts/generated/SchedulePreviewRequest";
@@ -184,11 +182,6 @@ export const REQUEST_ID_HEADER = "X-Request-Id";
 export const UPLOAD_FIELD = "file";
 
 // Envelopes and health
-
-export const rootResponseSchema = z.object({
-  status: z.string(),
-  environment: z.string(),
-}) satisfies z.ZodType<RootResponse>;
 
 export const healthResponseSchema = z.object({
   status: z.string(),
