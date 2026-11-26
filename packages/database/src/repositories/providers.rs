@@ -1,7 +1,7 @@
 //! `ProviderRepository` and `ModelRepository` on Postgres (`providers`, `models`). Roadmap step
 //! P2.A writes `ProviderRepository::usage`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,6 +11,7 @@ use copilot_core::{
     ProviderRepository, ProviderUsage, SyncReport, UserId,
 };
 use serde_json::Value;
+use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::records::{CapabilitiesRecord, OverridesRecord};
@@ -186,6 +187,21 @@ const MODEL_COLUMNS: &str = "m.created_at, m.updated_at, m.context_window, m.max
      m.id, m.user_id, m.provider_id, m.enabled, m.available, m.remote_id, m.display_name, \
      m.capabilities, m.capability_overrides";
 
+/// Columns of the models a refresh updates or inserts, one array per column (`UNNEST`).
+#[derive(Default)]
+struct Batch {
+    ids: Vec<Uuid>,
+    remote_ids: Vec<String>,
+    names: Vec<String>,
+    capabilities: Vec<Json<CapabilitiesRecord>>,
+    context_windows: Vec<Option<i32>>,
+    output_limits: Vec<Option<i32>>,
+}
+
+fn count(rows: usize) -> u32 {
+    u32::try_from(rows).unwrap_or(u32::MAX)
+}
+
 /// A stored model's limits, for a refresh that keeps the ones the provider no longer reports.
 #[derive(sqlx::FromRow)]
 struct KnownRow {
@@ -232,6 +248,7 @@ impl ModelRepository for PgStore {
         provider: ProviderId,
         remote: Vec<DetectedModel>,
         auto_enable: bool,
+        keep: usize,
     ) -> DomainResult<SyncReport> {
         let now = self.now();
         let mut tx = self
@@ -268,57 +285,87 @@ impl ModelRepository for PgStore {
             .map(|row| (row.remote_id.as_str(), row.id))
             .collect();
 
-        let mut report = SyncReport::default();
-        let mut listed = Vec::new();
+        // One statement per kind of change, whatever the number of models.
+        let mut listed = Batch::default();
+        let mut added = Batch::default();
         for detected in remote {
             let capabilities = json(CapabilitiesRecord::from(&detected.capabilities));
             let model = detected.remote;
-            if let Some(id) = ids.get(model.remote_id.as_str()) {
-                sqlx::query(
-                    "UPDATE models SET updated_at = $2, available = true, capabilities = $3, \
-                     context_window = COALESCE($4, context_window), \
-                     max_output_tokens = COALESCE($5, max_output_tokens) WHERE id = $1",
-                )
-                .bind(id)
-                .bind(now)
-                .bind(capabilities)
-                .bind(int(model.context_window))
-                .bind(int(model.max_output_tokens))
-                .execute(&mut *tx)
-                .await
-                .map_err(failed("database.models.sync.failed"))?;
-                listed.push(*id);
-                report.updated += 1;
-            } else {
-                sqlx::query(
-                    "INSERT INTO models (created_at, updated_at, context_window, \
-                     max_output_tokens, id, user_id, provider_id, enabled, available, remote_id, \
-                     display_name, capabilities, capability_overrides) \
-                     VALUES ($1, $1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)",
-                )
-                .bind(now)
-                .bind(int(model.context_window))
-                .bind(int(model.max_output_tokens))
-                .bind(ModelId::generate().uuid())
-                .bind(user.uuid())
-                .bind(provider.uuid())
-                .bind(auto_enable)
-                .bind(&model.remote_id)
-                .bind(&model.display_name)
-                .bind(capabilities)
-                .bind(json(OverridesRecord::from(&CapabilityOverrides::default())))
-                .execute(&mut *tx)
-                .await
-                .map_err(failed("database.models.sync.failed"))?;
-                report.added += 1;
-                if auto_enable {
-                    report.enabled += 1;
+            let batch = match ids.get(model.remote_id.as_str()) {
+                Some(id) => {
+                    listed.ids.push(*id);
+                    &mut listed
                 }
-            }
+                None => {
+                    added.ids.push(ModelId::generate().uuid());
+                    added.remote_ids.push(model.remote_id);
+                    added.names.push(model.display_name);
+                    &mut added
+                }
+            };
+            batch.capabilities.push(capabilities);
+            batch.context_windows.push(int(model.context_window));
+            batch.output_limits.push(int(model.max_output_tokens));
         }
+        if !listed.ids.is_empty() {
+            sqlx::query(
+                "UPDATE models m SET updated_at = $2, available = true, \
+                 capabilities = u.capabilities, \
+                 context_window = COALESCE(u.context_window, m.context_window), \
+                 max_output_tokens = COALESCE(u.max_output_tokens, m.max_output_tokens) \
+                 FROM UNNEST($1::uuid[], $3::jsonb[], $4::integer[], $5::integer[]) \
+                 AS u (id, capabilities, context_window, max_output_tokens) WHERE m.id = u.id",
+            )
+            .bind(&listed.ids)
+            .bind(now)
+            .bind(&listed.capabilities)
+            .bind(&listed.context_windows)
+            .bind(&listed.output_limits)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed("database.models.sync.failed"))?;
+        }
+        if !added.ids.is_empty() {
+            sqlx::query(
+                "INSERT INTO models (created_at, updated_at, context_window, max_output_tokens, \
+                 id, user_id, provider_id, enabled, available, remote_id, display_name, \
+                 capabilities, capability_overrides) \
+                 SELECT $1, $1, u.context_window, u.max_output_tokens, u.id, $2, $3, $4, true, \
+                 u.remote_id, u.display_name, u.capabilities, $5 \
+                 FROM UNNEST($6::integer[], $7::integer[], $8::uuid[], $9::text[], $10::text[], \
+                 $11::jsonb[]) \
+                 AS u (context_window, max_output_tokens, id, remote_id, display_name, capabilities)",
+            )
+            .bind(now)
+            .bind(user.uuid())
+            .bind(provider.uuid())
+            .bind(auto_enable)
+            .bind(json(OverridesRecord::from(&CapabilityOverrides::default())))
+            .bind(&added.context_windows)
+            .bind(&added.output_limits)
+            .bind(&added.ids)
+            .bind(&added.remote_ids)
+            .bind(&added.names)
+            .bind(&added.capabilities)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed("database.models.sync.failed"))?;
+        }
+
+        let mut report = SyncReport {
+            added: count(added.ids.len()),
+            updated: count(listed.ids.len()),
+            enabled: if auto_enable {
+                count(added.ids.len())
+            } else {
+                0
+            },
+            ..SyncReport::default()
+        };
+        let still: HashSet<Uuid> = listed.ids.iter().copied().collect();
         let gone: Vec<Uuid> = known
             .iter()
-            .filter(|row| row.available && !listed.contains(&row.id))
+            .filter(|row| row.available && !still.contains(&row.id))
             .map(|row| row.id)
             .collect();
         if !gone.is_empty() {
@@ -328,7 +375,26 @@ impl ModelRepository for PgStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(failed("database.models.sync.failed"))?;
-            report.unavailable = u32::try_from(gone.len()).unwrap_or(u32::MAX);
+            report.unavailable = count(gone.len());
+        }
+        let excess = (known.len() + added.ids.len()).saturating_sub(keep);
+        if excess > 0 {
+            sqlx::query(
+                "DELETE FROM models WHERE id IN (SELECT m.id FROM models m \
+                 WHERE m.provider_id = $1 AND m.user_id = $2 AND NOT m.available \
+                 AND NOT m.enabled \
+                 AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.model_id = m.id) \
+                 AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.model_id = m.id) \
+                 AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.default_model_id = m.id) \
+                 AND NOT EXISTS (SELECT 1 FROM schedules s WHERE s.model_id = m.id) \
+                 ORDER BY m.updated_at, m.id LIMIT $3)",
+            )
+            .bind(provider.uuid())
+            .bind(user.uuid())
+            .bind(i64::try_from(excess).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await
+            .map_err(failed("database.models.sync.failed"))?;
         }
         tx.commit()
             .await

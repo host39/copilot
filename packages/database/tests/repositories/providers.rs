@@ -1,9 +1,10 @@
 use copilot_core::{
-    CapabilityOverrides, ModelQuery, ModelRepository, ProviderRepository, SyncReport,
+    CapabilityOverrides, Chat, ChatRepository, ModelQuery, ModelRepository, ProviderRepository,
+    SyncReport,
 };
 use copilot_database::DbPool;
 
-use crate::{NOW, at, detected, provider, store, user};
+use crate::{KEEP, NOW, at, detected, provider, store, user};
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
@@ -83,6 +84,7 @@ async fn a_refresh_adds_updates_and_retires_models(pool: DbPool) {
             connection.id(),
             vec![detected("a", Some(100_000)), detected("b", None)],
             true,
+            KEEP,
         )
         .await
         .unwrap();
@@ -134,6 +136,7 @@ async fn a_refresh_adds_updates_and_retires_models(pool: DbPool) {
             connection.id(),
             vec![detected("a", Some(200_000))],
             true,
+            KEEP,
         )
         .await
         .unwrap();
@@ -168,7 +171,7 @@ async fn a_refresh_adds_updates_and_retires_models(pool: DbPool) {
         .unwrap();
     assert!(picker.is_empty(), "a is off and b is no longer listed");
     let report = store
-        .sync(owner, connection.id(), Vec::new(), true)
+        .sync(owner, connection.id(), Vec::new(), true, KEEP)
         .await
         .unwrap();
     assert_eq!(report.unavailable, 1, "only models still available count");
@@ -182,7 +185,13 @@ async fn the_picker_needs_an_enabled_connection_and_the_owner(pool: DbPool) {
     let other = user(&store).await;
     let connection = provider(&store, owner).await;
     store
-        .sync(owner, connection.id(), vec![detected("a", None)], true)
+        .sync(
+            owner,
+            connection.id(),
+            vec![detected("a", None)],
+            true,
+            KEEP,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -200,7 +209,13 @@ async fn the_picker_needs_an_enabled_connection_and_the_owner(pool: DbPool) {
     );
     assert!(
         store
-            .sync(other, connection.id(), vec![detected("x", None)], true)
+            .sync(
+                other,
+                connection.id(),
+                vec![detected("x", None)],
+                true,
+                KEEP
+            )
             .await
             .is_err(),
         "another user's connection is never synced"
@@ -214,4 +229,99 @@ async fn the_picker_needs_an_enabled_connection_and_the_owner(pool: DbPool) {
             .unwrap()
             .is_empty()
     );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_refresh_writes_a_long_list_in_a_few_statements(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let connection = provider(&store, owner).await;
+    let listed: Vec<_> = (0..1_500)
+        .map(|index| detected(&format!("m{index}"), (index % 2 == 0).then_some(8_000)))
+        .collect();
+
+    let report = store
+        .sync(owner, connection.id(), listed.clone(), false, KEEP)
+        .await
+        .unwrap();
+    assert_eq!(report.added, 1_500);
+    let report = store
+        .sync(owner, connection.id(), listed, false, KEEP)
+        .await
+        .unwrap();
+    assert_eq!(
+        report,
+        SyncReport {
+            added: 0,
+            updated: 1_500,
+            unavailable: 0,
+            enabled: 0,
+        }
+    );
+    let models = ModelRepository::list(&store, owner, ModelQuery::provider(connection.id()))
+        .await
+        .unwrap();
+    assert_eq!(models.len(), 1_500);
+    let even = models
+        .iter()
+        .find(|model| model.remote_id() == "m2")
+        .unwrap();
+    let odd = models
+        .iter()
+        .find(|model| model.remote_id() == "m3")
+        .unwrap();
+    assert_eq!(even.context_window(), Some(8_000));
+    assert_eq!(odd.context_window(), None);
+    assert_eq!(even.display_name(), "M2");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_refresh_past_what_a_connection_keeps_drops_only_spare_models(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let connection = provider(&store, owner).await;
+    let listed = |ids: &[&str]| ids.iter().map(|id| detected(id, None)).collect::<Vec<_>>();
+    store
+        .sync(
+            owner,
+            connection.id(),
+            listed(&["a", "b", "c", "on"]),
+            true,
+            10,
+        )
+        .await
+        .unwrap();
+    let models = ModelRepository::list(&store, owner, ModelQuery::provider(connection.id()))
+        .await
+        .unwrap();
+    for model in &models {
+        if model.remote_id() != "on" {
+            ModelRepository::update(&store, &model.clone().with_enabled(false))
+                .await
+                .unwrap();
+        }
+    }
+    let used = models
+        .iter()
+        .find(|model| model.remote_id() == "a")
+        .unwrap();
+    let chat = Chat::create(owner, at(0)).with_model(Some(used.id()));
+    ChatRepository::insert(&store, &chat).await.unwrap();
+
+    // Five held, two kept: only b and c are unavailable, off, and unused.
+    store
+        .sync(owner, connection.id(), listed(&["d"]), false, 2)
+        .await
+        .unwrap();
+    let mut left: Vec<String> =
+        ModelRepository::list(&store, owner, ModelQuery::provider(connection.id()))
+            .await
+            .unwrap()
+            .iter()
+            .map(|model| model.remote_id().to_owned())
+            .collect();
+    left.sort();
+    assert_eq!(left, ["a", "d", "on"]);
 }

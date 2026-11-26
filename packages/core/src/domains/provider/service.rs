@@ -16,7 +16,9 @@ use crate::ports::llm_gateway::{LlmGateway, ProviderTarget};
 use crate::ports::secret_cipher::{SECRET_UNREADABLE, SecretCipher};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
-use crate::shared::constants::MODEL_AUTO_ENABLE_MAX;
+use crate::shared::constants::{
+    MAX_MODELS_PER_PROVIDER, MODEL_AUTO_ENABLE_MAX, MODEL_ID_MAX_CHARS, NAME_MAX_CHARS,
+};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ProviderId;
 use crate::shared::net::PrivateNetwork;
@@ -220,11 +222,33 @@ impl ProviderService {
 
     /// Lists the provider's models (this is also the connection test), applies capability
     /// defaults and locks, and stores the result. New models are enabled automatically when the
-    /// provider lists at most `MODEL_AUTO_ENABLE_MAX` models.
+    /// provider lists at most `MODEL_AUTO_ENABLE_MAX` models. A list of more than
+    /// `MAX_MODELS_PER_PROVIDER` models, or a model id longer than `MODEL_ID_MAX_CHARS`, fails
+    /// as a bad response and stores nothing; display names are cut to `NAME_MAX_CHARS`.
     pub async fn refresh(&self, actor: &Actor, id: ProviderId) -> DomainResult<SyncReport> {
         let provider = self.load(actor, id).await?;
         let target = self.target(actor, &provider)?;
         let listed = self.gateway.models(&target).await?;
+        if listed.len() > MAX_MODELS_PER_PROVIDER {
+            return Err(DomainError::upstream(
+                format!(
+                    "The provider listed more than {MAX_MODELS_PER_PROVIDER} models, more than \
+                     a connection can keep."
+                ),
+                BAD_LIST,
+            ));
+        }
+        if listed
+            .iter()
+            .any(|remote| remote.remote_id.trim().chars().count() > MODEL_ID_MAX_CHARS)
+        {
+            return Err(DomainError::upstream(
+                format!(
+                    "The provider listed a model id longer than {MODEL_ID_MAX_CHARS} characters."
+                ),
+                BAD_LIST,
+            ));
+        }
 
         let mut seen = HashSet::new();
         let detected: Vec<DetectedModel> = listed
@@ -237,6 +261,10 @@ impl ProviderService {
                 if remote.display_name.trim().is_empty() {
                     remote.display_name.clone_from(&remote.remote_id);
                 }
+                if remote.display_name.chars().count() > NAME_MAX_CHARS {
+                    remote.display_name =
+                        remote.display_name.chars().take(NAME_MAX_CHARS).collect();
+                }
                 let locks = Locks::new(provider.kind(), provider.preset(), &remote.remote_id);
                 let capabilities =
                     Capabilities::defaults(provider.preset(), &remote).locked(&locks);
@@ -248,7 +276,13 @@ impl ProviderService {
             .collect();
         let auto_enable = detected.len() <= MODEL_AUTO_ENABLE_MAX;
         self.models
-            .sync(actor.user_id, id, detected, auto_enable)
+            .sync(
+                actor.user_id,
+                id,
+                detected,
+                auto_enable,
+                MAX_MODELS_PER_PROVIDER,
+            )
             .await
     }
 
@@ -282,6 +316,9 @@ impl ProviderService {
             .transpose()
     }
 }
+
+/// The code of a model list Copilot does not accept.
+const BAD_LIST: &str = "PROVIDER_BAD_RESPONSE";
 
 fn not_found(id: ProviderId) -> DomainError {
     DomainError::not_found("Provider", id.to_string())
@@ -726,6 +763,52 @@ mod tests {
         let report = f.service.refresh(&caller, provider.id()).await.unwrap();
         assert_eq!(report.added, 21);
         assert_eq!(report.enabled, 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_refuses_lists_a_connection_cannot_keep() {
+        let f = fixture(PrivateNetwork::Admins);
+        let caller = actor();
+        let provider = f
+            .service
+            .create(&caller, openai(Some("sk-1")))
+            .await
+            .unwrap();
+        let stored = || async {
+            ModelRepository::list(
+                f.store.as_ref(),
+                caller.user_id,
+                ModelQuery::provider(provider.id()),
+            )
+            .await
+            .unwrap()
+        };
+
+        let too_many: Vec<RemoteModel> = (0..=MAX_MODELS_PER_PROVIDER)
+            .map(|index| remote_model(&format!("m{index}")))
+            .collect();
+        f.gateway.push_models(too_many);
+        let error = f.service.refresh(&caller, provider.id()).await.unwrap_err();
+        assert_eq!(error.code(), BAD_LIST);
+        assert_eq!(
+            error.to_string(),
+            "The provider listed more than 2000 models, more than a connection can keep."
+        );
+        assert!(stored().await.is_empty(), "nothing is stored");
+
+        let long_id = "x".repeat(MODEL_ID_MAX_CHARS + 1);
+        f.gateway
+            .push_models(vec![remote_model("ok"), remote_model(&long_id)]);
+        let error = f.service.refresh(&caller, provider.id()).await.unwrap_err();
+        assert_eq!(error.code(), BAD_LIST);
+        assert!(stored().await.is_empty());
+
+        let mut wordy = remote_model(&"y".repeat(MODEL_ID_MAX_CHARS));
+        wordy.display_name = "é".repeat(NAME_MAX_CHARS + 50);
+        f.gateway.push_models(vec![wordy]);
+        f.service.refresh(&caller, provider.id()).await.unwrap();
+        let models = stored().await;
+        assert_eq!(models[0].display_name(), "é".repeat(NAME_MAX_CHARS));
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::domains::provider::{
     CapabilityOverrides, DetectedModel, Model, ModelParts, ModelQuery, ModelRepository, Provider,
@@ -122,6 +123,7 @@ impl ModelRepository for MemoryStore {
         provider: ProviderId,
         remote: Vec<DetectedModel>,
         auto_enable: bool,
+        keep: usize,
     ) -> DomainResult<SyncReport> {
         let now = self.now();
         let mut tables = self.tables();
@@ -195,6 +197,38 @@ impl ModelRepository for MemoryStore {
                 };
                 tables.models.insert(*id, Model::restore(parts));
                 report.unavailable += 1;
+            }
+        }
+        let held = known.len() + report.added as usize;
+        if held > keep {
+            let used = |id: ModelId| {
+                tables
+                    .chats
+                    .values()
+                    .any(|chat| chat.model_id() == Some(id))
+                    || tables
+                        .messages
+                        .values()
+                        .any(|message| message.model_id() == Some(id))
+                    || tables
+                        .projects
+                        .values()
+                        .any(|project| project.default_model_id() == Some(id))
+                    || tables
+                        .schedules
+                        .values()
+                        .any(|schedule| schedule.model_id() == Some(id))
+            };
+            let mut spare: Vec<(DateTime<Utc>, ModelId)> = tables
+                .models
+                .values()
+                .filter(|model| model.provider_id() == provider)
+                .filter(|model| !model.available() && !model.enabled() && !used(model.id()))
+                .map(|model| (model.updated_at(), model.id()))
+                .collect();
+            spare.sort();
+            for (_, id) in spare.into_iter().take(held - keep) {
+                tables.models.remove(&id);
             }
         }
         Ok(report)
@@ -285,7 +319,13 @@ mod tests {
         let mut reported = remote_model("m");
         reported.context_window = Some(100_000);
         store
-            .sync(user, provider.id(), vec![detected(reported.clone())], false)
+            .sync(
+                user,
+                provider.id(),
+                vec![detected(reported.clone())],
+                false,
+                10,
+            )
             .await
             .unwrap();
         let model = ModelRepository::list(&store, user, ModelQuery::default())
@@ -301,7 +341,7 @@ mod tests {
 
         reported.context_window = Some(200_000);
         store
-            .sync(user, provider.id(), vec![detected(reported)], true)
+            .sync(user, provider.id(), vec![detected(reported)], true, 10)
             .await
             .unwrap();
         let model = ModelRepository::get(&store, user, edited.id())
@@ -311,5 +351,62 @@ mod tests {
         assert_eq!(model.context_window(), Some(200_000), "reported wins");
         assert_eq!(model.max_output_tokens(), Some(8_000), "unreported stays");
         assert!(!model.enabled(), "auto_enable never touches known models");
+    }
+
+    #[tokio::test]
+    async fn sync_drops_spare_models_past_what_a_connection_keeps() {
+        let clock = Arc::new(FixedClock::default());
+        let store = MemoryStore::new(clock.clone());
+        let user = actor().user_id;
+        let url = BaseUrl::parse("https://api.example.com/v1", NetworkScope::Public).unwrap();
+        let provider = Provider::create(
+            user,
+            ProviderKind::OpenAi,
+            Preset::Custom,
+            "Gateway",
+            url,
+            clock.now(),
+        )
+        .unwrap();
+        ProviderRepository::insert(&store, &provider).await.unwrap();
+        let listed = |ids: &[&str]| -> Vec<DetectedModel> {
+            ids.iter().map(|id| detected(remote_model(id))).collect()
+        };
+        let remote_ids = || async {
+            let mut ids: Vec<String> = ModelRepository::list(&store, user, ModelQuery::default())
+                .await
+                .unwrap()
+                .iter()
+                .map(|model| model.remote_id().to_owned())
+                .collect();
+            ids.sort();
+            ids
+        };
+        store
+            .sync(user, provider.id(), listed(&["a", "b"]), true, 3)
+            .await
+            .unwrap();
+        clock.advance(chrono::Duration::seconds(1));
+        store
+            .sync(user, provider.id(), listed(&["c"]), false, 3)
+            .await
+            .unwrap();
+        // a and b are unavailable but on: nothing is spare yet.
+        assert_eq!(remote_ids().await, ["a", "b", "c"]);
+        for model in ModelRepository::list(&store, user, ModelQuery::default())
+            .await
+            .unwrap()
+        {
+            ModelRepository::update(&store, &model.with_enabled(false))
+                .await
+                .unwrap();
+        }
+        clock.advance(chrono::Duration::seconds(1));
+        store
+            .sync(user, provider.id(), listed(&["d", "e"]), false, 3)
+            .await
+            .unwrap();
+        // Five held, three kept: the spare a and b were updated least recently.
+        assert_eq!(remote_ids().await, ["c", "d", "e"]);
     }
 }

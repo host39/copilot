@@ -63,6 +63,11 @@ pub const MAX_SCHEDULES_PER_USER: u32 = 20;
 pub const SCHEDULE_MAX_FAILURES: u32 = 3;
 /// A refresh enables every listed model when the provider lists at most this many.
 pub const MODEL_AUTO_ENABLE_MAX: usize = 20;
+/// Models a refresh accepts, and the models a connection keeps: past this, a refresh deletes
+/// unavailable models that are off and unused, least recently updated first.
+pub const MAX_MODELS_PER_PROVIDER: usize = 2_000;
+/// Longest model id a refresh accepts (remote display names are cut to `NAME_MAX_CHARS`).
+pub const MODEL_ID_MAX_CHARS: usize = 256;
 /// Chat titles are the first user message, cut to this many characters.
 pub const TITLE_MAX_CHARS: usize = 60;
 /// Project files above this share of the context window warn.

@@ -25,6 +25,9 @@ use copilot_database::operations::migrate;
 use copilot_database::{DbPool, PgStore};
 use uuid::Uuid;
 
+/// The models a connection keeps, as `ProviderService::refresh` passes it.
+pub const KEEP: usize = copilot_core::shared::constants::MAX_MODELS_PER_PROVIDER;
+
 /// The store clock's time, in seconds after [`at`]'s instant.
 pub const NOW: i64 = 86_400;
 
@@ -109,6 +112,7 @@ pub async fn model(store: &PgStore, user: UserId) -> Model {
             provider.id(),
             vec![detected("gpt", Some(128_000))],
             true,
+            KEEP,
         )
         .await
         .unwrap();

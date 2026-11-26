@@ -154,7 +154,7 @@ Settings has a **Providers** page. A provider connection has a kind, a preset, a
 
 - **Gemini** goes through Google's OpenAI-compatible endpoint in v1. A P2.B spike verifies, against a Gemini 3 or 4 model: streaming tool calls over two turns with thought signatures carried as provider-opaque data, image and PDF parts, and `input_audio`. If the spike fails, P2.B builds a native adapter against the Interactions API with `store: false`, not against `generateContent`, which Google now calls legacy.
 - **OpenAI Responses** is a later kind. Until then the `openai` preset locks `tool_use` off on `gpt-6*` models ("needs the Responses adapter"), and sends `reasoning_effort: none` for GPT-5.4 and later 5.x models whenever tools are in the request.
-- **Models:** after saving, Copilot lists the provider's models. The user enables the ones they want (automatic when 20 or fewer). A refresh never deletes a model: models the provider no longer lists become unavailable.
+- **Models:** after saving, Copilot lists the provider's models. The user enables the ones they want (automatic when 20 or fewer). Models the provider no longer lists become unavailable. A refresh accepts at most `MAX_MODELS_PER_PROVIDER` (2000) models with ids of at most `MODEL_ID_MAX_CHARS` (256) characters (a longer list or id fails as `PROVIDER_BAD_RESPONSE` and changes nothing; remote display names are cut to 100 characters), and writes them in a few statements, not one per model. A refresh deletes a model only when the connection would then hold more than `MAX_MODELS_PER_PROVIDER`: unavailable models that are off and named by no chat, message, project, or schedule go first, least recently updated first.
 - **Capability flags:** `vision`, `pdf`, `tools`, `audio_in`, `audio_out`, `reasoning`, plus reasoning levels. Sources, in order: provider-reported metadata (Anthropic Models API `capabilities`, OpenRouter `architecture` modalities, Gemini `outputTokenLimit`); preset defaults (PDF on for the `openai` and `openrouter` presets); otherwise text plus `tools`, everything else off until the user enables it. No curated model-family table, except the locks below.
 - **Locked flags** (the UI hides the toggle): `audio_in` and `audio_out` on `anthropic` connections; `tools` on `gpt-6*` under the `openai` preset.
 - **Model settings:** display name, context window, max output tokens (from Anthropic `max_tokens` and Gemini `outputTokenLimit` when reported, editable otherwise), capability overrides.
@@ -443,7 +443,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 | Service | Key operations |
 | --- | --- |
 | `SettingsService` | `get` (empty instructions when no row exists), `update` (`instructions`; upsert). Account, session, and user administration operations are rustauth's `AuthService` and `AdminService` |
-| `ProviderService` | `create`, `update` (clears the key when the base URL origin changes and no new key is given), `delete` (disables schedules that lose their model), `refresh` (lists remote models, applies defaults and locks, auto-enables up to 20) |
+| `ProviderService` | `create`, `update` (clears the key when the base URL origin changes and no new key is given), `delete` (disables schedules that lose their model), `refresh` (lists remote models, at most 2000, applies defaults and locks, auto-enables up to 20, keeps at most 2000 per connection) |
 | `ModelService` | `list` (picker), `update` (enable, rename, overrides; locked flags rejected; disabling pauses schedules) |
 | `ProjectService` | CRUD; `delete` (the handler cancels live runs of the project's chats first) |
 | `FileService` | `upload` (allowlist, magic bytes, quota, `sha256`, token estimate, page count), `content` (metadata and bytes), `bytes` (one read, for the engine, which already has the metadata), `update`, `move_to_project`, `delete` |
@@ -1037,6 +1037,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `SCHEDULER_TICK_SECS` | 30 |
 | `SCHEDULE_MIN_INTERVAL_MINUTES`, `MAX_SCHEDULES_PER_USER`, `SCHEDULE_MAX_FAILURES` | 15, 20, 3 |
 | `MODEL_AUTO_ENABLE_MAX` | 20 |
+| `MAX_MODELS_PER_PROVIDER`, `MODEL_ID_MAX_CHARS` | 2000, 256 |
 | `TITLE_MAX_CHARS` | 60 |
 | `CONTEXT_WARN_RATIO` | 0.8 |
 | `TOKENS_PER_PDF_PAGE`, `TOKENS_PER_IMAGE`, `BYTES_PER_TOKEN` | 3000, 1600, 4 |

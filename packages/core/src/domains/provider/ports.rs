@@ -34,7 +34,10 @@ pub trait ModelRepository: Send + Sync {
     /// - A listed model that exists becomes available and gets the detected capabilities; a
     ///   reported context window or max output tokens replaces the stored value, an unreported
     ///   one keeps it. Its display name, `enabled`, and overrides are the user's and stay.
-    /// - A stored model that is not listed becomes unavailable. Nothing is deleted.
+    /// - A stored model that is not listed becomes unavailable.
+    /// - While the connection then holds more than `keep` models, models that are unavailable,
+    ///   off, and named by no chat, message, project, or schedule are deleted, least recently
+    ///   updated first. Nothing else is deleted.
     ///
     /// Rows it writes get `updated_at` (and `created_at` for inserts) from the repository's clock.
     async fn sync(
@@ -43,6 +46,7 @@ pub trait ModelRepository: Send + Sync {
         provider: ProviderId,
         remote: Vec<DetectedModel>,
         auto_enable: bool,
+        keep: usize,
     ) -> DomainResult<SyncReport>;
     async fn update(&self, model: &Model) -> DomainResult<()>;
 }
