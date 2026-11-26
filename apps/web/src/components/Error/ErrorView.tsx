@@ -25,26 +25,24 @@ export const ErrorView: FC<ErrorViewProps> = ({
       <img
         src={genericErrorIllustration}
         alt="Illustration of an unexpected error"
-        className="mx-auto mb-6 h-96 w-auto"
+        className="mx-auto mb-6 h-56 sm:h-72 w-auto"
       />
-      <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-400">Error</p>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-        {title}
-      </h1>
-      <p className="mt-3 text-sm text-slate-600 sm:text-base">{description}</p>
+      <p className="text-sm font-medium uppercase tracking-[0.2em] text-muted">Error</p>
+      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-fg sm:text-3xl">{title}</h1>
+      <p className="mt-3 text-sm text-muted sm:text-base">{description}</p>
       {details ? (
-        <div className="mt-3 text-xs text-slate-500" data-testid="error-details">
+        <div className="mt-3 text-xs text-muted" data-testid="error-details">
           {details}
         </div>
       ) : null}
 
       <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
         {onRetry ? (
-          <Button onClick={onRetry} variant="blue">
+          <Button onClick={onRetry} variant="primary">
             Try again
           </Button>
         ) : null}
-        <Button onClick={() => navigate(path.home)} variant="white">
+        <Button onClick={() => navigate(path.home)} variant="secondary">
           Go home
         </Button>
       </div>

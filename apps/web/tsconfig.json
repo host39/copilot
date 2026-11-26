@@ -22,5 +22,5 @@
     "noUnusedParameters": true,
     "types": ["node"]
   },
-  "include": ["src", "test", "rsbuild.config.ts"]
+  "include": ["src", "test", "rsbuild.config.ts", "rstest.config.ts"]
 }

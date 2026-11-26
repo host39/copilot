@@ -1,8 +1,78 @@
 @import "tailwindcss";
 
+/*
+ * Color tokens. Each is a light-dark() pair, so it follows the page's color-scheme: the system
+ * scheme by default, or the one pinned in Settings (see src/theme.ts). Components use the token
+ * utilities (bg-canvas, text-fg, border-line, ...) and never pick light or dark colors themselves.
+ */
+@theme {
+  --color-canvas: light-dark(#ffffff, #1b1c1f);
+  --color-surface: light-dark(#f6f7f9, #141518);
+  --color-raised: light-dark(#eceef2, #2a2c31);
+  --color-line: light-dark(#dfe2e7, #34373d);
+  --color-fg: light-dark(#111318, #e9eaee);
+  --color-muted: light-dark(#596070, #a2a8b4);
+  --color-accent: light-dark(#2457d6, #7aa5ff);
+  --color-accent-hover: light-dark(#1c47b4, #9bbcff);
+  --color-on-accent: light-dark(#ffffff, #0d1426);
+  --color-danger: light-dark(#b42318, #ff8a80);
+  --color-warn: light-dark(#a15c07, #f5c26b);
+  --color-ok: light-dark(#067647, #5fd3a0);
+  --font-sans: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  /* Follows <meta name="color-scheme">, which src/theme.ts sets; the base stays "light dark". */
+  color-scheme: light dark;
+  accent-color: var(--color-accent);
+
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+}
+
 body {
   margin: 0;
-  color: #0f172a;
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  background-color: #f5f5f5;
+  background-color: var(--color-canvas);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Shared building blocks (used by several screens). */
+@layer components {
+  .card-panel {
+    @apply rounded-2xl border border-line bg-canvas p-6 shadow-sm sm:p-8;
+  }
+
+  .field-label {
+    @apply block text-sm font-medium text-fg;
+  }
+
+  .field-input {
+    @apply mt-1.5 block w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-base text-fg placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/30 focus:outline-none disabled:opacity-60 sm:text-sm aria-invalid:border-danger;
+  }
+
+  .field-error {
+    @apply mt-1.5 text-sm text-danger;
+  }
+
+  .field-hint {
+    @apply mt-1.5 text-sm text-muted;
+  }
+
+  .form-alert {
+    @apply rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-danger;
+  }
+
+  .text-link {
+    @apply font-medium text-accent underline-offset-4 hover:underline;
+  }
+
+  .nav-item {
+    @apply flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-raised aria-[current=page]:bg-raised aria-[current=page]:font-medium;
+  }
 }
