@@ -1,7 +1,11 @@
 //! The database adapter's store, the placeholder its unfinished methods return, and the helpers
 //! every repository module shares (error keys, `jsonb` records, integer columns).
 
-use copilot_core::{DomainError, DomainResult};
+use std::fmt;
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+use copilot_core::{Clock, DomainError, DomainResult};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::types::Json;
@@ -10,19 +14,35 @@ use crate::records::RecordError;
 use crate::types::DbPool;
 
 /// Every repository port of `copilot-core` on one Postgres pool. Cheap to clone (the pool is a
-/// handle).
-#[derive(Clone, Debug)]
+/// handle). Timestamps a repository sets itself (`created_at`, `updated_at` of rows no entity
+/// carries) come from `clock`, the same `Clock` the services use.
+#[derive(Clone)]
 pub struct PgStore {
     pool: DbPool,
+    clock: Arc<dyn Clock>,
 }
 
 impl PgStore {
-    pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+    pub fn new(pool: DbPool, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     pub fn pool(&self) -> &DbPool {
         &self.pool
+    }
+
+    /// The current time from the injected `Clock`.
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
+    }
+}
+
+impl fmt::Debug for PgStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PgStore")
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
     }
 }
 

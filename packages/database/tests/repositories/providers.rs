@@ -3,7 +3,7 @@ use copilot_core::{
 };
 use copilot_database::DbPool;
 
-use crate::{at, detected, provider, store, user};
+use crate::{NOW, at, detected, provider, store, user};
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
@@ -106,6 +106,8 @@ async fn a_refresh_adds_updates_and_retires_models(pool: DbPool) {
         .clone();
     assert_eq!(first.display_name(), "A");
     assert!(first.enabled() && first.available());
+    assert_eq!(first.created_at(), at(NOW), "from the store's clock");
+    assert_eq!(first.updated_at(), at(NOW));
     assert_eq!(first.capabilities(), &detected("a", None).capabilities);
     assert_eq!(
         ModelRepository::get(&store, owner, first.id())

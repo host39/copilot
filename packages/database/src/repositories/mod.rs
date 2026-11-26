@@ -5,7 +5,10 @@
 //! own module, and `jsonb` columns go through the versioned records in [`crate::records`].
 //!
 //! The walking skeleton (P1.9) wrote what a turn needs: settings, connections and models, chats
-//! with their join rows, message history and writes, turn snapshots, and reading tool servers.
+//! with their join rows, message history and writes, turn snapshots, and reading tool servers,
+//! plus what its routes reach on the way (`ProjectRepository::get` for a chat's project and
+//! `ScheduleRepository::disable_for_model` for a model turned off). Timestamps a repository sets
+//! itself come from the `Clock` given to [`PgStore::new`].
 //! Every other method fails with `database.repository.unimplemented` (see [`store::pending`])
 //! until roadmap step P2.A (or P3.1) writes it; the API routes that would call them answer `501`
 //! meanwhile. Map driver errors with `store::failed("database.<table>.<operation>.failed")` and

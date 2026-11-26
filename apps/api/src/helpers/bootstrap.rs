@@ -110,9 +110,9 @@ pub fn wire(
     adapters: Adapters,
     shutdown: CancellationToken,
 ) -> AppState {
-    let stores = ChatRepositories::shared(Arc::new(PgStore::new(db.clone())));
-    let cipher: Arc<dyn SecretCipher> = Arc::new(AesCipher::new(config.secret_key.clone()));
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let stores = ChatRepositories::shared(Arc::new(PgStore::new(db.clone(), clock.clone())));
+    let cipher: Arc<dyn SecretCipher> = Arc::new(AesCipher::new(config.secret_key.clone()));
     let network = config.private_network;
 
     let settings = SettingsService::new(stores.settings.clone(), clock.clone());

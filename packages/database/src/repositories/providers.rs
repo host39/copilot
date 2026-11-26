@@ -233,7 +233,7 @@ impl ModelRepository for PgStore {
         remote: Vec<DetectedModel>,
         auto_enable: bool,
     ) -> DomainResult<SyncReport> {
-        let now = Utc::now();
+        let now = self.now();
         let mut tx = self
             .pool()
             .begin()

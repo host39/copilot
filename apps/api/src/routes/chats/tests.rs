@@ -376,3 +376,47 @@ async fn a_provider_failure_ends_the_stream_with_a_saved_error(pool: DbPool) {
     assert_eq!(saved["items"][1]["status"], "error");
     assert_eq!(saved["items"][1]["error"], error["message"]);
 }
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run `make test-db`"]
+async fn turning_a_model_off_answers_with_the_saved_model(pool: DbPool) {
+    let server = provider().await;
+    let app = live_app(pool).await;
+    let token = register(&app, "admin").await;
+    let model = connect(&app, &token, &server).await;
+
+    let response = send(
+        app.clone(),
+        request(
+            Method::PATCH,
+            &format!("/api/models/{model}"),
+            Some(&token),
+            Some(json!({ "enabled": false })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    assert_eq!(response.body["data"]["enabled"], false);
+    let picker = call(&app, &token, Method::GET, "/api/models", None).await;
+    assert_eq!(picker["total"], 0, "off models leave the picker");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run `make test-db`"]
+async fn a_chat_in_an_unknown_project_is_not_found(pool: DbPool) {
+    let app = live_app(pool).await;
+    let token = register(&app, "admin").await;
+
+    let response = send(
+        app.clone(),
+        request(
+            Method::POST,
+            "/api/chats",
+            Some(&token),
+            Some(json!({ "projectId": "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192" })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::NOT_FOUND, "{}", response.body);
+    assert_eq!(response.body["code"], "ENTITY_NOT_FOUND");
+}

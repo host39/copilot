@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use copilot_core::{
     Approval, ApprovedTool, BaseUrl, BuiltinTool, CallId, Chat, ChatRepository, ContextHash,
     FileId, FinishReason, Message, MessageParts, MessageRepository, MessageStatus, NetworkScope,
@@ -8,7 +9,7 @@ use copilot_core::{
 use copilot_database::{DbPool, PgStore};
 use serde_json::json;
 
-use crate::{at, model, store, updated_at, user};
+use crate::{NOW, at, model, store, updated_at, user};
 
 async fn server(store: &PgStore, owner: UserId, slug: &str) -> ToolServer {
     let url = BaseUrl::parse("https://mcp.example.com", NetworkScope::Public).unwrap();
@@ -322,6 +323,13 @@ async fn snapshots_are_saved_once_per_hash(pool: DbPool) {
         Some(context.clone()),
         "insert-or-ignore by hash"
     );
+    let created: DateTime<Utc> =
+        sqlx::query_scalar("SELECT created_at FROM turn_contexts WHERE chat_id = $1")
+            .bind(chat.id().uuid())
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(created, at(NOW), "from the store's clock");
     assert_eq!(
         TurnContextRepository::get(&store, other, chat.id(), &context.hash)
             .await

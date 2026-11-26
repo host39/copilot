@@ -3,27 +3,44 @@
 //! and message writes move the chat in the recent list.
 //!
 //! Every test gets a throwaway database (`#[sqlx::test(migrations = false)]`) and starts with
-//! [`store`], which runs the same `migrate::run` as a real install.
+//! [`store`], which runs the same `migrate::run` as a real install. The store's clock stands still
+//! at [`NOW`], so the timestamps a repository sets itself are known.
 
 mod chats;
+mod projects;
 mod providers;
+mod schedules;
 mod settings;
 mod tools;
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    BaseUrl, Capabilities, ChatRepository, DetectedModel, Model, ModelQuery, ModelRepository,
-    NetworkScope, Preset, Provider, ProviderKind, ProviderRepository, ReasoningLevel, RemoteModel,
-    ReportedCapabilities, UserId,
+    BaseUrl, Capabilities, ChatRepository, Clock, DetectedModel, Model, ModelQuery,
+    ModelRepository, NetworkScope, Preset, Provider, ProviderKind, ProviderRepository,
+    ReasoningLevel, RemoteModel, ReportedCapabilities, UserId,
 };
 use copilot_database::operations::migrate;
 use copilot_database::{DbPool, PgStore};
 use uuid::Uuid;
 
-/// A migrated store.
+/// The store clock's time, in seconds after [`at`]'s instant.
+pub const NOW: i64 = 86_400;
+
+/// A clock that always reads `at(NOW)`.
+struct Still;
+
+impl Clock for Still {
+    fn now(&self) -> DateTime<Utc> {
+        at(NOW)
+    }
+}
+
+/// A migrated store whose clock reads `at(NOW)`.
 pub async fn store(pool: DbPool) -> PgStore {
     migrate::run(&pool).await.expect("migrations apply");
-    PgStore::new(pool)
+    PgStore::new(pool, Arc::new(Still))
 }
 
 /// A new account in lib-rustauth's `auth.users` (Copilot code never writes there; the tests need

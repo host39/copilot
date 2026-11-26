@@ -593,7 +593,7 @@ impl TurnContextRepository for PgStore {
              reasoning, hash, system, tools, files) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              ON CONFLICT (chat_id, hash) DO NOTHING",
         )
-        .bind(Utc::now())
+        .bind(self.now())
         .bind(chat.uuid())
         .bind(user.uuid())
         .bind(context.window_start_id.map(MessageId::uuid))
