@@ -1,5 +1,9 @@
 //! Request id: reuse the caller's `X-Request-Id` or generate one, expose it to logs and error
 //! bodies for the rest of the request, and echo it on the response.
+//!
+//! A generated id is also written into the request's `X-Request-Id` header, because
+//! lib-rustauth's router and guard read the id from there for their error bodies and logs. Run
+//! this layer outside them.
 
 use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue};
@@ -21,12 +25,21 @@ tokio::task_local! {
 pub struct RequestId(pub String);
 
 pub async fn request_id(mut request: Request, next: Next) -> Response {
-    let id = request
+    let supplied = request
         .headers()
         .get(&REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty() && value.len() <= MAX_LENGTH)
-        .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
+        .map(str::to_owned);
+    let id = match supplied {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            let value = HeaderValue::from_str(&id).expect("a UUID is a valid header value");
+            request.headers_mut().insert(REQUEST_ID_HEADER, value);
+            id
+        }
+    };
 
     request.extensions_mut().insert(RequestId(id.clone()));
     let mut response = CURRENT.scope(id.clone(), next.run(request)).await;
@@ -54,7 +67,38 @@ mod tests {
     fn app() -> Router {
         Router::new()
             .route("/", get(|| async { current().unwrap_or_default() }))
+            .route(
+                "/header",
+                get(|headers: axum::http::HeaderMap| async move {
+                    headers[&REQUEST_ID_HEADER]
+                        .to_str()
+                        .expect("ascii")
+                        .to_owned()
+                }),
+            )
             .layer(axum::middleware::from_fn(request_id))
+    }
+
+    #[tokio::test]
+    async fn writes_a_generated_id_into_the_request_header() {
+        let request = Request::builder()
+            .uri("/header")
+            .header(REQUEST_ID_HEADER, "x".repeat(MAX_LENGTH + 1))
+            .body(Body::empty())
+            .expect("request");
+        let response = app().oneshot(request).await.expect("response");
+        let echoed = response.headers()[REQUEST_ID_HEADER]
+            .to_str()
+            .expect("ascii")
+            .to_owned();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("body");
+        assert_eq!(body, echoed.as_bytes(), "handlers behind see the same id");
+        assert!(
+            Uuid::parse_str(&echoed).is_ok(),
+            "an overlong id is replaced"
+        );
     }
 
     #[tokio::test]

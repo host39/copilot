@@ -55,6 +55,25 @@ pub enum DomainError {
         context: Context,
     },
 
+    /// The caller is not signed in, the session ended, or the credentials are wrong. Maps to
+    /// 401. `code` is `UNAUTHORIZED`, or lib-rustauth's code (`INVALID_CREDENTIALS`).
+    #[error("{message}")]
+    Unauthorized { message: String, code: String },
+
+    /// The caller sent too many requests and may retry after `retry_after_secs`. Maps to 429
+    /// with `Retry-After`. `code` is `RATE_LIMITED`, or lib-rustauth's code (`ACCOUNT_LOCKED`).
+    #[error("{message}")]
+    RateLimited {
+        message: String,
+        code: String,
+        retry_after_secs: u64,
+    },
+
+    /// A provider or tool server failed during a call that does not stream (for example a model
+    /// refresh or a tool server test). Maps to 502.
+    #[error("{message}")]
+    Upstream { message: String, code: String },
+
     /// Infrastructure failure. Maps to 500. `key` is a dotted log key, never shown to clients.
     #[error("{key}")]
     Internal {
@@ -103,6 +122,31 @@ impl DomainError {
         }
     }
 
+    /// Not signed in (`UNAUTHORIZED`).
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::Unauthorized {
+            message: message.into(),
+            code: "UNAUTHORIZED".to_owned(),
+        }
+    }
+
+    /// Too many requests (`RATE_LIMITED`); the client may retry after `retry_after_secs`.
+    pub fn rate_limited(message: impl Into<String>, retry_after_secs: u64) -> Self {
+        Self::RateLimited {
+            message: message.into(),
+            code: "RATE_LIMITED".to_owned(),
+            retry_after_secs,
+        }
+    }
+
+    /// A provider or tool server failure the user should read, with a stable code.
+    pub fn upstream(message: impl Into<String>, code: impl Into<String>) -> Self {
+        Self::Upstream {
+            message: message.into(),
+            code: code.into(),
+        }
+    }
+
     /// Wraps an infrastructure failure under a dotted log key.
     pub fn internal(key: impl Into<String>, source: impl Into<BoxError>) -> Self {
         Self::Internal {
@@ -120,8 +164,9 @@ impl DomainError {
         self
     }
 
-    /// Adds a context entry. [`DomainError::EntityNotFound`] and [`DomainError::Internal`] build
-    /// their context from their own fields and ignore this.
+    /// Adds a context entry. [`DomainError::EntityNotFound`], [`DomainError::Unauthorized`],
+    /// [`DomainError::RateLimited`], [`DomainError::Upstream`], and [`DomainError::Internal`]
+    /// build their context from their own fields and ignore this.
     #[must_use]
     pub fn with_context(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         match &mut self {
@@ -131,7 +176,11 @@ impl DomainError {
             | Self::BusinessRule { context, .. } => {
                 context.insert(key.into(), value.into());
             }
-            Self::EntityNotFound { .. } | Self::Internal { .. } => {}
+            Self::EntityNotFound { .. }
+            | Self::Unauthorized { .. }
+            | Self::RateLimited { .. }
+            | Self::Upstream { .. }
+            | Self::Internal { .. } => {}
         }
         self
     }
@@ -144,11 +193,15 @@ impl DomainError {
             Self::Validation { .. } => "VALIDATION_ERROR",
             Self::Forbidden { .. } => "FORBIDDEN",
             Self::BusinessRule { rule_code, .. } => rule_code,
+            Self::Unauthorized { code, .. }
+            | Self::RateLimited { code, .. }
+            | Self::Upstream { code, .. } => code,
             Self::Internal { .. } => "INTERNAL_ERROR",
         }
     }
 
-    /// Structured details for the HTTP error body. Empty for internal errors.
+    /// Structured details for the HTTP error body: `retryAfterSecs` for
+    /// [`DomainError::RateLimited`], empty for internal errors.
     pub fn context(&self) -> Context {
         match self {
             Self::Domain { context, .. }
@@ -162,7 +215,23 @@ impl DomainError {
                 ("entityName".to_owned(), Value::from(entity_name.as_str())),
                 ("entityId".to_owned(), Value::from(entity_id.as_str())),
             ]),
-            Self::Internal { .. } => Context::new(),
+            Self::RateLimited {
+                retry_after_secs, ..
+            } => Context::from([("retryAfterSecs".to_owned(), Value::from(*retry_after_secs))]),
+            Self::Unauthorized { .. } | Self::Upstream { .. } | Self::Internal { .. } => {
+                Context::new()
+            }
+        }
+    }
+
+    /// Seconds the client should wait before retrying (`Retry-After`), for
+    /// [`DomainError::RateLimited`].
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
         }
     }
 }
@@ -200,6 +269,40 @@ mod tests {
             matches!(&error, DomainError::Validation { field: Some(field), .. } if field == "email")
         );
         assert_eq!(error.code(), "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn keeps_the_codes_of_the_identity_errors() {
+        let signed_out = DomainError::unauthorized("Sign in to continue.");
+        assert_eq!(signed_out.code(), "UNAUTHORIZED");
+        assert_eq!(signed_out.to_string(), "Sign in to continue.");
+        assert!(signed_out.context().is_empty());
+        assert_eq!(signed_out.retry_after_secs(), None);
+
+        let wrong = DomainError::Unauthorized {
+            message: "Invalid username or password.".to_owned(),
+            code: "INVALID_CREDENTIALS".to_owned(),
+        };
+        assert_eq!(wrong.code(), "INVALID_CREDENTIALS");
+    }
+
+    #[test]
+    fn rate_limits_carry_the_wait() {
+        let error = DomainError::rate_limited("Too many requests.", 42).with_context("ignored", 1);
+        assert_eq!(error.code(), "RATE_LIMITED");
+        assert_eq!(error.retry_after_secs(), Some(42));
+        assert_eq!(
+            error.context(),
+            Context::from([("retryAfterSecs".to_owned(), Value::from(42))])
+        );
+    }
+
+    #[test]
+    fn upstream_failures_keep_their_code() {
+        let error = DomainError::upstream("Key rejected: open provider settings.", "PROVIDER_AUTH");
+        assert_eq!(error.code(), "PROVIDER_AUTH");
+        assert_eq!(error.to_string(), "Key rejected: open provider settings.");
+        assert!(error.context().is_empty());
     }
 
     #[test]
