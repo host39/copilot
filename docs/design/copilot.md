@@ -551,10 +551,10 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 
 ### Run Registry
 
-`RunRegistry` (in `apps/api`) maps `chat_id` to a run: owner, run id, a `tokio::sync::broadcast` sender, a replay buffer of the current run's events, and a child `CancellationToken`.
+`RunRegistry` (in `apps/api/src/helpers/runs.rs`, an `AppState` field) maps `chat_id` to a run: owner, run id, a `tokio::sync::broadcast` sender, a replay buffer of the current run's events, and a child `CancellationToken` of the root shutdown token.
 
-- `reserve` inserts atomically and enforces single-flight per chat and `MAX_ACTIVE_RUNS_PER_USER`. User sends, regenerate, decisions, scheduled runs, and Run now all go through it.
-- Every event carries a per-run `seq`. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values, then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has.
+- `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`). User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
+- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values, then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. A stream that falls behind the broadcast channel catches up from the buffer, so it never skips or repeats an event. A run whose task panics still ends its streams with an `error` event and `done`.
 - Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. Handlers load the chat with the caller's `UserId` before touching the registry.
 - The registry also fans out the per-user `GET /api/events` stream.
 
@@ -587,7 +587,7 @@ Errors map to human messages: provider 401 or 403 gives `PROVIDER_AUTH` "Key rej
 
 ## Stream Events
 
-Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` and `UserEvent` (`#[serde(tag = "type")]`, each variant with its dotted `rename` and `rename_all = "camelCase"` for its fields, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). Every `ChatStreamEvent` variant has a `seq` field, read with `ChatStreamEvent::seq()`. `apps/api/src/routes/chats/serializer.rs` maps one to the other, truncates tool output for display, and builds `sse::Event::json_data`. Streams send a keep-alive comment every 15 seconds.
+Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` and `UserEvent` (`#[serde(tag = "type")]`, each variant with its dotted `rename` and `rename_all = "camelCase"` for its fields, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). Every `ChatStreamEvent` variant has a `seq` field, read with `ChatStreamEvent::seq()`. `apps/api/src/routes/chats/serializer.rs` maps one to the other, cuts tool output text for display to 8 KiB in total (`DISPLAY_MAX_BYTES`, on a character boundary, setting `truncated`), and builds `sse::Event::json_data`. Streams send a keep-alive comment every 15 seconds.
 
 ### Chat Stream
 
@@ -647,6 +647,7 @@ Contracts (`copilot-contracts`, one module per route family) follow these rules 
 - `GET /chats` also takes `scheduled` (schedule runs or the others) and `limit`; `GET /projects` takes `pinned` and `limit`; `GET /schedules` takes `projectId`. List rows of chats (`ChatSummaryResponse`) carry `unread` and `awaitingApproval`.
 - `MessagePartDto` is tagged by `type` (`text`, `file`, `audio`, `reasoning`, `toolCall`, `toolResult`) and names calls by `callId`; it never carries `provider_state`, provider call ids, or aliases. Tool results and `tool.finished` output share `ResultContent` (`text`, or `image` with a `fileId`).
 - Uploads are `multipart/form-data` with one part named `file` (`UPLOAD_FIELD`).
+- A path id that is not a UUID is a `400 VALIDATION_ERROR` with `field: id` (`routes::path::Id`), never axum's plain-text rejection.
 
 Root routes: `GET /health`, `GET /health/ready`, and the SPA. HTTP statuses add `401` (`DomainError::Unauthorized { message, code }`, with `WWW-Authenticate: Bearer`) and `429` (`DomainError::RateLimited { message, code, retry_after_secs }`, with `Retry-After`, repeated as `details.retryAfterSecs`) for rustauth errors that `apps/api` maps, and `502` (`DomainError::Upstream { message, code }`: a provider or tool server failed during a non-streaming call such as refresh or test), all mapped in `copilot-middleware`. `403` bodies carry the code `FORBIDDEN`, like rustauth's. The request id middleware writes a generated id into the request's `X-Request-Id` header and runs outside rustauth's router and guard, so their error bodies echo it too. rustauth's own routes and guard answer `401`, `403`, and `429` themselves, with the same error envelope.
 
@@ -882,7 +883,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Stored JSON Shapes
 
-`copilot-database` owns versioned record types (`#[serde(tag = "type")]` plus `"v": 1`) and maps them to core entities. Contracts define `MessagePartDto` without provider-opaque fields.
+`copilot-database` owns versioned record types (`copilot_database::records`: `#[serde(tag = "type")]` plus `"v": 1`) and maps them to core entities. A record with an unknown version or enum value fails with a `database.records.*` key instead of being guessed; a new shape adds a version that readers accept next to the old one, because stored rows are never rewritten. Contracts define `MessagePartDto` without provider-opaque fields.
 
 | Record | Shape |
 | --- | --- |
@@ -895,6 +896,11 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 | `provider_state` | `{v, provider_id, model_id, content}`; `content` is Anthropic content blocks in order, or `{reasoning_key, reasoning, reasoning_details, tool_call_extra: {provider_call_id: fields}}` for OpenAI-compatible |
 | `UsageRecord` | `{input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens}`, all nullable |
 | `CapabilitiesRecord` | `{vision, pdf, tools, audio_in, audio_out, reasoning, reasoning_levels, default_reasoning}` |
+| Capability overrides | `{v, vision?, pdf?, tools?, audio_in?, audio_out?, reasoning?}`; only the flags the user set (the column default `{}` reads as none) |
+| Snapshot tool (`turn_contexts.tools`) | `{v, alias, server_id (null for built-in), name, description, input_schema}` |
+| Snapshot file (`turn_contexts.files`) | `{v, file_id, sha256 (lowercase hex), rendering}` |
+| Tool cache (`tool_servers.tools_cached`) | `{v, ttl_ms, tools: [{name, title, description, input_schema, read_only}]}`; the fetch time is `tools_fetched_at` |
+| Tool modes (`tool_servers.tool_modes`) | A plain map of original tool name to `off`, `ask`, or `auto` |
 
 ### Readonly Role
 
