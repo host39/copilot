@@ -15,7 +15,7 @@ A domain may split a large file further (for example `provider/capabilities.rs` 
 ## Shared Types and Ports
 
 - `shared/`: typed ids (`UserId`, `ProjectId`, ...), `Actor` (the caller, built by `apps/api` from lib-rustauth's user), `Secret`, the network policy, `BaseUrl`, `ReasoningLevel`, errors, and constants.
-- `ports/`: ports used by several domains (`Clock`, `SecretCipher`, `LlmGateway`, later `ToolHost` and `TurnSink`). There are no identity ports: lib-rustauth owns users, passwords, and sessions.
+- `ports/`: ports used by several domains (`Clock`, `SecretCipher`, `LlmGateway`, `ToolHost`, later `TurnSink`). There are no identity ports: lib-rustauth owns users, passwords, and sessions.
 - `testing/` (feature `testing`): fakes for every port. `MemoryStore` implements every repository trait over one shared in-memory store.
 
 ## Rules

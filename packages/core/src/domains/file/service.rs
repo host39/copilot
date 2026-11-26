@@ -270,7 +270,12 @@ mod tests {
                 clock.clone(),
                 limits,
             ),
-            projects: ProjectService::new(store.clone(), store.clone(), clock.clone()),
+            projects: ProjectService::new(
+                store.clone(),
+                store.clone(),
+                store.clone(),
+                clock.clone(),
+            ),
             providers: ProviderService::new(
                 store.clone(),
                 store.clone(),

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::domains::project::entities::Project;
 use crate::domains::project::ports::{ProjectQuery, ProjectRepository};
 use crate::domains::provider::ModelRepository;
+use crate::domains::tool::ToolServerRepository;
 use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::builtin_tool::BuiltinTool;
@@ -44,6 +45,7 @@ pub struct ProjectUpdate {
 pub struct ProjectService {
     projects: Arc<dyn ProjectRepository>,
     models: Arc<dyn ModelRepository>,
+    servers: Arc<dyn ToolServerRepository>,
     clock: Arc<dyn Clock>,
 }
 
@@ -51,11 +53,13 @@ impl ProjectService {
     pub fn new(
         projects: Arc<dyn ProjectRepository>,
         models: Arc<dyn ModelRepository>,
+        servers: Arc<dyn ToolServerRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             projects,
             models,
+            servers,
             clock,
         }
     }
@@ -74,6 +78,7 @@ impl ProjectService {
 
     pub async fn create(&self, actor: &Actor, input: NewProject) -> DomainResult<Project> {
         self.check_model(actor, input.default_model_id).await?;
+        self.check_servers(actor, &input.tool_server_ids).await?;
         let project = Project::create(actor.user_id, &input.name, self.clock.now())?
             .with_icon(&input.icon)?
             .with_instructions(&input.instructions)
@@ -113,6 +118,7 @@ impl ProjectService {
             project = project.with_builtin_tools(tools);
         }
         if let Some(servers) = changes.tool_server_ids {
+            self.check_servers(actor, &servers).await?;
             project = project.with_tool_servers(servers);
         }
         if let Some(pinned) = changes.pinned {
@@ -143,6 +149,21 @@ impl ProjectService {
             None => Err(DomainError::not_found("Model", id.to_string())),
         }
     }
+
+    /// Every tool server must be one of the caller's servers.
+    async fn check_servers(&self, actor: &Actor, ids: &[ToolServerId]) -> DomainResult<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let owned = self.servers.list(actor.user_id).await?;
+        match ids
+            .iter()
+            .find(|id| !owned.iter().any(|server| server.id() == **id))
+        {
+            Some(id) => Err(DomainError::not_found("Tool server", id.to_string())),
+            None => Ok(()),
+        }
+    }
 }
 
 fn not_found(id: ProjectId) -> DomainError {
@@ -157,15 +178,17 @@ mod tests {
     use crate::domains::provider::{
         ModelQuery, NewProvider, Preset, ProviderKind, ProviderService,
     };
+    use crate::domains::tool::{NewToolServer, ToolService};
     use crate::shared::ids::ProviderId;
     use crate::shared::net::PrivateNetwork;
     use crate::testing::{
-        FakeCipher, FixedClock, MemoryStore, ScriptedGateway, actor, remote_model,
+        FakeCipher, FixedClock, MemoryStore, ScriptedGateway, ScriptedToolHost, actor, remote_model,
     };
 
     struct Fixture {
         service: ProjectService,
         providers: ProviderService,
+        tools: ToolService,
         gateway: Arc<ScriptedGateway>,
         store: Arc<MemoryStore>,
         clock: Arc<FixedClock>,
@@ -183,9 +206,22 @@ mod tests {
             clock.clone(),
             PrivateNetwork::Admins,
         );
+        let tools = ToolService::new(
+            store.clone(),
+            Arc::new(ScriptedToolHost::new()),
+            Arc::new(FakeCipher::new()),
+            clock.clone(),
+            PrivateNetwork::Admins,
+        );
         Fixture {
-            service: ProjectService::new(store.clone(), store.clone(), clock.clone()),
+            service: ProjectService::new(
+                store.clone(),
+                store.clone(),
+                store.clone(),
+                clock.clone(),
+            ),
             providers,
+            tools,
             gateway,
             store,
             clock,
@@ -220,6 +256,15 @@ mod tests {
         (models[0].id(), provider.id())
     }
 
+    async fn server(f: &Fixture, caller: &Actor) -> ToolServerId {
+        let input = NewToolServer {
+            name: "GitHub".to_owned(),
+            url: "https://mcp.example.com/mcp".to_owned(),
+            ..NewToolServer::default()
+        };
+        f.tools.create(caller, input).await.unwrap().id()
+    }
+
     fn named(name: &str) -> NewProject {
         NewProject {
             name: name.to_owned(),
@@ -232,7 +277,7 @@ mod tests {
         let f = fixture();
         let caller = actor();
         let (model, _) = model(&f, &caller).await;
-        let server = ToolServerId::generate();
+        let server = server(&f, &caller).await;
         let input = NewProject {
             name: " Contracts ".to_owned(),
             icon: "📄".to_owned(),
@@ -294,6 +339,55 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, DomainError::EntityNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_another_users_tool_server() {
+        let f = fixture();
+        let alice = actor();
+        let bob = actor();
+        let server = server(&f, &alice).await;
+        let input = NewProject {
+            tool_server_ids: vec![server],
+            ..named("Work")
+        };
+        let error = f.service.create(&bob, input).await.unwrap_err();
+        assert!(
+            matches!(error, DomainError::EntityNotFound { ref entity_name, .. } if entity_name == "Tool server")
+        );
+
+        let project = f.service.create(&bob, named("Work")).await.unwrap();
+        let changes = ProjectUpdate {
+            tool_server_ids: Some(vec![server]),
+            ..ProjectUpdate::default()
+        };
+        let error = f
+            .service
+            .update(&bob, project.id(), changes)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DomainError::EntityNotFound { .. }));
+        let unknown = ProjectUpdate {
+            tool_server_ids: Some(vec![ToolServerId::generate()]),
+            ..ProjectUpdate::default()
+        };
+        assert!(f.service.update(&bob, project.id(), unknown).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_tool_server_removes_it_from_the_project() {
+        let f = fixture();
+        let caller = actor();
+        let kept = server(&f, &caller).await;
+        let removed = server(&f, &caller).await;
+        let input = NewProject {
+            tool_server_ids: vec![removed, kept],
+            ..named("Work")
+        };
+        let project = f.service.create(&caller, input).await.unwrap();
+        f.tools.delete(&caller, removed).await.unwrap();
+        let project = f.service.get(&caller, project.id()).await.unwrap();
+        assert_eq!(project.tool_server_ids(), [kept]);
     }
 
     #[tokio::test]

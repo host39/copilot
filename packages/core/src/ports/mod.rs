@@ -6,3 +6,4 @@ pub mod clock;
 pub mod llm_gateway;
 pub mod logger;
 pub mod secret_cipher;
+pub mod tool_host;

@@ -15,9 +15,10 @@ use crate::domains::file::{FileOwner, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Model, Provider, ProviderUsage};
 use crate::domains::settings::UserSettings;
+use crate::domains::tool::ToolServer;
 use crate::ports::clock::Clock;
 use crate::shared::errors::DomainError;
-use crate::shared::ids::{FileId, ModelId, ProjectId, ProviderId, UserId};
+use crate::shared::ids::{FileId, ModelId, ProjectId, ProviderId, ToolServerId, UserId};
 
 pub struct MemoryStore {
     clock: Arc<dyn Clock>,
@@ -33,6 +34,7 @@ pub(crate) struct Tables {
     pub(crate) models: BTreeMap<ModelId, Model>,
     pub(crate) projects: BTreeMap<ProjectId, Project>,
     pub(crate) files: BTreeMap<FileId, (StoredFile, Bytes)>,
+    pub(crate) tool_servers: BTreeMap<ToolServerId, ToolServer>,
 }
 
 impl MemoryStore {

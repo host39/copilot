@@ -12,6 +12,8 @@ mod project;
 mod provider;
 mod settings;
 mod store;
+mod tool;
+mod tool_host;
 
 use uuid::Uuid;
 
@@ -19,6 +21,7 @@ pub use crate::testing::cipher::FakeCipher;
 pub use crate::testing::clock::FixedClock;
 pub use crate::testing::gateway::{ScriptedGateway, remote_model};
 pub use crate::testing::store::MemoryStore;
+pub use crate::testing::tool_host::{ScriptedToolHost, remote_tool};
 
 use crate::shared::actor::Actor;
 use crate::shared::ids::UserId;

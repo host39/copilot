@@ -30,6 +30,12 @@ pub use crate::domains::provider::{
     reasoning_off_with_tools,
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
+pub use crate::domains::tool::{
+    ALIAS_MAX_CHARS, ApprovalMode, CredentialChange, EffectiveTool, EffectiveTools, NewToolServer,
+    SLUG_MAX_CHARS, ServerOverride, Slug, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode,
+    ToolSelection, ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository,
+    ToolServerUpdate, ToolService, ToolSpec, ToolTest, offered,
+};
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::clock::{Clock, SystemClock};
 pub use crate::ports::llm_gateway::{
@@ -37,6 +43,7 @@ pub use crate::ports::llm_gateway::{
 };
 pub use crate::ports::logger::LogLevel;
 pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher};
+pub use crate::ports::tool_host::{RemoteTool, ToolEndpoint, ToolHost, ToolListing};
 // Shared types
 pub use crate::shared::actor::Actor;
 pub use crate::shared::base_url::BaseUrl;

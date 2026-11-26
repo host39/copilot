@@ -80,23 +80,34 @@ impl ProjectRepository for MemoryStore {
 }
 
 impl Tables {
-    /// The composite foreign key `(default_model_id, user_id) REFERENCES models (id, user_id)`.
+    /// The composite foreign keys `(default_model_id, user_id) REFERENCES models (id, user_id)`
+    /// and `(tool_server_id, user_id) REFERENCES tool_servers (id, user_id)`.
     fn check_references(&self, project: &Project) -> DomainResult<()> {
-        let Some(model) = project.default_model_id() else {
-            return Ok(());
-        };
-        if self
-            .models
-            .get(&model)
-            .is_some_and(|stored| stored.user_id() == project.user_id())
-        {
-            Ok(())
-        } else {
-            Err(DomainError::Internal {
-                key: "testing.projects.foreign-key.default-model".to_owned(),
-                source: None,
-            })
+        let user = project.user_id();
+        let model_ok = project.default_model_id().is_none_or(|model| {
+            self.models
+                .get(&model)
+                .is_some_and(|stored| stored.user_id() == user)
+        });
+        if !model_ok {
+            return Err(foreign_key("default-model"));
         }
+        let servers_ok = project.tool_server_ids().iter().all(|server| {
+            self.tool_servers
+                .get(server)
+                .is_some_and(|stored| stored.user_id() == user)
+        });
+        if !servers_ok {
+            return Err(foreign_key("tool-server"));
+        }
+        Ok(())
+    }
+}
+
+fn foreign_key(reference: &str) -> DomainError {
+    DomainError::Internal {
+        key: format!("testing.projects.foreign-key.{reference}"),
+        source: None,
     }
 }
 
