@@ -586,7 +586,7 @@ Errors map to human messages: provider 401 or 403 gives `PROVIDER_AUTH` "Key rej
 
 ## Stream Events
 
-Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` (`#[serde(tag = "type", rename_all = "camelCase")]`, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). `apps/api/src/routes/chats/serializer.rs` maps one to the other, truncates tool output for display, and builds `sse::Event::json_data`. Streams send a keep-alive comment every 15 seconds.
+Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` and `UserEvent` (`#[serde(tag = "type")]`, each variant with its dotted `rename` and `rename_all = "camelCase"` for its fields, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). Every `ChatStreamEvent` variant has a `seq` field, read with `ChatStreamEvent::seq()`. `apps/api/src/routes/chats/serializer.rs` maps one to the other, truncates tool output for display, and builds `sse::Event::json_data`. Streams send a keep-alive comment every 15 seconds.
 
 ### Chat Stream
 
@@ -619,7 +619,7 @@ Every event has `type` and `seq` (per run).
 
 ## HTTP API (v1)
 
-All routes below are under `/api`. rustauth's guard requires `Authorization: Bearer <token>` on every route except rustauth's public routes (`GET /auth/setup`, `POST /auth/register`, `POST /auth/login`) and the docs. Lists use `ListResponse`, single items `DetailsResponse`. JSON fields are camelCase. Errors use the template's error body.
+All routes below are under `/api`. rustauth's guard requires `Authorization: Bearer <token>` on every route except rustauth's public routes (`GET /auth/setup`, `POST /auth/register`, `POST /auth/login`) and the docs. Lists use `ListResponse`, single items `DetailsResponse`, and `GET /chats` a cursor page (`PageResponse { items, next }`, where `next` goes back as `cursor` and is `null` on the last page). JSON fields are camelCase. Errors use the template's error body.
 
 | Area | Routes |
 | --- | --- |
@@ -635,6 +635,17 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |
 | Events | `GET /events` (SSE) |
 | Docs | `GET /doc` (OpenAPI), `GET /ui` |
+
+Contracts (`copilot-contracts`, one module per route family) follow these rules beyond the table:
+
+- Responses send every field, `null` for a missing value. Request fields with a default may be left out.
+- `PATCH` bodies change only the fields they carry; `null` clears a nullable field (for example `defaultModelId`, `reasoning`, a chat's `projectId` or `builtinTools`, a model's `contextWindow`, a tool server's `credentials`).
+- Enum values follow this spec's spelling: statuses, reasons, and modes in snake_case (`awaiting_approval`, `tool_limit`); part kinds and capability names in camelCase, like the fields they name (`toolCall`, `audioIn`).
+- Secrets only go in. Providers report `key` and tool servers `credentials` as `missing`, `set`, or `unreadable` (`KeyState`; lists report `set` without opening the secret), and `Debug` on request DTOs prints `***`.
+- `GET /providers/{id}` is the provider with `usage` beside its fields; `GET /projects/{id}` is the project with its `capacity` (`used`, `window`, `level`: `unknown`, `fits`, `warn`, `over`). Models carry the effective `capabilities`, the `detected` ones, `overrides`, and `locks` (`{capability, reason}`). Tool servers carry `toolModes`, the cached `tools` (`null` before a Test), and `reviewRequired`.
+- `GET /chats` also takes `scheduled` (schedule runs or the others) and `limit`; `GET /projects` takes `pinned` and `limit`; `GET /schedules` takes `projectId`. List rows of chats (`ChatSummaryResponse`) carry `unread` and `awaitingApproval`.
+- `MessagePartDto` is tagged by `type` (`text`, `file`, `audio`, `reasoning`, `toolCall`, `toolResult`) and names calls by `callId`; it never carries `provider_state`, provider call ids, or aliases. Tool results and `tool.finished` output share `ResultContent` (`text`, or `image` with a `fileId`).
+- Uploads are `multipart/form-data` with one part named `file` (`UPLOAD_FIELD`).
 
 Root routes: `GET /health`, `GET /health/ready`, and the SPA. HTTP statuses add `401` (`DomainError::Unauthorized`) and `429` (`DomainError::RateLimited { retry_after_secs }`, with `Retry-After`) for rustauth errors that `apps/api` maps, and `502` (`DomainError::Upstream { message, code }`: a provider or tool server failed during a non-streaming call such as refresh or test), all mapped in `copilot-middleware`. rustauth's own routes and guard answer `401`, `403`, and `429` themselves, with the same error envelope.
 
