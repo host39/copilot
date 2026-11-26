@@ -60,7 +60,7 @@ Method names follow the `naming` rule: the trait already says `Widget`, so `get`
 
 ### 5. Migration
 
-Run `make migrations name=create_<name>s`, then write the SQL in the new `.up.sql` / `.down.sql` files. Follow the `postgres-column-alignment` rule and keep `.down.sql` an exact revert of `.up.sql`. Register the table in `packages/database/src/operations/describe/mod.rs` (`SCHEMA_TABLES`) so readonly grants include it.
+Run `make migrations name=create_<name>s`, then write the SQL in the new `.up.sql` / `.down.sql` files. Follow the `postgres-column-alignment` rule and keep `.down.sql` an exact revert of `.up.sql`. Reference `auth.users (id) ON DELETE CASCADE` from a top-level table, and other owner-scoped rows with composite `(id, user_id)` keys (the spec's Tenant Isolation). Register the table in `packages/database/src/operations/describe/mod.rs` (`SCHEMA_TABLES`) only when the readonly role may read it, omitting sealed columns; unregistered tables stay unreadable. `packages/database/tests/schema` checks the alignment, keys, and readonly grants of every table, so run `make test-db`.
 
 Apply it with `make migrate` (Postgres must be running). Do not edit a migration that a shared or deployed database has already applied; add a new one instead.
 

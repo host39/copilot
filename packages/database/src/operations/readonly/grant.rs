@@ -3,6 +3,7 @@
 use sqlx::AssertSqlSafe;
 
 use crate::operations::describe::SCHEMA_TABLES;
+use crate::operations::migrate::AUTH_SCHEMA;
 use crate::operations::readonly::constants::{READONLY_ROLE, READONLY_STATEMENT_TIMEOUT};
 use crate::types::DbPool;
 
@@ -74,12 +75,18 @@ pub fn statements(
         format!("ALTER USER {role} WITH PASSWORD '{escaped_password}';"),
         format!("GRANT CONNECT ON DATABASE {quoted_database} TO {role};"),
         format!("GRANT USAGE ON SCHEMA public TO {role};"),
+        // Also revokes every column grant on those tables.
         format!("REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM {role};"),
+        // lib-rustauth's accounts, password hashes, and sessions: never readable.
+        format!("REVOKE ALL ON ALL TABLES IN SCHEMA {AUTH_SCHEMA} FROM {role};"),
+        format!("REVOKE ALL ON SCHEMA {AUTH_SCHEMA} FROM {role};"),
     ];
     statements.extend(table_grants);
     statements.extend([
         format!("GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO {role};"),
-        format!("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {role};"),
+        // A new table stays unreadable until it is registered in `SCHEMA_TABLES` (and `migrate`
+        // runs again), so a table with private columns is never readable by default.
+        format!("ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM {role};"),
         format!("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO {role};"),
         format!("ALTER ROLE {role} SET default_transaction_read_only = on;"),
         format!("ALTER ROLE {role} SET statement_timeout = '{READONLY_STATEMENT_TIMEOUT}';"),
@@ -175,6 +182,13 @@ mod tests {
         let sql = sql("secret-pass");
         assert!(sql.contains("GRANT CONNECT ON DATABASE \"copilot\" TO readonly"));
         assert!(sql.contains("REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM readonly"));
+        assert!(sql.contains("REVOKE ALL ON ALL TABLES IN SCHEMA auth FROM readonly"));
+        assert!(sql.contains("REVOKE ALL ON SCHEMA auth FROM readonly"));
+        assert!(!sql.contains("GRANT SELECT ON TABLES"));
+        assert!(
+            sql.contains("IN SCHEMA public REVOKE SELECT ON TABLES FROM readonly"),
+            "new tables stay unreadable until registered"
+        );
         assert!(sql.contains("default_transaction_read_only = on"));
         assert!(sql.contains("statement_timeout = '30s'"));
         assert!(

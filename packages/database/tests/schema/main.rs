@@ -8,3 +8,4 @@
 mod constraints;
 mod fixtures;
 mod migrations;
+mod readonly;

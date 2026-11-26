@@ -886,7 +886,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Readonly Role
 
-`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed`), `models`, `tool_servers` (omitting `headers_sealed`), `schedules`, and `files`. `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions. The readonly role gets no grant on rustauth's `auth` schema.
+`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed`), `models`, `tool_servers` (omitting `headers_sealed`), `schedules`, and `files`. `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
 
 ### Portability
 

@@ -15,6 +15,8 @@ use uuid::Uuid;
 pub const CHECK_VIOLATION: &str = "23514";
 /// The SQLSTATE of a foreign key violation.
 pub const FOREIGN_KEY_VIOLATION: &str = "23503";
+/// The SQLSTATE of a missing privilege.
+pub const INSUFFICIENT_PRIVILEGE: &str = "42501";
 
 /// Every table Copilot's migrations create in `public`, sorted (the spec's Data Model).
 pub const TABLES: &[&str] = &[
@@ -266,9 +268,12 @@ pub async fn count(pool: &DbPool, table: &str, filter: &str, id: Uuid) -> i64 {
 }
 
 /// The SQLSTATE `sql` fails with, or `None` when it succeeds.
-pub async fn failure(pool: &DbPool, sql: &str) -> Option<String> {
+pub async fn failure<'c, E>(executor: E, sql: &str) -> Option<String>
+where
+    E: sqlx::Executor<'c, Database = Postgres>,
+{
     match sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
-        .execute(pool)
+        .execute(executor)
         .await
     {
         Ok(_) => None,
