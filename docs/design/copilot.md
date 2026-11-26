@@ -52,7 +52,8 @@ A schedule runs a prompt on a cron expression in a time zone. Each firing create
 Users register MCP servers in Settings (name, URL, optional headers or bearer token, approval mode). A project enables a subset; a standalone chat picks tools from the composer's tools menu.
 
 - **Approval mode** per server: `auto` (run tool calls immediately) or `ask` (the chat pauses and shows Approve / Deny on the tool call card). Unattended schedule runs deny `ask` tools with a message to the model.
-- Transport: streamable HTTP for remote servers. Local stdio servers (a command the API host spawns) are off unless the operator sets `MCP_STDIO_ENABLED=true`, because they run processes on the server.
+- Transport: streamable HTTP for remote servers through the official `rmcp` client, which speaks both the stateless 2026-07-28 revision and older 2025 servers. Local stdio servers (a command the API host spawns) are off unless the operator sets `MCP_STDIO_ENABLED=true`, and only admins can add them, because they run processes on the server.
+- Copilot caches each server's tool list (refreshed on test, on expiry, or when a call reports an unknown tool) so building a request does not connect to every server. Authentication is a bearer token or custom headers in v1; OAuth comes later.
 - Built-in tools (the schedule tools) use the same tool interface as MCP tools.
 
 ### Providers and Models
@@ -65,15 +66,18 @@ Settings has a **Providers** page. A provider connection has a kind, a name, a b
 | `anthropic` (Messages API) | Anthropic and compatible gateways |
 | `gemini` (Generative Language API) | Google Gemini |
 
-After saving, Copilot lists the provider's models. The user **enables** the models they want in the model picker. Each enabled model carries **capability flags** (vision, PDF input, tool use, audio input, audio output, reasoning) with defaults per provider kind and known model families, which the user can override. The UI only offers attachments, tools, or voice when the selected model's flags allow it. Presets fill in base URLs for OpenAI, Anthropic, Gemini, Ollama, and OpenRouter.
+After saving, Copilot lists the provider's models. The user **enables** the models they want in the model picker. Each enabled model carries **capability flags** (vision, PDF input, tool use, audio input, audio output, reasoning) with defaults per provider kind and known model families, which the user can override (except flags the provider's API cannot support, such as audio on Anthropic). A connection may also name a `speech_model` and `speech_voice` for read-aloud. The `openai` kind targets Chat Completions because every compatible server implements it; a Responses API adapter (needed for tool calling on OpenAI's newest models) is a planned fourth kind. The UI only offers attachments, tools, or voice when the selected model's flags allow it. Presets fill in base URLs for OpenAI, Anthropic, Gemini, Ollama, and OpenRouter.
 
 ### Voice
 
-Voice follows constraint 1: Copilot forwards audio only to providers whose API accepts or produces audio natively. See `docs/research/voice.md` for the provider survey this section depends on.
+Voice follows constraint 1: Copilot forwards audio only to providers whose API accepts or produces audio natively. Source: `docs/research/voice.md`.
 
-- **Audio in (push to talk):** the composer shows a microphone button only when the selected model has the `audio_in` flag. The client records with `MediaRecorder` and sends the clip as an audio part of the user message; the API forwards it in the provider's native audio format.
-- **Audio out (read aloud):** a speaker button on assistant messages appears only when the model has `audio_out`, or when the provider exposes a speech endpoint for the connection. No local TTS engine ships with Copilot.
-- Anthropic: see the research note for what the API supports today; Copilot does not add a translation layer for it.
+**Anthropic:** the Claude API has no audio input and no speech output (the Messages API accepts only images, PDFs and text; Claude's voice mode is a feature of Anthropic's own apps and is not exposed through the API). Claude models therefore get no voice controls. Their `audio_in` and `audio_out` flags are locked off.
+
+- **Audio in (push to talk), v1:** the composer shows a microphone button only when the selected model has `audio_in` (OpenAI `gpt-audio-*` through Chat Completions `input_audio`, Gemini audio-capable models through `inlineData`, OpenRouter models that list audio input). The client records PCM through an AudioWorklet and encodes a WAV clip (OpenAI accepts only WAV or MP3), uploads it as a chat attachment, and sends it as an audio part. No codec library, no model.
+- **Audio out (read aloud), v1:** a speaker button on assistant messages, in this order: (1) the model returned audio itself (`audio_out` models, streamed `delta.audio`), (2) the provider connection that wrote the message has a `speech_model` (Gemini TTS, OpenRouter, Ollama, vLLM, or llama.cpp speech endpoints), so the same provider speaks its own model's words, (3) otherwise no button.
+- **Live voice (both directions, streaming), later:** for models with a realtime mode (OpenAI Realtime, Gemini Live). The API mints a short-lived provider token and the client talks to the provider directly, so audio never passes through Copilot.
+- **Owner decision, off by default:** voice for models without audio (such as Claude) through another provider's cloud speech endpoint or the device's own speech engine. This is the "translation layer" the owner did not want unless chosen.
 
 ### Chat Experience
 
@@ -115,7 +119,7 @@ flowchart LR
 | `copilot-middleware` | Auth guard backed by `TokenVerifier`, CORS, errors | none |
 | `apps/api` | Composition root, routes, run registry, scheduler loop | none |
 
-`copilot-core` may depend on small pure libraries (`uuid`, `chrono`, `chrono-tz`, a cron parser, `futures`). The boundary rules for the new crates: adapters may depend on `copilot-core` and their own I/O libraries, never on `copilot-database`, `copilot-api`, `axum`, or each other.
+`copilot-core` may depend on small pure libraries (`uuid`, `chrono`, `jiff`, `croner`, `futures-core`). Dependency versions and features come from `docs/research/dependencies.md`: `reqwest` 0.13 with `rustls-no-provider` and the ring provider installed at startup (sqlx already uses ring), `sse-stream` for SSE parsing, `croner` on `jiff` (bundled current tzdata) for schedules, `aes-gcm`, `argon2`, `rmcp` 3.12 for MCP. The boundary rules for the new crates: adapters may depend on `copilot-core` and their own I/O libraries, never on `copilot-database`, `copilot-api`, `axum`, or each other.
 
 ### Core Domains
 
@@ -135,9 +139,10 @@ flowchart LR
 
 1. Load the chat, its project, the model, and the provider. Decrypt the API key through `SecretCipher`.
 2. Build a provider-neutral `LlmRequest`: system prompt (project instructions, then chat instructions, then a short note on built-in tools when enabled), the message history as parts, project files and attachments as parts the model's capabilities allow (text files inline as text, PDFs and images as native parts, others skipped with a notice), and tool specs from the enabled servers.
-3. Stream from `LlmGateway`. Forward text and reasoning deltas as events.
-4. When the model requests tools, run them through `ToolHost` (per-call timeout, result size cap, approval gate), emit events, append results, and continue. Stop after a maximum number of tool rounds.
-5. Persist each assistant message and tool result as it completes. On cancel or error, persist what exists with status `cancelled` or `error`.
+3. **Context fingerprint.** The engine hashes the system prompt plus the tool list into a `context_hash` and stores it on every assistant message. Reasoning parts and provider-opaque data (Anthropic thinking signatures, Gemini thought signatures) are sent back only for messages whose `context_hash` and provider kind match the current request. Editing project instructions or toggling tools therefore applies to the next turn without tripping Anthropic's preserved-thinking prefix check (a 400 on newer Claude models); older turns just lose their reasoning blocks. Mid-turn (inside one tool loop) the context never changes.
+4. Stream from `LlmGateway`. Forward text and reasoning deltas as events.
+5. When the model requests tools, run them through `ToolHost` (per-call timeout, result size cap, approval gate), emit events, append results, and continue. Stop after a maximum number of tool rounds.
+6. Persist each assistant message and tool result as it completes. On cancel or error, persist what exists with status `cancelled` or `error`.
 
 The API runs each turn in a spawned task registered in a `RunRegistry` (chat id to broadcast channel plus cancellation token). HTTP clients subscribe; disconnecting does not cancel; `POST /chats/{id}/stop` does. Scheduled runs call the same engine with no subscriber.
 
@@ -181,13 +186,13 @@ Owner-scoped tables carry `user_id` and every query filters by it. Column order 
 | --- | --- |
 | `users` | `id`, `username` (unique, case-insensitive), `password_hash`, `display_name`, `is_admin` |
 | `auth_sessions` | `id`, `user_id`, `token_hash` (SHA-256, unique), `expires_at`, `last_used_at`, `user_agent` |
-| `providers` | `id`, `user_id`, `kind`, `name`, `base_url`, `api_key_sealed` (nullable), `enabled` |
+| `providers` | `id`, `user_id`, `kind`, `name`, `base_url`, `api_key_sealed` (nullable), `enabled`, `speech_model`, `speech_voice` |
 | `models` | `id`, `provider_id`, `remote_id`, `display_name`, `enabled`, `capabilities` (jsonb), `context_window` |
 | `projects` | `id`, `user_id`, `name`, `instructions`, `default_model_id`, `manage_schedules` |
 | `files` | `id`, `user_id`, `project_id` or `chat_id`, `name`, `media_type`, `size_bytes`, `sha256`, `storage_key` |
 | `chats` | `id`, `user_id`, `project_id`, `model_id`, `title`, `instructions`, `schedule_id`, `manage_schedules`, `pinned` |
-| `messages` | `id`, `chat_id`, `role`, `parts` (jsonb), `status`, `model_id`, `usage` (jsonb), `error` |
-| `tool_servers` | `id`, `user_id`, `name`, `transport`, `url`, `command`, `headers_sealed`, `approval`, `enabled` |
+| `messages` | `id`, `chat_id`, `role`, `parts` (jsonb, provider-neutral with optional provider-opaque data), `status`, `model_id`, `provider_kind`, `context_hash`, `usage` (jsonb), `error` |
+| `tool_servers` | `id`, `user_id`, `name`, `transport`, `url`, `command`, `headers_sealed`, `approval`, `enabled`, `protocol_version`, `tools_cached` (jsonb), `tools_fetched_at` |
 | `project_tool_servers`, `chat_tool_servers` | join tables with cascade deletes |
 | `schedules` | `id`, `user_id`, `project_id`, `model_id`, `name`, `cron`, `timezone`, `prompt`, `mode` (`new_chat`, `same_chat`), `target_chat_id`, `enabled`, `next_run_at`, `last_run_at`, `created_by` (`user`, `assistant`) |
 | `schedule_runs` | `id`, `schedule_id`, `chat_id`, `started_at`, `finished_at`, `status`, `error` |
@@ -209,14 +214,25 @@ Owner-scoped tables carry `user_id` and every query filters by it. Column order 
 | `REGISTRATION_OPEN` | `false` | Allow sign-ups after the first (admin) user |
 | `SESSION_TTL_DAYS` | `30` | Token lifetime |
 | `MAX_UPLOAD_MB` | `25` | Per-file upload limit |
-| `MCP_STDIO_ENABLED` | `false` | Allow stdio MCP servers |
+| `MCP_STDIO_ENABLED` | `false` | Allow stdio MCP servers (admins only) |
+| `MCP_CALL_TIMEOUT_SECS` | `60` | Per tool call timeout |
+| `MCP_RESULT_MAX_BYTES` | `65536` | Tool result size sent to the model |
+| `MAX_TOOL_ROUNDS` | `8` | Tool rounds per assistant turn |
 | `SCHEDULER_ENABLED` | `true` (server binary) | Run the schedule loop |
 | `ALLOW_PRIVATE_NETWORK` | `true` | Allow provider and tool URLs on private networks |
 
 ### Native Apps
 
-`apps/native` is a Tauri v2 project that bundles the production web build. On first launch it shows a server URL screen; the URL is stored on the device. The API's CORS list includes the Tauri webview origins. Android needs `INTERNET` and, for voice, `RECORD_AUDIO`. See `docs/research/native-and-ci.md`.
+`apps/native` is a Tauri v2 (2.12) project that bundles the production web build. Its crate stays out of the root Cargo workspace (`exclude`), so `make check` never needs WebKitGTK headers. On first launch it shows a server URL screen; the URL is stored on the device. Native builds send API calls through `tauri-plugin-http` (an injectable `fetch` in the web client), which avoids CORS, mixed-content, and Android cleartext limits while still streaming. The API's CORS rules also accept the exact Tauri origins (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`). Android needs `INTERNET` and, for voice, `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`; Linux must enable WebKitGTK media capture and answer the permission request. See `docs/research/native-and-ci.md`.
 
 ### CI
 
-Each job uses the smallest GitHub-hosted runner that can finish it (see the research note for the current runner catalog): lint-only jobs on the slim runner, Rust test and build jobs on the standard Linux runner, the Android build on the standard Linux runner, and macOS runners only for macOS or iOS bundles.
+Each job uses the smallest GitHub-hosted runner that can finish it (`docs/research/native-and-ci.md`, section 9):
+
+| Job | Runner |
+| --- | --- |
+| Biome, markdownlint, `tsc`, web build, path filters | `ubuntu-slim` (1 vCPU, 5 GB, 15-minute cap, no Docker) |
+| Rust fmt, Clippy, tests, DB tests with a Postgres service, contracts drift, Bruno | `ubuntu-latest` |
+| Linux Tauri bundle | `ubuntu-24.04` (pinned for a lower glibc floor) |
+| Android APK | `ubuntu-latest` (SDK and NDK preinstalled) |
+| macOS, iOS, Windows bundles (later, tags only) | `macos-latest`, `windows-latest` |

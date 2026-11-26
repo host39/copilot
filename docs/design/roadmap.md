@@ -11,7 +11,7 @@ The build runs in phases. Each phase ends with a commit pushed to the working br
 ## Phase 0: Bootstrap
 
 - [x] P0.1 Copy the RustInit template, rename to Copilot, CI on branch pushes
-- [ ] P0.2 Research notes in `docs/research/` (voice, providers, MCP, native apps and CI, dependencies)
+- [x] P0.2 Research notes in `docs/research/` (voice, providers, MCP, native apps and CI, dependencies)
 - [ ] P0.3 Design spec reviewed (`docs/design/copilot.md`) and ADR-005 written
 
 ## Phase 1: Foundation (Interfaces First)
