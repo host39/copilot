@@ -24,11 +24,14 @@ The contract crate is the source of truth: Rust DTOs in `packages/contracts/src/
 | Type | HTTP | Body | Rust | Zod |
 | --- | --- | --- | --- | --- |
 | List | 200 | `{ items: T[], total: number }` | `ListResponse<T>` | `listResponseSchema(item)` |
+| Cursor page | 200 | `{ items: T[], next: string \| null }` | `PageResponse<T>` | `pageResponseSchema(item)` |
 | Details | 200 | `{ data: T }` | `DetailsResponse<T>` | `detailsResponseSchema(data)` |
 | Nullable details | 200 | `{ data: T \| null }` | `DetailsResponse<Option<T>>` | `detailsResponseSchema(data.nullable())` |
 | Action | 200/201 | `{ data: ActionPayload }` | `DetailsResponse<T>` | `detailsResponseSchema(data)` |
 | Delete | 204 | empty body | `StatusCode::NO_CONTENT` | none |
 | Health | 200/503 | flat `{ status }` (and `database` for readiness) | `HealthResponse`, `ReadyResponse` | `healthResponseSchema`, `readyResponseSchema` |
+
+A cursor page serves lists that grow while the user reads them (`GET /chats`): the client passes `next` back as the `cursor` query parameter, and `next` is `null` on the last page. The cursor is opaque to clients.
 
 Envelopes live in [`packages/contracts/src/envelopes.rs`](../../../packages/contracts/src/envelopes.rs) and [`packages/contracts/ts/index.ts`](../../../packages/contracts/ts/index.ts). Full JSON examples: [examples.md](examples.md).
 
@@ -76,11 +79,12 @@ Ok(StatusCode::NO_CONTENT)
 
 ### Web Client
 
-Parse the envelope with the contract schema; return `.data` for details and the full `{ items, total }` for lists.
+Parse the envelope with the contract schema; return `.data` for details, the full `{ items, total }` for lists, and `{ items, next }` for cursor pages.
 
 ### Bruno
 
 - List: `res.body.items`, `res.body.total`
+- Cursor page: `res.body.items`, `res.body.next`
 - Details: `res.body.data.*`
 - Error: `res.body.error`, `res.body.code`, `res.status`
 

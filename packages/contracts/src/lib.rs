@@ -20,10 +20,13 @@
 //!
 //! This crate must not depend on core, database, adapter, rustauth, or HTTP framework crates.
 
+pub mod chat;
 pub mod envelopes;
 pub mod error;
+pub mod events;
 pub mod file;
 pub mod health;
+pub mod message;
 pub mod model;
 mod patch;
 pub mod project;
@@ -33,13 +36,23 @@ pub mod settings;
 pub mod shared;
 pub mod tool;
 
-pub use crate::envelopes::{DetailsResponse, ListResponse};
+pub use crate::chat::{
+    ApprovedTool, CallDecision, ChatListQuery, ChatResponse, ChatSummaryResponse,
+    CreateChatRequest, Decision, DecisionScope, DecisionsRequest, SearchHitResponse, SearchQuery,
+    SendMessageRequest, ToolOverride, UpdateChatRequest,
+};
+pub use crate::envelopes::{DetailsResponse, ListResponse, PageResponse};
 pub use crate::error::ErrorResponse;
+pub use crate::events::{ChatStreamEvent, PartKind, Refusal, UserEvent};
 pub use crate::file::{
     Capacity, CapacityLevel, FileResponse, MoveFileRequest, UPLOAD_FIELD, UpdateFileRequest,
     UploadFileForm,
 };
 pub use crate::health::{HealthResponse, ReadyResponse, RootResponse};
+pub use crate::message::{
+    Approval, FinishReason, MessagePartDto, MessageResponse, MessageStatus, ResultContent, Role,
+    ToolStatus, Usage,
+};
 pub use crate::model::{
     Capabilities, Capability, CapabilityLock, CapabilityOverrides, ModelResponse,
     UpdateModelRequest,

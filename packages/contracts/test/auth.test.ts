@@ -2,6 +2,7 @@
 // Where both define a name (the envelopes, `errorResponseSchema`, `REQUEST_ID_HEADER`), Copilot's
 // definition wins, so these tests prove the two still agree.
 
+import * as copilot from "@contracts/index";
 import {
   authRoutes,
   type DetailsResponse,
@@ -45,6 +46,17 @@ describe("rustauth re-export", () => {
     expect(registerRequestSchema).toBe(auth.registerRequestSchema);
     expect(authRoutes).toBe(auth.authRoutes);
     expect(hasRole("administrator", "manager")).toBe(true);
+  });
+
+  test("replaces only the shared helpers", () => {
+    const own = copilot as Record<string, unknown>;
+    const theirs = auth as Record<string, unknown>;
+    const replaced = Object.keys(theirs).filter((name) => own[name] !== theirs[name]);
+    expect(replaced.sort()).toEqual([
+      "detailsResponseSchema",
+      "errorResponseSchema",
+      "listResponseSchema",
+    ]);
   });
 
   test("uses the same request id header", () => {

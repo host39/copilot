@@ -14,27 +14,43 @@
 
 export * from "@rustauth/contracts";
 
+import type { Approval } from "@contracts/generated/Approval";
 import type { ApprovalMode } from "@contracts/generated/ApprovalMode";
+import type { ApprovedTool } from "@contracts/generated/ApprovedTool";
 import type { BuiltinTool } from "@contracts/generated/BuiltinTool";
+import type { CallDecision } from "@contracts/generated/CallDecision";
 import type { Capabilities } from "@contracts/generated/Capabilities";
 import type { Capability } from "@contracts/generated/Capability";
 import type { CapabilityLock } from "@contracts/generated/CapabilityLock";
 import type { CapabilityOverrides } from "@contracts/generated/CapabilityOverrides";
 import type { Capacity } from "@contracts/generated/Capacity";
 import type { CapacityLevel } from "@contracts/generated/CapacityLevel";
+import type { ChatListQuery } from "@contracts/generated/ChatListQuery";
+import type { ChatResponse } from "@contracts/generated/ChatResponse";
+import type { ChatStreamEvent } from "@contracts/generated/ChatStreamEvent";
+import type { ChatSummaryResponse } from "@contracts/generated/ChatSummaryResponse";
+import type { CreateChatRequest } from "@contracts/generated/CreateChatRequest";
 import type { CreatedBy } from "@contracts/generated/CreatedBy";
 import type { CreateProjectRequest } from "@contracts/generated/CreateProjectRequest";
 import type { CreateProviderRequest } from "@contracts/generated/CreateProviderRequest";
 import type { CreateScheduleRequest } from "@contracts/generated/CreateScheduleRequest";
 import type { CreateToolServerRequest } from "@contracts/generated/CreateToolServerRequest";
 import type { Credentials } from "@contracts/generated/Credentials";
+import type { Decision } from "@contracts/generated/Decision";
+import type { DecisionScope } from "@contracts/generated/DecisionScope";
+import type { DecisionsRequest } from "@contracts/generated/DecisionsRequest";
 import type { ErrorResponse } from "@contracts/generated/ErrorResponse";
 import type { FileResponse } from "@contracts/generated/FileResponse";
+import type { FinishReason } from "@contracts/generated/FinishReason";
 import type { HealthResponse } from "@contracts/generated/HealthResponse";
 import type { KeyState } from "@contracts/generated/KeyState";
+import type { MessagePartDto } from "@contracts/generated/MessagePartDto";
+import type { MessageResponse } from "@contracts/generated/MessageResponse";
+import type { MessageStatus } from "@contracts/generated/MessageStatus";
 import type { ModelResponse } from "@contracts/generated/ModelResponse";
 import type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
 import type { OnAsk } from "@contracts/generated/OnAsk";
+import type { PartKind } from "@contracts/generated/PartKind";
 import type { Preset } from "@contracts/generated/Preset";
 import type { ProjectDetailsResponse } from "@contracts/generated/ProjectDetailsResponse";
 import type { ProjectListQuery } from "@contracts/generated/ProjectListQuery";
@@ -46,6 +62,9 @@ import type { ProviderUsage } from "@contracts/generated/ProviderUsage";
 import type { ReadyResponse } from "@contracts/generated/ReadyResponse";
 import type { ReasoningLevel } from "@contracts/generated/ReasoningLevel";
 import type { RefreshResponse } from "@contracts/generated/RefreshResponse";
+import type { Refusal } from "@contracts/generated/Refusal";
+import type { ResultContent } from "@contracts/generated/ResultContent";
+import type { Role } from "@contracts/generated/Role";
 import type { RootResponse } from "@contracts/generated/RootResponse";
 import type { RunStatus } from "@contracts/generated/RunStatus";
 import type { ScheduleListQuery } from "@contracts/generated/ScheduleListQuery";
@@ -53,12 +72,18 @@ import type { SchedulePreviewRequest } from "@contracts/generated/SchedulePrevie
 import type { SchedulePreviewResponse } from "@contracts/generated/SchedulePreviewResponse";
 import type { ScheduleResponse } from "@contracts/generated/ScheduleResponse";
 import type { ScheduleRunResponse } from "@contracts/generated/ScheduleRunResponse";
+import type { SearchHitResponse } from "@contracts/generated/SearchHitResponse";
+import type { SearchQuery } from "@contracts/generated/SearchQuery";
+import type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 import type { ServerTool } from "@contracts/generated/ServerTool";
 import type { SettingsResponse } from "@contracts/generated/SettingsResponse";
 import type { ToolChanges } from "@contracts/generated/ToolChanges";
 import type { ToolMode } from "@contracts/generated/ToolMode";
+import type { ToolOverride } from "@contracts/generated/ToolOverride";
 import type { ToolServerResponse } from "@contracts/generated/ToolServerResponse";
+import type { ToolStatus } from "@contracts/generated/ToolStatus";
 import type { ToolTestResponse } from "@contracts/generated/ToolTestResponse";
+import type { UpdateChatRequest } from "@contracts/generated/UpdateChatRequest";
 import type { UpdateFileRequest } from "@contracts/generated/UpdateFileRequest";
 import type { UpdateModelRequest } from "@contracts/generated/UpdateModelRequest";
 import type { UpdateProjectRequest } from "@contracts/generated/UpdateProjectRequest";
@@ -66,31 +91,50 @@ import type { UpdateProviderRequest } from "@contracts/generated/UpdateProviderR
 import type { UpdateScheduleRequest } from "@contracts/generated/UpdateScheduleRequest";
 import type { UpdateSettingsRequest } from "@contracts/generated/UpdateSettingsRequest";
 import type { UpdateToolServerRequest } from "@contracts/generated/UpdateToolServerRequest";
+import type { Usage } from "@contracts/generated/Usage";
+import type { UserEvent } from "@contracts/generated/UserEvent";
 import { z } from "zod";
 
+export type { Approval } from "@contracts/generated/Approval";
 export type { ApprovalMode } from "@contracts/generated/ApprovalMode";
+export type { ApprovedTool } from "@contracts/generated/ApprovedTool";
 export type { BuiltinTool } from "@contracts/generated/BuiltinTool";
+export type { CallDecision } from "@contracts/generated/CallDecision";
 export type { Capabilities } from "@contracts/generated/Capabilities";
 export type { Capability } from "@contracts/generated/Capability";
 export type { CapabilityLock } from "@contracts/generated/CapabilityLock";
 export type { CapabilityOverrides } from "@contracts/generated/CapabilityOverrides";
 export type { Capacity } from "@contracts/generated/Capacity";
 export type { CapacityLevel } from "@contracts/generated/CapacityLevel";
+export type { ChatListQuery } from "@contracts/generated/ChatListQuery";
+export type { ChatResponse } from "@contracts/generated/ChatResponse";
+export type { ChatStreamEvent } from "@contracts/generated/ChatStreamEvent";
+export type { ChatSummaryResponse } from "@contracts/generated/ChatSummaryResponse";
+export type { CreateChatRequest } from "@contracts/generated/CreateChatRequest";
 export type { CreatedBy } from "@contracts/generated/CreatedBy";
 export type { CreateProjectRequest } from "@contracts/generated/CreateProjectRequest";
 export type { CreateProviderRequest } from "@contracts/generated/CreateProviderRequest";
 export type { CreateScheduleRequest } from "@contracts/generated/CreateScheduleRequest";
 export type { CreateToolServerRequest } from "@contracts/generated/CreateToolServerRequest";
 export type { Credentials } from "@contracts/generated/Credentials";
+export type { Decision } from "@contracts/generated/Decision";
+export type { DecisionScope } from "@contracts/generated/DecisionScope";
+export type { DecisionsRequest } from "@contracts/generated/DecisionsRequest";
 export type { DetailsResponse } from "@contracts/generated/DetailsResponse";
 export type { ErrorResponse } from "@contracts/generated/ErrorResponse";
 export type { FileResponse } from "@contracts/generated/FileResponse";
+export type { FinishReason } from "@contracts/generated/FinishReason";
 export type { HealthResponse } from "@contracts/generated/HealthResponse";
 export type { KeyState } from "@contracts/generated/KeyState";
 export type { ListResponse } from "@contracts/generated/ListResponse";
+export type { MessagePartDto } from "@contracts/generated/MessagePartDto";
+export type { MessageResponse } from "@contracts/generated/MessageResponse";
+export type { MessageStatus } from "@contracts/generated/MessageStatus";
 export type { ModelResponse } from "@contracts/generated/ModelResponse";
 export type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
 export type { OnAsk } from "@contracts/generated/OnAsk";
+export type { PageResponse } from "@contracts/generated/PageResponse";
+export type { PartKind } from "@contracts/generated/PartKind";
 export type { Preset } from "@contracts/generated/Preset";
 export type { ProjectDetailsResponse } from "@contracts/generated/ProjectDetailsResponse";
 export type { ProjectListQuery } from "@contracts/generated/ProjectListQuery";
@@ -102,6 +146,9 @@ export type { ProviderUsage } from "@contracts/generated/ProviderUsage";
 export type { ReadyResponse } from "@contracts/generated/ReadyResponse";
 export type { ReasoningLevel } from "@contracts/generated/ReasoningLevel";
 export type { RefreshResponse } from "@contracts/generated/RefreshResponse";
+export type { Refusal } from "@contracts/generated/Refusal";
+export type { ResultContent } from "@contracts/generated/ResultContent";
+export type { Role } from "@contracts/generated/Role";
 export type { RootResponse } from "@contracts/generated/RootResponse";
 export type { RunStatus } from "@contracts/generated/RunStatus";
 export type { ScheduleListQuery } from "@contracts/generated/ScheduleListQuery";
@@ -109,12 +156,18 @@ export type { SchedulePreviewRequest } from "@contracts/generated/SchedulePrevie
 export type { SchedulePreviewResponse } from "@contracts/generated/SchedulePreviewResponse";
 export type { ScheduleResponse } from "@contracts/generated/ScheduleResponse";
 export type { ScheduleRunResponse } from "@contracts/generated/ScheduleRunResponse";
+export type { SearchHitResponse } from "@contracts/generated/SearchHitResponse";
+export type { SearchQuery } from "@contracts/generated/SearchQuery";
+export type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 export type { ServerTool } from "@contracts/generated/ServerTool";
 export type { SettingsResponse } from "@contracts/generated/SettingsResponse";
 export type { ToolChanges } from "@contracts/generated/ToolChanges";
 export type { ToolMode } from "@contracts/generated/ToolMode";
+export type { ToolOverride } from "@contracts/generated/ToolOverride";
 export type { ToolServerResponse } from "@contracts/generated/ToolServerResponse";
+export type { ToolStatus } from "@contracts/generated/ToolStatus";
 export type { ToolTestResponse } from "@contracts/generated/ToolTestResponse";
+export type { UpdateChatRequest } from "@contracts/generated/UpdateChatRequest";
 export type { UpdateFileRequest } from "@contracts/generated/UpdateFileRequest";
 export type { UpdateModelRequest } from "@contracts/generated/UpdateModelRequest";
 export type { UpdateProjectRequest } from "@contracts/generated/UpdateProjectRequest";
@@ -122,6 +175,8 @@ export type { UpdateProviderRequest } from "@contracts/generated/UpdateProviderR
 export type { UpdateScheduleRequest } from "@contracts/generated/UpdateScheduleRequest";
 export type { UpdateSettingsRequest } from "@contracts/generated/UpdateSettingsRequest";
 export type { UpdateToolServerRequest } from "@contracts/generated/UpdateToolServerRequest";
+export type { Usage } from "@contracts/generated/Usage";
+export type { UserEvent } from "@contracts/generated/UserEvent";
 
 export const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -163,6 +218,17 @@ export function listResponseSchema<T extends z.ZodType>(item: T) {
 /** `{ data }` details envelope around `data`. Pass `schema.nullable()` when absence is valid. */
 export function detailsResponseSchema<T extends z.ZodType>(data: T) {
   return z.object({ data });
+}
+
+/**
+ * `{ items, next }` cursor page around `item`. Pass `next` back as `cursor` for the following
+ * page; it is `null` on the last page.
+ */
+export function pageResponseSchema<T extends z.ZodType>(item: T) {
+  return z.object({
+    items: z.array(item),
+    next: z.string().nullable(),
+  });
 }
 
 // Shared values
@@ -547,6 +613,304 @@ export const scheduleRunResponseSchema = z.object({
   chatId: id,
 }) satisfies z.ZodType<ScheduleRunResponse>;
 
+// Messages
+
+export const roleSchema = z.enum(["user", "assistant", "tool"]) satisfies z.ZodType<Role>;
+
+export const messageStatusSchema = z.enum([
+  "streaming",
+  "complete",
+  "awaiting_approval",
+  "cancelled",
+  "error",
+  "refused",
+]) satisfies z.ZodType<MessageStatus>;
+
+export const finishReasonSchema = z.enum([
+  "stop",
+  "tool_calls",
+  "length",
+  "refusal",
+  "error",
+  "other",
+  "tool_limit",
+]) satisfies z.ZodType<FinishReason>;
+
+export const toolStatusSchema = z.enum([
+  "ok",
+  "error",
+  "denied",
+  "cancelled",
+  "timeout",
+]) satisfies z.ZodType<ToolStatus>;
+
+export const approvalSchema = z.enum([
+  "auto",
+  "pending",
+  "approved",
+  "denied",
+]) satisfies z.ZodType<Approval>;
+
+export const usageSchema = z.object({
+  inputTokens: count.nullable(),
+  outputTokens: count.nullable(),
+  reasoningTokens: count.nullable(),
+  cacheReadTokens: count.nullable(),
+  cacheWriteTokens: count.nullable(),
+}) satisfies z.ZodType<Usage>;
+
+export const resultContentSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({ type: z.literal("image"), fileId: id }),
+]) satisfies z.ZodType<ResultContent>;
+
+export const messagePartSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({ type: z.literal("file"), fileId: id, name: z.string(), mediaType: z.string() }),
+  z.object({
+    type: z.literal("audio"),
+    fileId: id,
+    format: z.string(),
+    transcript: z.string().nullable(),
+    durationMs: count.nullable(),
+  }),
+  z.object({ type: z.literal("reasoning"), text: z.string() }),
+  z.object({
+    type: z.literal("toolCall"),
+    callId: id,
+    serverId: id.nullable(),
+    toolName: z.string(),
+    arguments: z.json(),
+    complete: z.boolean(),
+    approval: approvalSchema,
+    denyReason: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("toolResult"),
+    callId: id,
+    status: toolStatusSchema,
+    isError: z.boolean(),
+    content: z.array(resultContentSchema),
+    truncated: z.boolean(),
+  }),
+]) satisfies z.ZodType<MessagePartDto>;
+
+export const messageResponseSchema = z.object({
+  id,
+  chatId: id,
+  role: roleSchema,
+  status: messageStatusSchema,
+  finishReason: finishReasonSchema.nullable(),
+  modelId: id.nullable(),
+  parts: z.array(messagePartSchema),
+  usage: usageSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+}) satisfies z.ZodType<MessageResponse>;
+
+// Chats and search
+
+export const toolOverrideSchema = z.object({
+  serverId: id,
+  enabled: z.boolean(),
+}) satisfies z.ZodType<ToolOverride>;
+
+export const approvedToolSchema = z.object({
+  serverId: id,
+  name: z.string(),
+}) satisfies z.ZodType<ApprovedTool>;
+
+export const chatResponseSchema = z.object({
+  id,
+  projectId: id.nullable(),
+  modelId: id.nullable(),
+  scheduleId: id.nullable(),
+  title: z.string(),
+  instructions: z.string(),
+  reasoning: reasoningLevelSchema.nullable(),
+  builtinTools: z.array(builtinToolSchema).nullable(),
+  toolOverrides: z.array(toolOverrideSchema),
+  approvedTools: z.array(approvedToolSchema),
+  pinned: z.boolean(),
+  voiceReplies: z.boolean(),
+  lastReadAt: timestamp.nullable(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+}) satisfies z.ZodType<ChatResponse>;
+
+export const chatSummaryResponseSchema = z.object({
+  id,
+  projectId: id.nullable(),
+  modelId: id.nullable(),
+  scheduleId: id.nullable(),
+  title: z.string(),
+  pinned: z.boolean(),
+  unread: z.boolean(),
+  awaitingApproval: z.boolean(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+}) satisfies z.ZodType<ChatSummaryResponse>;
+
+export const chatListQuerySchema = z.object({
+  projectId: id.optional(),
+  scheduleId: id.optional(),
+  pinned: z.boolean().optional(),
+  scheduled: z.boolean().optional(),
+  cursor: z.string().optional(),
+  limit: count.optional(),
+}) satisfies z.ZodType<ChatListQuery>;
+
+export const createChatRequestSchema = z.object({
+  projectId: id.optional(),
+  modelId: id.optional(),
+  instructions: z.string().optional(),
+  reasoning: reasoningLevelSchema.optional(),
+  builtinTools: z.array(builtinToolSchema).optional(),
+  toolOverrides: z.array(toolOverrideSchema).optional(),
+  voiceReplies: z.boolean().optional(),
+}) satisfies z.ZodType<CreateChatRequest>;
+
+export const updateChatRequestSchema = z.object({
+  title: z.string().optional(),
+  projectId: id.nullable().optional(),
+  modelId: id.nullable().optional(),
+  instructions: z.string().optional(),
+  reasoning: reasoningLevelSchema.nullable().optional(),
+  builtinTools: z.array(builtinToolSchema).nullable().optional(),
+  toolOverrides: z.array(toolOverrideSchema).optional(),
+  pinned: z.boolean().optional(),
+  voiceReplies: z.boolean().optional(),
+}) satisfies z.ZodType<UpdateChatRequest>;
+
+export const sendMessageRequestSchema = z.object({
+  text: z.string(),
+  fileIds: z.array(id).default([]),
+  editFrom: id.optional(),
+}) satisfies z.ZodType<SendMessageRequest>;
+
+export const decisionSchema = z.enum(["approve", "deny"]) satisfies z.ZodType<Decision>;
+
+export const decisionScopeSchema = z.enum(["once", "chat"]) satisfies z.ZodType<DecisionScope>;
+
+export const callDecisionSchema = z.object({
+  callId: id,
+  decision: decisionSchema,
+  scope: decisionScopeSchema.optional(),
+  reason: z.string().optional(),
+}) satisfies z.ZodType<CallDecision>;
+
+export const decisionsRequestSchema = z.object({
+  decisions: z.array(callDecisionSchema),
+}) satisfies z.ZodType<DecisionsRequest>;
+
+export const searchQuerySchema = z.object({
+  q: z.string(),
+  limit: count.optional(),
+}) satisfies z.ZodType<SearchQuery>;
+
+export const searchHitResponseSchema = z.object({
+  chatId: id,
+  chatTitle: z.string(),
+  messageId: id.nullable(),
+  snippet: z.string(),
+}) satisfies z.ZodType<SearchHitResponse>;
+
+// Stream events: the data of each server-sent event.
+
+export const partKindSchema = z.enum([
+  "text",
+  "reasoning",
+  "toolCall",
+  "audio",
+]) satisfies z.ZodType<PartKind>;
+
+export const refusalSchema = z.object({
+  category: z.string().nullable(),
+  explanation: z.string(),
+}) satisfies z.ZodType<Refusal>;
+
+const seq = count;
+
+/** Every event of a chat run (`POST /chats/{id}/messages` and the other streaming routes). */
+export const chatStreamEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("message.started"),
+    seq,
+    messageId: id,
+    role: roleSchema,
+    windowStartId: id.nullable(),
+  }),
+  z.object({
+    type: z.literal("part.started"),
+    seq,
+    messageId: id,
+    index: count,
+    kind: partKindSchema,
+  }),
+  z.object({
+    type: z.literal("text.delta"),
+    seq,
+    messageId: id,
+    index: count,
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("reasoning.delta"),
+    seq,
+    messageId: id,
+    index: count,
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("audio.delta"),
+    seq,
+    messageId: id,
+    data: z.string(),
+    format: z.string(),
+  }),
+  z.object({
+    type: z.literal("tool.requested"),
+    seq,
+    messageId: id,
+    callId: id,
+    serverId: id.nullable(),
+    toolName: z.string(),
+    title: z.string(),
+    arguments: z.json(),
+    needsApproval: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("tool.finished"),
+    seq,
+    messageId: id,
+    callId: id,
+    status: toolStatusSchema,
+    output: z.array(resultContentSchema),
+    truncated: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("message.finished"),
+    seq,
+    messageId: id,
+    status: messageStatusSchema,
+    finishReason: finishReasonSchema.nullable(),
+    refusal: refusalSchema.nullable(),
+    usage: usageSchema.nullable(),
+  }),
+  z.object({ type: z.literal("error"), seq, message: z.string(), code: z.string() }),
+  z.object({ type: z.literal("done"), seq }),
+]) satisfies z.ZodType<ChatStreamEvent>;
+
+/** Every event of the caller's `GET /events` stream. */
+export const userEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("chat.updated"), chatId: id }),
+  z.object({ type: z.literal("run.started"), chatId: id }),
+  z.object({ type: z.literal("run.finished"), chatId: id, status: messageStatusSchema }),
+  z.object({ type: z.literal("approval.pending"), chatId: id, messageId: id }),
+  z.object({ type: z.literal("schedule.updated"), scheduleId: id }),
+]) satisfies z.ZodType<UserEvent>;
+
 // Route bodies: the envelope of each success response.
 
 /** `GET` and `PATCH /settings` */
@@ -567,9 +931,17 @@ export const modelBodySchema = detailsResponseSchema(modelResponseSchema);
 export const fileListBodySchema = listResponseSchema(fileResponseSchema);
 /** `POST /projects/{id}/files`, `POST /chats/{id}/files`, `PATCH /files/{id}`, `POST /files/{id}/move` */
 export const fileBodySchema = detailsResponseSchema(fileResponseSchema);
+/** `GET /chats` */
+export const chatPageBodySchema = pageResponseSchema(chatSummaryResponseSchema);
+/** `POST /chats`, `GET` and `PATCH /chats/{id}` */
+export const chatBodySchema = detailsResponseSchema(chatResponseSchema);
+/** `GET /chats/{id}/messages` */
+export const messageListBodySchema = listResponseSchema(messageResponseSchema);
+/** `GET /search` */
+export const searchListBodySchema = listResponseSchema(searchHitResponseSchema);
 /** `GET /projects` */
 export const projectListBodySchema = listResponseSchema(projectResponseSchema);
-/** `POST /projects`, `PATCH /projects/{id}` */
+/** `POST /projects`, `PATCH /projects/{id}`, `POST /chats/{id}/save-as-project` and `/save-instructions` */
 export const projectBodySchema = detailsResponseSchema(projectResponseSchema);
 /** `GET /projects/{id}` */
 export const projectDetailsBodySchema = detailsResponseSchema(projectDetailsResponseSchema);

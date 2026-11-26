@@ -1,41 +1,61 @@
 //! Every contract builds its OpenAPI schema, and the schemas say what the wire carries.
 
 use copilot_contracts::{
-    ApprovalMode, BuiltinTool, Capabilities, Capability, CapabilityLock, CapabilityOverrides,
-    Capacity, CapacityLevel, CreateProjectRequest, CreateProviderRequest, CreateScheduleRequest,
-    CreateToolServerRequest, CreatedBy, Credentials, FileResponse, KeyState, ModelResponse,
-    MoveFileRequest, OnAsk, Preset, ProjectDetailsResponse, ProjectListQuery, ProjectResponse,
+    Approval, ApprovalMode, ApprovedTool, BuiltinTool, CallDecision, Capabilities, Capability,
+    CapabilityLock, CapabilityOverrides, Capacity, CapacityLevel, ChatListQuery, ChatResponse,
+    ChatStreamEvent, ChatSummaryResponse, CreateChatRequest, CreateProjectRequest,
+    CreateProviderRequest, CreateScheduleRequest, CreateToolServerRequest, CreatedBy, Credentials,
+    Decision, DecisionScope, DecisionsRequest, FileResponse, FinishReason, KeyState,
+    MessagePartDto, MessageResponse, MessageStatus, ModelResponse, MoveFileRequest, OnAsk,
+    PartKind, Preset, ProjectDetailsResponse, ProjectListQuery, ProjectResponse,
     ProviderDetailsResponse, ProviderKind, ProviderResponse, ProviderUsage, ReasoningLevel,
-    RefreshResponse, RunStatus, ScheduleListQuery, SchedulePreviewRequest, SchedulePreviewResponse,
-    ScheduleResponse, ScheduleRunResponse, ServerTool, SettingsResponse, ToolChanges, ToolMode,
-    ToolServerResponse, ToolTestResponse, UpdateFileRequest, UpdateModelRequest,
-    UpdateProjectRequest, UpdateProviderRequest, UpdateScheduleRequest, UpdateSettingsRequest,
-    UpdateToolServerRequest, UploadFileForm,
+    RefreshResponse, Refusal, ResultContent, Role, RunStatus, ScheduleListQuery,
+    SchedulePreviewRequest, SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse,
+    SearchHitResponse, SearchQuery, SendMessageRequest, ServerTool, SettingsResponse, ToolChanges,
+    ToolMode, ToolOverride, ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest,
+    UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest,
+    UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest, UploadFileForm, Usage,
+    UserEvent,
 };
 use serde_json::Value;
 use utoipa::{IntoParams, OpenApi};
 
 #[derive(OpenApi)]
 #[openapi(components(schemas(
+    Approval,
     ApprovalMode,
+    ApprovedTool,
     BuiltinTool,
+    CallDecision,
     Capabilities,
     Capability,
     CapabilityLock,
     CapabilityOverrides,
     Capacity,
     CapacityLevel,
+    ChatResponse,
+    ChatStreamEvent,
+    ChatSummaryResponse,
+    CreateChatRequest,
     CreateProjectRequest,
     CreateProviderRequest,
     CreateScheduleRequest,
     CreateToolServerRequest,
     CreatedBy,
     Credentials,
+    Decision,
+    DecisionScope,
+    DecisionsRequest,
     FileResponse,
+    FinishReason,
     KeyState,
+    MessagePartDto,
+    MessageResponse,
+    MessageStatus,
     ModelResponse,
     MoveFileRequest,
     OnAsk,
+    PartKind,
     Preset,
     ProjectDetailsResponse,
     ProjectResponse,
@@ -44,18 +64,26 @@ use utoipa::{IntoParams, OpenApi};
     ProviderResponse,
     ProviderUsage,
     ReasoningLevel,
+    Refusal,
     RefreshResponse,
+    ResultContent,
+    Role,
     RunStatus,
     SchedulePreviewRequest,
     SchedulePreviewResponse,
     ScheduleResponse,
     ScheduleRunResponse,
+    SearchHitResponse,
+    SendMessageRequest,
     ServerTool,
     SettingsResponse,
     ToolChanges,
     ToolMode,
+    ToolOverride,
     ToolServerResponse,
+    ToolStatus,
     ToolTestResponse,
+    UpdateChatRequest,
     UpdateFileRequest,
     UpdateModelRequest,
     UpdateProjectRequest,
@@ -64,6 +92,8 @@ use utoipa::{IntoParams, OpenApi};
     UpdateSettingsRequest,
     UpdateToolServerRequest,
     UploadFileForm,
+    Usage,
+    UserEvent,
 )))]
 struct Doc;
 
@@ -78,10 +108,29 @@ fn properties(schema: &Value) -> Vec<String> {
         .as_object()
         .map(|properties| properties.keys().cloned().collect())
         .unwrap_or_default();
-    if let Some(parts) = schema["allOf"].as_array() {
-        names.extend(parts.iter().flat_map(properties));
+    for key in ["allOf", "oneOf"] {
+        if let Some(parts) = schema[key].as_array() {
+            names.extend(parts.iter().flat_map(properties));
+        }
     }
     names
+}
+
+/// The `type` values of a tagged union's variants.
+fn tags(schema: &Value) -> Vec<String> {
+    schema["oneOf"]
+        .as_array()
+        .expect("a oneOf")
+        .iter()
+        .map(|variant| {
+            let tag = &variant["properties"]["type"];
+            tag["enum"][0]
+                .as_str()
+                .or_else(|| tag["const"].as_str())
+                .unwrap_or_else(|| panic!("no tag in {variant}"))
+                .to_owned()
+        })
+        .collect()
 }
 
 #[test]
@@ -129,4 +178,64 @@ fn queries_name_camel_case_parameters() {
         names(ScheduleListQuery::into_params(|| None)),
         ["projectId"]
     );
+    assert_eq!(
+        names(ChatListQuery::into_params(|| None)),
+        [
+            "projectId",
+            "scheduleId",
+            "pinned",
+            "scheduled",
+            "cursor",
+            "limit"
+        ]
+    );
+    assert_eq!(names(SearchQuery::into_params(|| None)), ["q", "limit"]);
+}
+
+#[test]
+fn unions_are_tagged_by_type() {
+    let schemas = schemas();
+    assert_eq!(
+        tags(&schemas["ChatStreamEvent"]),
+        [
+            "message.started",
+            "part.started",
+            "text.delta",
+            "reasoning.delta",
+            "audio.delta",
+            "tool.requested",
+            "tool.finished",
+            "message.finished",
+            "error",
+            "done"
+        ]
+    );
+    assert_eq!(
+        tags(&schemas["UserEvent"]),
+        [
+            "chat.updated",
+            "run.started",
+            "run.finished",
+            "approval.pending",
+            "schedule.updated"
+        ]
+    );
+    assert_eq!(
+        tags(&schemas["MessagePartDto"]),
+        [
+            "text",
+            "file",
+            "audio",
+            "reasoning",
+            "toolCall",
+            "toolResult"
+        ]
+    );
+    for variant in schemas["ChatStreamEvent"]["oneOf"]
+        .as_array()
+        .expect("variants")
+    {
+        let required = variant["required"].as_array().expect("required fields");
+        assert!(required.contains(&Value::from("seq")), "{variant}");
+    }
 }
