@@ -461,11 +461,7 @@ mod tests {
             request(Method::GET, "/api/settings", Some(&token), None),
         )
         .await;
-        assert_eq!(
-            signed_in.status,
-            StatusCode::NOT_IMPLEMENTED,
-            "past the guard"
-        );
+        assert_eq!(signed_in.status, StatusCode::OK, "past the guard");
         let anonymous = send(app, request(Method::GET, "/api/settings", None, None)).await;
         assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     }

@@ -1,0 +1,30 @@
+meta {
+  name: 05-02 Get Project
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/projects/{{projectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.id: eq {{projectId}}
+  res.body.data.instructions: eq "Cite sources."
+  res.body.data.capacity.used: eq 0
+  res.body.data.capacity.window: isNull
+  res.body.data.capacity.level: eq unknown
+}
+
+docs {
+  **Endpoint:** `GET /api/projects/{id}`
+
+  **This test verifies:** the details carry the capacity bar (`unknown` without a default model).
+}

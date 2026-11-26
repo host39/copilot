@@ -1,0 +1,33 @@
+meta {
+  name: 05-07 Other User Chat in Project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/chats
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "projectId": "{{projectId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats` as user B, with user A's project id in the body
+
+  **This test verifies:** user B cannot start a chat in user A's project (and so read its
+  instructions and files).
+}

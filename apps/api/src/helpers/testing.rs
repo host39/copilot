@@ -198,3 +198,84 @@ pub async fn other_user(app: &Router, admin: &str, username: &str) -> String {
         .expect("a session token")
         .to_owned()
 }
+
+/// A provider that lists the model `mock-1` (the chat completions route is the caller's).
+pub async fn provider() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [{ "id": "mock-1", "object": "model", "created": 1, "owned_by": "test" }],
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A connection of `token`'s user to `server` (loopback: the user must be the administrator),
+/// refreshed; the id of its enabled model.
+pub async fn model(app: &Router, token: &str, server: &wiremock::MockServer) -> String {
+    let created = send(
+        app.clone(),
+        request(
+            Method::POST,
+            "/api/providers",
+            Some(token),
+            Some(json!({
+                "kind": "openai",
+                "preset": "custom",
+                "name": "Mock",
+                "baseUrl": format!("{}/v1", server.uri()),
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let provider = created.body["data"]["id"].as_str().expect("an id");
+    let refreshed = send(
+        app.clone(),
+        request(
+            Method::POST,
+            &format!("/api/providers/{provider}/refresh"),
+            Some(token),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    let models = send(
+        app.clone(),
+        request(
+            Method::GET,
+            &format!("/api/providers/{provider}/models"),
+            Some(token),
+            None,
+        ),
+    )
+    .await;
+    models.body["items"][0]["id"]
+        .as_str()
+        .expect("a model")
+        .to_owned()
+}
+
+/// A tool server of `user` written with SQL (its routes come with a later step); its id.
+pub async fn tool_server(db: &DbPool, user: &str, slug: &str) -> String {
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tool_servers (created_at, updated_at, id, user_id, name, slug, url) \
+         SELECT now(), now(), $1, id, 'Docs', $2, 'https://mcp.example.com' \
+         FROM auth.users WHERE username = $3",
+    )
+    .bind(id)
+    .bind(slug)
+    .bind(user)
+    .execute(db)
+    .await
+    .expect("tool server inserted");
+    id.to_string()
+}

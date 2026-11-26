@@ -12,11 +12,14 @@
 //! Disconnecting a stream never cancels the run; the root shutdown token does (each run gets a
 //! child token).
 //!
-//! The walking skeleton (P1.9) attaches the stream of the request that started the run. P3.1
-//! adds reattaching (`GET /chats/{id}/stream`), stop, and the per-user event stream.
+//! The walking skeleton (P1.9) attaches the stream of the request that started the run.
+//! [`RunRegistry::stop`] cancels a run and waits for it to end (deleting a project stops the
+//! runs of its chats first). P3.1 adds reattaching (`GET /chats/{id}/stream`), the stop route,
+//! and the per-user event stream.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use copilot_contracts::ChatStreamEvent;
 use copilot_core::shared::constants::MAX_ACTIVE_RUNS_PER_USER;
@@ -48,6 +51,10 @@ pub struct RunRegistry {
 struct Entry {
     owner: UserId,
     run: Uuid,
+    /// The run's own token (a child of the shutdown token).
+    cancel: CancellationToken,
+    /// Cancelled when the slot is released.
+    released: CancellationToken,
 }
 
 impl RunRegistry {
@@ -82,14 +89,49 @@ impl RunRegistry {
             ));
         }
         let run = Uuid::now_v7();
-        runs.insert(chat, Entry { owner, run });
+        let cancel = self.shutdown.child_token();
+        runs.insert(
+            chat,
+            Entry {
+                owner,
+                run,
+                cancel: cancel.clone(),
+                released: CancellationToken::new(),
+            },
+        );
         Ok(Reservation {
             registry: Arc::clone(self),
             chat,
             run,
             sink: Arc::new(RunSink::new(Arc::clone(self), chat, run)),
-            cancel: self.shutdown.child_token(),
+            cancel,
         })
+    }
+
+    /// The chats of `owner` that are answering now.
+    pub fn chats(&self, owner: UserId) -> Vec<ChatId> {
+        self.lock()
+            .iter()
+            .filter(|(_, entry)| entry.owner == owner)
+            .map(|(chat, _)| *chat)
+            .collect()
+    }
+
+    /// Cancels the run of `chat`, if one is live, and waits up to `wait` for it to end (the
+    /// engine saves the cancelled answer, then sends `done`, which releases the slot). `false`
+    /// when the run was still live after `wait`.
+    pub async fn stop(&self, chat: ChatId, wait: Duration) -> bool {
+        let released = {
+            let runs = self.lock();
+            let Some(entry) = runs.get(&chat) else {
+                return true;
+            };
+            entry.cancel.cancel();
+            entry.released.clone()
+        };
+        tokio::time::timeout(wait, released.cancelled())
+            .await
+            .is_ok()
     }
 
     /// Whether `chat` is answering.
@@ -99,8 +141,10 @@ impl RunRegistry {
 
     fn release(&self, chat: ChatId, run: Uuid) {
         let mut runs = self.lock();
-        if runs.get(&chat).is_some_and(|entry| entry.run == run) {
-            runs.remove(&chat);
+        if runs.get(&chat).is_some_and(|entry| entry.run == run)
+            && let Some(entry) = runs.remove(&chat)
+        {
+            entry.released.cancel();
         }
     }
 
@@ -125,7 +169,7 @@ impl Reservation {
         Arc::clone(&self.sink)
     }
 
-    /// Cancelled on shutdown (and, from P3.1 on, by `POST /chats/{id}/stop`).
+    /// Cancelled on shutdown and by [`RunRegistry::stop`].
     pub fn cancel(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -402,6 +446,47 @@ mod tests {
             index: 0,
             text: index.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn stopping_a_run_cancels_it_and_waits_until_it_ends() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let other = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let theirs = ChatId::generate();
+        let reservation = registry.reserve(owner, chat).unwrap();
+        let _their_run = registry.reserve(other, theirs).unwrap();
+        assert_eq!(registry.chats(owner), [chat]);
+
+        let cancel = reservation.cancel();
+        let run = tokio::spawn(async move {
+            cancel.cancelled().await;
+            // The engine saves the cancelled answer, then the slot is released.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(reservation);
+        });
+        assert!(registry.stop(chat, Duration::from_secs(5)).await);
+        assert!(
+            !registry.is_running(chat),
+            "the run ended before stop returned"
+        );
+        assert!(registry.chats(owner).is_empty());
+        assert!(registry.is_running(theirs), "other runs go on");
+        run.await.unwrap();
+        assert!(
+            registry.stop(ChatId::generate(), Duration::ZERO).await,
+            "a chat without a run is stopped already"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_gives_up_after_its_wait() {
+        let registry = registry(3);
+        let chat = ChatId::generate();
+        let reservation = registry.reserve(UserId::new(Uuid::now_v7()), chat).unwrap();
+        assert!(!registry.stop(chat, Duration::from_millis(10)).await);
+        assert!(reservation.cancel().is_cancelled(), "but it was cancelled");
     }
 
     #[test]

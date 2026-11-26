@@ -264,10 +264,9 @@ mod tests {
     use copilot_database::DbPool;
     use serde_json::{Value, json};
 
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use crate::helpers::testing::{TestResponse, live_app, other_user, register, request, send};
+    use crate::helpers::testing::{
+        TestResponse, live_app, other_user, provider, register, request, send,
+    };
 
     async fn call(
         app: &Router,
@@ -419,15 +418,7 @@ mod tests {
     #[sqlx::test(migrations = false)]
     #[ignore = "requires Postgres: run make test-db"]
     async fn deleting_a_connection_counts_then_releases_what_used_its_models(pool: DbPool) {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/models"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "object": "list",
-                "data": [{ "id": "mock-1", "object": "model", "created": 1, "owned_by": "test" }],
-            })))
-            .mount(&server)
-            .await;
+        let server = provider().await;
         let app = live_app(pool.clone()).await;
         let alice = register(&app, "alice").await;
         let created = call(

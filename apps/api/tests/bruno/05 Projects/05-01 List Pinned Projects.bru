@@ -1,0 +1,35 @@
+meta {
+  name: 05-01 List Pinned Projects
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/projects?pinned=true&limit=5
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+  res.body.total: gte 1
+}
+
+tests {
+  test("lists the pinned project", function () {
+    const ids = res.body.items.map((project) => project.id);
+    expect(ids).to.include(bru.getVar("projectId"));
+    expect(res.body.items.every((project) => project.pinned)).to.equal(true);
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/projects?pinned=true&limit=5`
+
+  **This test verifies:** the pinned filter and the limit (the sidebar's query).
+}

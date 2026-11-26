@@ -377,6 +377,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "rustauth",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx",

@@ -1,9 +1,10 @@
-//! Path parameters that fail with the shared error body instead of axum's plain text.
+//! Path and query parameters that fail with the shared error body instead of axum's plain text.
 
 use axum::extract::{FromRequestParts, Path};
 use axum::http::request::Parts;
 use copilot_core::DomainError;
 use copilot_middleware::HttpError;
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 /// The `{id}` of a route. A value that is not a UUID is a `400` (`VALIDATION_ERROR`, field `id`).
@@ -19,6 +20,24 @@ impl<S: Send + Sync> FromRequestParts<S> for Id {
             Err(_) => Err(HttpError::Domain(
                 DomainError::validation("The id in the path is not valid.").with_field("id"),
             )),
+        }
+    }
+}
+
+/// The query string of a route, read into `T`. A value that does not fit is a `400`
+/// (`VALIDATION_ERROR`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Params<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Params<T> {
+    type Rejection = HttpError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(Self(value)),
+            Err(_) => Err(HttpError::Domain(DomainError::validation(
+                "The query string is not valid.",
+            ))),
         }
     }
 }

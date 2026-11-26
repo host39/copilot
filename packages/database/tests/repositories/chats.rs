@@ -1,22 +1,14 @@
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    Approval, ApprovedTool, BaseUrl, BuiltinTool, CallId, Chat, ChatRepository, ContextHash,
-    FileId, FinishReason, Message, MessageParts, MessageRepository, MessageStatus, NetworkScope,
-    Part, ReasoningLevel, Rendering, ResultContent, ServerOverride, Slug, SnapshotFile,
-    SnapshotTool, ToolAlias, ToolCallPart, ToolResultPart, ToolServer, ToolServerRepository,
-    ToolStatus, TurnContext, TurnContextRepository, Usage, UserId,
+    Approval, ApprovedTool, BuiltinTool, CallId, Chat, ChatRepository, ContextHash, FileId,
+    FinishReason, Message, MessageParts, MessageRepository, MessageStatus, Part, ReasoningLevel,
+    Rendering, ResultContent, ServerOverride, SnapshotFile, SnapshotTool, ToolAlias, ToolCallPart,
+    ToolResultPart, ToolStatus, TurnContext, TurnContextRepository, Usage, UserId,
 };
 use copilot_database::{DbPool, PgStore};
 use serde_json::json;
 
-use crate::{NOW, at, model, store, updated_at, user};
-
-async fn server(store: &PgStore, owner: UserId, slug: &str) -> ToolServer {
-    let url = BaseUrl::parse("https://mcp.example.com", NetworkScope::Public).unwrap();
-    let server = ToolServer::create(owner, "Docs", Slug::parse(slug).unwrap(), url, at(0)).unwrap();
-    ToolServerRepository::insert(store, &server).await.unwrap();
-    server
-}
+use crate::{NOW, at, model, server, store, updated_at, user};
 
 async fn chat(store: &PgStore, owner: UserId) -> Chat {
     let chat = Chat::create(owner, at(0));

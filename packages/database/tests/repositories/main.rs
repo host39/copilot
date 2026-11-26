@@ -1,12 +1,13 @@
-//! Tests of the repositories the walking skeleton uses (`make test-db`): every row and stored
-//! JSON record round-trips, every read and write is scoped to its owner, a refresh syncs models,
-//! and message writes move the chat in the recent list.
+//! Repository tests (`make test-db`): every row and stored JSON record round-trips, every read
+//! and write is scoped to its owner, multi-row writes are one transaction, a refresh syncs
+//! models, and message writes move the chat in the recent list.
 //!
 //! Every test gets a throwaway database (`#[sqlx::test(migrations = false)]`) and starts with
 //! [`store`], which runs the same `migrate::run` as a real install. The store's clock stands still
 //! at [`NOW`], so the timestamps a repository sets itself are known.
 
 mod chats;
+mod files;
 mod projects;
 mod providers;
 mod schedules;
@@ -19,7 +20,8 @@ use chrono::{DateTime, Utc};
 use copilot_core::{
     BaseUrl, Capabilities, ChatRepository, Clock, DetectedModel, Model, ModelQuery,
     ModelRepository, NetworkScope, Preset, Provider, ProviderKind, ProviderRepository,
-    ReasoningLevel, RemoteModel, ReportedCapabilities, UserId,
+    ReasoningLevel, RemoteModel, ReportedCapabilities, Slug, ToolServer, ToolServerRepository,
+    UserId,
 };
 use copilot_database::operations::migrate;
 use copilot_database::{DbPool, PgStore};
@@ -84,6 +86,14 @@ pub async fn provider(store: &PgStore, user: UserId) -> Provider {
     provider
 }
 
+/// A saved tool server of `owner` with the slug `slug`.
+pub async fn server(store: &PgStore, owner: UserId, slug: &str) -> ToolServer {
+    let url = BaseUrl::parse("https://mcp.example.com", NetworkScope::Public).unwrap();
+    let server = ToolServer::create(owner, "Docs", Slug::parse(slug).unwrap(), url, at(0)).unwrap();
+    ToolServerRepository::insert(store, &server).await.unwrap();
+    server
+}
+
 /// A listed model with reasoning levels.
 pub fn detected(remote_id: &str, context_window: Option<u32>) -> DetectedModel {
     DetectedModel {
@@ -120,6 +130,38 @@ pub async fn model(store: &PgStore, user: UserId) -> Model {
         .await
         .unwrap()
         .remove(0)
+}
+
+/// A small text file of `owner` in a project or a chat, written with SQL (the file repository
+/// has its own tests); its id.
+pub async fn file_in(
+    store: &PgStore,
+    owner: UserId,
+    project: Option<copilot_core::ProjectId>,
+    chat: Option<copilot_core::ChatId>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO files (created_at, size_bytes, token_estimate, id, user_id, project_id, \
+         chat_id, name, media_type, sha256) \
+         VALUES ($1, 5, 2, $2, $3, $4, $5, 'notes.txt', 'text/plain', $6)",
+    )
+    .bind(at(0))
+    .bind(id)
+    .bind(owner.uuid())
+    .bind(project.map(copilot_core::ProjectId::uuid))
+    .bind(chat.map(copilot_core::ChatId::uuid))
+    .bind(vec![0_u8; 32])
+    .execute(store.pool())
+    .await
+    .expect("file inserted");
+    sqlx::query("INSERT INTO file_contents (file_id, bytes) VALUES ($1, $2)")
+        .bind(id)
+        .bind(b"hello".to_vec())
+        .execute(store.pool())
+        .await
+        .expect("content inserted");
+    id
 }
 
 /// The chat's `updated_at` as stored.

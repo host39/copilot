@@ -1,0 +1,37 @@
+meta {
+  name: 05-03 Update Project
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/projects/{{projectId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Renamed",
+    "reasoning": null,
+    "toolServerIds": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.name: eq "Bruno Renamed"
+  res.body.data.reasoning: isNull
+  res.body.data.instructions: eq "Cite sources."
+  res.body.data.pinned: eq true
+}
+
+docs {
+  **Endpoint:** `PATCH /api/projects/{id}`
+
+  **This test verifies:** only the given fields change, and `null` clears a nullable one.
+}

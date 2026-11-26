@@ -1,0 +1,25 @@
+meta {
+  name: 05-12 Delete Project
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{baseUrl}}/api/projects/{{doomedProjectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/projects/{id}`
+
+  **This test verifies:** the owner deletes a project.
+}

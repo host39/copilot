@@ -105,6 +105,22 @@ out!(
     dto::Capability,
     [Vision, Pdf, Tools, AudioIn, AudioOut, Reasoning]
 );
+out!(
+    core::CapacityLevel,
+    dto::CapacityLevel,
+    [Unknown, Fits, Warn, Over]
+);
+
+impl ToDto for core::Capacity {
+    type Dto = dto::Capacity;
+    fn to_dto(self) -> dto::Capacity {
+        dto::Capacity {
+            used: self.used,
+            window: self.window,
+            level: self.level().to_dto(),
+        }
+    }
+}
 
 impl ToDto for core::Usage {
     type Dto = dto::Usage;

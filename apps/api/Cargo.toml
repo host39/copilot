@@ -27,6 +27,8 @@ copilot-security = { workspace = true }
 futures-util = { workspace = true }
 # Identity: the router, guard, and Postgres storage. Only `helpers/auth.rs` names it.
 rustauth = { workspace = true, features = ["axum", "postgres"] }
+# Query strings (`routes::path::Params`).
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 # `sync::CancellationToken` only: the root token that shutdown cancels.
