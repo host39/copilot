@@ -17,7 +17,7 @@ Run these yourself from the repo root to verify work:
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
 | `make migrations name=<name>` | Scaffolds a migration pair |
-| `make migrate` | Applies migrations + readonly role grants (needs Postgres) |
+| `make migrate` | Applies migrations + readonly role grants, and the server role's when `DB_SERVER_PASSWORD` is set (needs Postgres) |
 
 Run `make check` before considering work done. If a check needs infrastructure that is not running (Postgres for `test-db` / `test-bruno`), say so instead of skipping it silently.
 

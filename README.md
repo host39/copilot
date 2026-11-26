@@ -60,7 +60,7 @@ make dev-web        # web only on :4000
 | `make dev` | Start Postgres, then run API + web in parallel |
 | `make dev-api` | Start Postgres, then run the API only |
 | `make dev-web` | Run the web dev server only |
-| `make migrate` | Apply migrations + readonly grants |
+| `make migrate` | Apply migrations + readonly grants (and the server role's, with `DB_SERVER_PASSWORD`) |
 | `make seed` | Apply local SQL seed files |
 | `make migrations` | Scaffold a migration pair (`name=create_widgets`) |
 | `make contracts` | Regenerate TypeScript bindings from the Rust contracts |
