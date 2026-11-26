@@ -1,4 +1,4 @@
-//! Business domains (bounded contexts).
-//!
-//! Add one module per domain, for example `pub mod widget;`, following the layout in
-//! `README.md` next to this file. Re-export each domain's public API from `lib.rs`.
+//! Business domains (bounded contexts), laid out as described in `README.md` next to this file.
+//! Each domain's public API is re-exported from `lib.rs`.
+
+pub mod settings;

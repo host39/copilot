@@ -27,13 +27,13 @@ End-to-end workflow for a new business domain: `$ARGUMENTS` (for example `Widget
 
 ### 1. Entity
 
-`packages/core/src/domains/<name>/entities/<name>.rs` (plus `entities/mod.rs`)
+`packages/core/src/domains/<name>/entities.rs` (split into more files only when it grows)
 
 A struct with private fields, a validating constructor (`Widget::new(input) -> DomainResult<Widget>`), a `restore` constructor for rows read back from storage, getters, and `with_*` methods that return an updated copy. No `axum`, `sqlx`, or `serde` derives tied to the wire format.
 
 ### 2. Repository Trait (Port)
 
-`packages/core/src/domains/<name>/repositories/<name>_repository.rs`
+`packages/core/src/domains/<name>/ports.rs`
 
 ```rust
 #[async_trait]
@@ -49,13 +49,13 @@ Method names follow the `naming` rule: the trait already says `Widget`, so `get`
 
 ### 3. Service
 
-`packages/core/src/domains/<name>/services/<name>_service.rs`
+`packages/core/src/domains/<name>/service.rs`
 
 `pub struct WidgetService { widgets: Arc<dyn WidgetRepository> }` with use-case methods returning `DomainResult<T>`. Fail with `DomainError` variants and **human-readable** messages (`DomainError::not_found("Widget", id.to_string())`, `DomainError::validation("Name is required.").with_field("name")`). Never return HTTP status codes.
 
 ### 4. Domain Barrel
 
-- `packages/core/src/domains/<name>/mod.rs` declares `entities`, `repositories`, `services` and re-exports their public types.
+- `packages/core/src/domains/<name>/mod.rs` declares the private modules `entities`, `ports`, `service` and re-exports their public types.
 - Add `pub mod <name>;` to `packages/core/src/domains/mod.rs` and re-export from `packages/core/src/lib.rs`.
 
 ### 5. Migration
@@ -109,7 +109,7 @@ The web app only talks to the API over HTTP and only imports `@copilot/contracts
 
 ### 10. Tests and Verification
 
-- Core: `#[cfg(test)] mod tests` at the bottom of each entity and service file, using in-memory fakes of the repository trait (put shared fakes behind a `testing` module in core).
+- Core: `#[cfg(test)] mod tests` at the bottom of each entity and service file, using the fakes in `copilot_core::testing` (feature `testing`): add the repository trait's implementation to `MemoryStore` in `packages/core/src/testing/<name>.rs`.
 - API: colocated tests with `crate::helpers::testing::{app_with, get, send}` and `tower::ServiceExt::oneshot`.
 - Database: repository tests use `#[sqlx::test(migrations = false)]` plus `` #[ignore = "requires Postgres: run `make test-db`"] ``, take a `DbPool`, and start with `copilot_database::operations::migrate::run(&pool).await`, which applies the same migrations as a real install (lib-rustauth's `auth` schema first, from P1.4 on, because Copilot tables reference `auth.users`). `make test-db` points `DATABASE_URL` at the `postgres` maintenance database, so each test gets its own throwaway database and never touches `copilot`. API tests that need a database build the app with `crate::helpers::testing::app_on(pool)`.
 - Bruno: a new numbered folder under `apps/api/tests/bruno/` (`/bruno-tests`).

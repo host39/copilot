@@ -1,6 +1,55 @@
+//! Tuning values (`docs/design/copilot.md`, Constants). Session, login-throttle, password, and
+//! Argon2 values belong to lib-rustauth.
+
 /// Default pagination. A request may override limit and offset; these apply when it does not.
 pub const DEFAULT_PAGE_SIZE: u32 = 25;
 pub const DEFAULT_PAGE_OFFSET: u32 = 0;
+
+/// Timeout of one MCP tool call.
+pub const MCP_CALL_TIMEOUT_SECS: u64 = 60;
+/// Tool result text kept for the model and for storage.
+pub const MCP_RESULT_MAX_BYTES: usize = 65_536;
+/// Largest MCP response (JSON body or SSE event) the client accepts.
+pub const MCP_RESPONSE_MAX_BYTES: usize = 4_194_304;
+/// Tool list cache lifetime when the server sends no `ttlMs`.
+pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
+/// Provider rounds per turn before tool calls get `cancelled` results.
+pub const MAX_TOOL_ROUNDS: u32 = 8;
+/// Live runs per user.
+pub const MAX_ACTIVE_RUNS_PER_USER: usize = 3;
+/// Scheduled runs that execute at once.
+pub const MAX_SCHEDULED_RUNS: usize = 2;
+pub const SCHEDULER_TICK_SECS: u64 = 30;
+/// Shortest gap between two fires of a schedule.
+pub const SCHEDULE_MIN_INTERVAL_MINUTES: u32 = 15;
+/// Enabled schedules per user.
+pub const MAX_SCHEDULES_PER_USER: u32 = 20;
+/// Consecutive failed runs before a schedule disables itself.
+pub const SCHEDULE_MAX_FAILURES: u32 = 3;
+/// A refresh enables every listed model when the provider lists at most this many.
+pub const MODEL_AUTO_ENABLE_MAX: usize = 20;
+/// Chat titles are the first user message, cut to this many characters.
+pub const TITLE_MAX_CHARS: usize = 60;
+/// Project files above this share of the context window warn.
+pub const CONTEXT_WARN_RATIO: f64 = 0.8;
+/// Token estimates for project files and context windows (rough, by design).
+pub const TOKENS_PER_PDF_PAGE: u32 = 3_000;
+pub const TOKENS_PER_IMAGE: u32 = 1_600;
+pub const BYTES_PER_TOKEN: u64 = 4;
+/// Push-to-talk clip limits.
+pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
+pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
+pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
+pub const SHUTDOWN_DRAIN_SECS: u64 = 10;
+
+/// Defaults of `MAX_UPLOAD_MB` and `MAX_STORAGE_MB_PER_USER` (read by `AppConfig::parse`).
+pub const DEFAULT_MAX_UPLOAD_MB: u64 = 25;
+pub const DEFAULT_MAX_STORAGE_MB_PER_USER: u64 = 1_024;
+
+/// Longest name of a provider, model, project, schedule, or tool server.
+pub const NAME_MAX_CHARS: usize = 100;
+/// Longest file name (display only).
+pub const FILE_NAME_MAX_CHARS: usize = 255;
 
 /// Common durations.
 pub mod time {

@@ -65,9 +65,9 @@ The rules are enforced by Cargo (a crate only sees what its `Cargo.toml` lists) 
 
 Suppose you are adding a `Widget` domain (the `/add-domain` skill has the detailed checklist):
 
-1. **Entity**: `packages/core/src/domains/widget/entities/widget.rs`, the `Widget` type with construction rules and behaviour.
-2. **Repository port**: `packages/core/src/domains/widget/repositories/widget_repository.rs`, an `async_trait` (`get`, `list`, `save`, `delete`).
-3. **Service**: `packages/core/src/domains/widget/services/widget_service.rs`, use cases over `Arc<dyn WidgetRepository>`.
+1. **Entity**: `packages/core/src/domains/widget/entities.rs`, the `Widget` type with construction rules and behaviour.
+2. **Repository port**: `packages/core/src/domains/widget/ports.rs`, an `async_trait` (`get`, `list`, `save`, `delete`).
+3. **Service**: `packages/core/src/domains/widget/service.rs`, use cases over `Arc<dyn WidgetRepository>`.
 4. **Domain barrel**: `packages/core/src/domains/widget/mod.rs`, then re-export from `packages/core/src/lib.rs`.
 5. **Migration**: `make migrations name=create_widgets`, write the SQL, and let the developer review and run `make migrate`.
 6. **Repository implementation**: `packages/database/src/repositories/widgets/sqlx_widget_repository.rs`, re-exported from `repositories/mod.rs`.
