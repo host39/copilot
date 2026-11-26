@@ -1,0 +1,26 @@
+meta {
+  name: 04-06 Other User Refresh Provider
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/providers/{{providerId}}/refresh
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/providers/{id}/refresh` as user B
+
+  **This test verifies:** user B cannot make user A's connection call its provider.
+}

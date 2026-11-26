@@ -1,10 +1,45 @@
 use copilot_core::{
-    CapabilityOverrides, Chat, ChatRepository, ModelQuery, ModelRepository, ProviderRepository,
-    SyncReport,
+    CapabilityOverrides, Chat, ChatRepository, ModelId, ModelQuery, ModelRepository,
+    ProviderRepository, ProviderUsage, SyncReport, UserId,
 };
-use copilot_database::DbPool;
+use copilot_database::{DbPool, PgStore};
+use uuid::Uuid;
 
-use crate::{KEEP, NOW, at, detected, provider, store, user};
+use crate::{KEEP, NOW, at, detected, model, provider, store, user};
+
+/// A chat of `owner` on `model`.
+async fn chat_on(store: &PgStore, owner: UserId, model: Option<ModelId>) {
+    let chat = Chat::create(owner, at(0)).with_model(model);
+    ChatRepository::insert(store, &chat).await.unwrap();
+}
+
+/// A project of `owner` whose default model is `model`, and a schedule of `owner` on `model`
+/// (their repositories' inserts are not needed here).
+async fn project_and_schedule_on(store: &PgStore, owner: UserId, model: ModelId) {
+    sqlx::query(
+        "INSERT INTO projects (created_at, updated_at, id, user_id, default_model_id, name) \
+         VALUES ($1, $1, $2, $3, $4, 'Research')",
+    )
+    .bind(at(0))
+    .bind(Uuid::now_v7())
+    .bind(owner.uuid())
+    .bind(model.uuid())
+    .execute(store.pool())
+    .await
+    .expect("project inserted");
+    sqlx::query(
+        "INSERT INTO schedules (created_at, updated_at, id, user_id, model_id, enabled, name, \
+         cron, timezone, prompt, created_by) \
+         VALUES ($1, $1, $2, $3, $4, false, 'Daily', '0 9 * * *', 'UTC', 'Summarize.', 'user')",
+    )
+    .bind(at(0))
+    .bind(Uuid::now_v7())
+    .bind(owner.uuid())
+    .bind(model.uuid())
+    .execute(store.pool())
+    .await
+    .expect("schedule inserted");
+}
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
@@ -324,4 +359,57 @@ async fn a_refresh_past_what_a_connection_keeps_drops_only_spare_models(pool: Db
             .collect();
     left.sort();
     assert_eq!(left, ["a", "d", "on"]);
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn usage_counts_the_owner_rows_that_name_one_of_the_connection_models(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let connection = provider(&store, owner).await;
+    store
+        .sync(
+            owner,
+            connection.id(),
+            vec![detected("first", None), detected("second", None)],
+            true,
+            KEEP,
+        )
+        .await
+        .unwrap();
+    let models = ModelRepository::list(&store, owner, ModelQuery::provider(connection.id()))
+        .await
+        .unwrap();
+    let (first, second) = (models[0].id(), models[1].id());
+    let elsewhere = model(&store, owner).await.id();
+    let foreign = model(&store, other).await.id();
+
+    assert_eq!(
+        store.usage(owner, connection.id()).await.unwrap(),
+        ProviderUsage::default(),
+        "nothing uses it yet"
+    );
+    chat_on(&store, owner, Some(first)).await;
+    chat_on(&store, owner, Some(second)).await;
+    chat_on(&store, owner, Some(elsewhere)).await;
+    chat_on(&store, owner, None).await;
+    project_and_schedule_on(&store, owner, second).await;
+    project_and_schedule_on(&store, owner, elsewhere).await;
+    chat_on(&store, other, Some(foreign)).await;
+    project_and_schedule_on(&store, other, foreign).await;
+
+    assert_eq!(
+        store.usage(owner, connection.id()).await.unwrap(),
+        ProviderUsage {
+            chats: 2,
+            projects: 1,
+            schedules: 1,
+        }
+    );
+    assert_eq!(
+        store.usage(other, connection.id()).await.unwrap(),
+        ProviderUsage::default(),
+        "another user's counts never include the owner's rows"
+    );
 }

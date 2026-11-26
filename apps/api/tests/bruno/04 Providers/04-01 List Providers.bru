@@ -1,0 +1,36 @@
+meta {
+  name: 04-01 List Providers
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/providers
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+  res.body.total: gte 1
+}
+
+tests {
+  test("lists the new connection without its key", function () {
+    const item = res.body.items.find((provider) => provider.id === bru.getVar("providerId"));
+    expect(item).to.be.an("object");
+    expect(item.key).to.equal("set");
+    expect(item).to.not.have.property("apiKey");
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/providers`
+
+  **This test verifies:** the caller's list holds the new connection and never its key.
+}

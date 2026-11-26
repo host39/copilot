@@ -1,5 +1,4 @@
-//! `ProviderRepository` and `ModelRepository` on Postgres (`providers`, `models`). Roadmap step
-//! P2.A writes `ProviderRepository::usage`.
+//! `ProviderRepository` and `ModelRepository` on Postgres (`providers`, `models`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,9 +14,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::records::{CapabilitiesRecord, OverridesRecord};
-use crate::repositories::store::{
-    PgStore, failed, int, invalid, json, pending, record, text, uint,
-};
+use crate::repositories::store::{PgStore, failed, int, invalid, json, record, text, uint};
 
 const PROVIDER_COLUMNS: &str = "created_at, updated_at, id, user_id, enabled, kind, preset, \
      name, base_url, api_key_sealed";
@@ -178,9 +175,42 @@ impl ProviderRepository for PgStore {
         Ok(deleted > 0)
     }
 
-    async fn usage(&self, _user: UserId, _id: ProviderId) -> DomainResult<ProviderUsage> {
-        pending("ProviderRepository::usage")
+    async fn usage(&self, user: UserId, id: ProviderId) -> DomainResult<ProviderUsage> {
+        // The composite foreign keys keep a row's model the row owner's, so joining on the model
+        // id alone stays within `user`.
+        let row: UsageRow = sqlx::query_as(
+            "SELECT \
+             (SELECT count(*) FROM chats c JOIN models m ON m.id = c.model_id \
+               WHERE c.user_id = $1 AND m.provider_id = $2) AS chats, \
+             (SELECT count(*) FROM projects p JOIN models m ON m.id = p.default_model_id \
+               WHERE p.user_id = $1 AND m.provider_id = $2) AS projects, \
+             (SELECT count(*) FROM schedules s JOIN models m ON m.id = s.model_id \
+               WHERE s.user_id = $1 AND m.provider_id = $2) AS schedules",
+        )
+        .bind(user.uuid())
+        .bind(id.uuid())
+        .fetch_one(self.pool())
+        .await
+        .map_err(failed("database.providers.usage.failed"))?;
+        Ok(ProviderUsage {
+            chats: unsigned(row.chats),
+            projects: unsigned(row.projects),
+            schedules: unsigned(row.schedules),
+        })
     }
+}
+
+/// The rows that name one of a connection's models.
+#[derive(sqlx::FromRow)]
+struct UsageRow {
+    chats: i64,
+    projects: i64,
+    schedules: i64,
+}
+
+/// A `count(*)`, which is never negative.
+fn unsigned(count: i64) -> u64 {
+    u64::try_from(count).unwrap_or_default()
 }
 
 const MODEL_COLUMNS: &str = "m.created_at, m.updated_at, m.context_window, m.max_output_tokens, \

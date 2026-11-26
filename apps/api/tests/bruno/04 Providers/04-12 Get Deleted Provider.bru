@@ -1,0 +1,26 @@
+meta {
+  name: 04-12 Get Deleted Provider
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/api/providers/{{providerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/providers/{id}`
+
+  **This test verifies:** a deleted connection is gone.
+}

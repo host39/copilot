@@ -1,0 +1,46 @@
+meta {
+  name: 04-00 Create Provider
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/providers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "kind": "openai",
+    "preset": "custom",
+    "name": "Bruno Gateway",
+    "baseUrl": "https://api.example.com/v1",
+    "apiKey": "sk-bruno"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("providerId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.id: isString
+  res.body.data.name: eq "Bruno Gateway"
+  res.body.data.key: eq set
+  res.body.data.enabled: eq true
+}
+
+docs {
+  **Endpoint:** `POST /api/providers`
+
+  **This test verifies:** a connection is created with a sealed key that the answer reports as
+  `set`, never as its value; its id is stored as `providerId`.
+}

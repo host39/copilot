@@ -1,0 +1,32 @@
+meta {
+  name: 04-10 Missing Model
+  type: http
+  seq: 11
+}
+
+patch {
+  url: {{baseUrl}}/api/models/00000000-0000-7000-8000-000000000000
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/models/{id}`
+
+  **This test verifies:** a model the caller does not have is `404`.
+}
