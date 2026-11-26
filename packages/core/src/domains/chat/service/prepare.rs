@@ -1,11 +1,15 @@
-//! Turn preparation: validate, decrypt, save the user message or tail change, and hand the engine
-//! a `PreparedTurn` (`docs/design/copilot.md`, Turn Lifecycle, step 2).
+//! Turn preparation: validate, decrypt, build the turn's snapshot, save the user message or tail
+//! change, and hand the engine a `PreparedTurn` (`docs/design/copilot.md`, Turn Lifecycle,
+//! step 2).
 //!
-//! Every check runs before the first write, so a failed `prepare` changes nothing.
+//! Every check, including the context and request budgets of the snapshot, runs before the
+//! first write, so a failed `prepare` changes nothing (a stale tool list may still be refreshed).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, Utc};
 use futures_util::future::{try_join, try_join3, try_join4};
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 
 use crate::domains::chat::context::TurnContext;
 use crate::domains::chat::entities::Chat;
@@ -15,14 +19,16 @@ use crate::domains::chat::message::{
 };
 use crate::domains::chat::service::ChatService;
 use crate::domains::chat::turn::{PreparedTurn, RunMode, TurnInput};
+use crate::domains::conversation::context::{self, ContextInputs, references};
 use crate::domains::file::{FileKind, FileOwner, MediaType, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Capabilities, Model, Provider};
 use crate::domains::schedule::{Firing, Schedule};
 use crate::domains::settings::UserSettings;
-use crate::domains::tool::EffectiveTools;
+use crate::domains::tool::{EffectiveTools, ToolServer};
 use crate::ports::llm_gateway::ModelTarget;
 use crate::shared::actor::Actor;
+use crate::shared::constants::MAX_PARALLEL_READS;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ChatId, FileId, MessageId, ModelId, ProjectId};
 
@@ -44,6 +50,58 @@ struct Loaded {
     target: ModelTarget,
     files: Vec<StoredFile>,
     history: Vec<Message>,
+}
+
+/// A turn's snapshot and what it was built from, staged before the writes.
+struct Staged {
+    tools: EffectiveTools,
+    servers: Vec<ToolServer>,
+    references: HashMap<FileId, StoredFile>,
+    context: TurnContext,
+}
+
+/// A paused round the user skips by sending a new message: its pending calls denied with
+/// "Skipped by user." and a `tool` message with a result for every call.
+struct Skip {
+    paused: MessageId,
+    decisions: Vec<CallDecision>,
+    decided: Message,
+    results: Message,
+}
+
+impl Skip {
+    fn new(paused: &Message, now: DateTime<Utc>) -> Self {
+        let decisions: Vec<CallDecision> = paused
+            .pending_calls()
+            .map(|call| CallDecision {
+                call_id: call.id,
+                decision: Decision::Deny,
+                scope: DecisionScope::Once,
+                reason: Some(SKIPPED.to_owned()),
+            })
+            .collect();
+        Self {
+            paused: paused.id(),
+            decided: paused.clone().decided(&decisions, now),
+            results: Message::tool(
+                paused.user_id(),
+                paused.chat_id(),
+                skipped_results(paused),
+                now,
+            ),
+            decisions,
+        }
+    }
+
+    /// The history after the skip is written.
+    fn plan(&self, history: &mut Vec<Message>) {
+        for message in history.iter_mut() {
+            if message.id() == self.paused {
+                *message = self.decided.clone();
+            }
+        }
+        history.push(self.results.clone());
+    }
 }
 
 impl ChatService {
@@ -120,7 +178,6 @@ impl ChatService {
             .with_project(schedule.project_id())
             .with_model(schedule.model_id())
             .with_reasoning(schedule.reasoning());
-        self.stores.chats.insert(&chat).await?;
         let prompt = Message::user(
             user,
             chat.id(),
@@ -129,21 +186,11 @@ impl ChatService {
             }],
             self.clock.now(),
         );
-        self.stores.messages.append(user, &prompt).await?;
-        let tools = if project.is_some() && capabilities.tools {
-            self.tools
-                .effective_tools(&actor, &chat.tool_selection(project.as_ref()))
-                .await?
-        } else {
-            EffectiveTools::default()
+        let mode = RunMode::Unattended {
+            on_ask: schedule.on_ask(),
         };
-        let settings = settings.unwrap_or_else(|| UserSettings::empty(user, self.clock.now()));
-        Ok(PreparedTurn {
-            actor,
-            mode: RunMode::Unattended {
-                on_ask: schedule.on_ask(),
-            },
-            settings,
+        let loaded = Loaded {
+            settings: settings.unwrap_or_else(|| UserSettings::empty(user, self.clock.now())),
             project,
             schedule: Some(schedule),
             model,
@@ -151,11 +198,22 @@ impl ChatService {
             capabilities,
             target,
             files,
-            tools,
-            history: vec![prompt],
-            snapshot: None,
-            chat,
-        })
+            history: Vec::new(),
+        };
+        let staged = self
+            .stage(
+                &actor,
+                &chat,
+                &loaded,
+                mode,
+                std::slice::from_ref(&prompt),
+                None,
+            )
+            .await?;
+
+        self.stores.chats.insert(&chat).await?;
+        self.stores.messages.append(user, &prompt).await?;
+        self.finish(&actor, chat, loaded, staged, mode).await
     }
 
     async fn send(
@@ -184,32 +242,32 @@ impl ChatService {
                 DomainError::validation("Type a message or attach a file.").with_field("text")
             );
         }
-        if let Some(from) = edit_from {
-            let edited = loaded
-                .history
-                .iter()
-                .any(|message| message.id() == from && message.role() == Role::User);
-            if !edited {
-                return Err(DomainError::not_found("Message", from.to_string()));
+        let edited = match edit_from {
+            Some(from) => {
+                let position = loaded
+                    .history
+                    .iter()
+                    .position(|message| message.id() == from && message.role() == Role::User)
+                    .ok_or_else(|| DomainError::not_found("Message", from.to_string()))?;
+                Some((from, position))
             }
-        }
+            None => None,
+        };
 
         let now = self.clock.now();
         let message = Message::user(user, chat.id(), parts, now);
-        match edit_from {
-            Some(from) => {
-                self.stores
-                    .messages
-                    .replace_tail(user, chat.id(), from, &message)
-                    .await?;
-            }
-            None => {
-                if let Some(paused) = paused(&loaded.history) {
-                    self.skip(actor, paused).await?;
-                }
-                self.stores.messages.append(user, &message).await?;
-            }
+        let skipped = match edited {
+            Some(_) => None,
+            None => paused(&loaded.history).map(|paused| Skip::new(paused, now)),
+        };
+        let mut planned = match edited {
+            Some((_, position)) => loaded.history[..position].to_vec(),
+            None => loaded.history.clone(),
+        };
+        if let Some(skip) = &skipped {
+            skip.plan(&mut planned);
         }
+        planned.push(message.clone());
         let title_source = if text.is_empty() {
             message.parts().iter().find_map(|part| match part {
                 Part::File { name, .. } => Some(name.as_str()),
@@ -219,13 +277,33 @@ impl ChatService {
             Some(text)
         };
         let mut chat = chat;
-        if chat.title().is_empty()
-            && let Some(source) = title_source
-        {
+        let titled = chat.title().is_empty() && title_source.is_some();
+        if let (true, Some(source)) = (titled, title_source) {
             chat = chat.titled_by(source);
+        }
+        let staged = self
+            .stage(actor, &chat, &loaded, RunMode::Interactive, &planned, None)
+            .await?;
+
+        match edited {
+            Some((from, _)) => {
+                self.stores
+                    .messages
+                    .replace_tail(user, chat.id(), from, &message)
+                    .await?;
+            }
+            None => {
+                if let Some(skip) = skipped {
+                    self.skip(actor, skip).await?;
+                }
+                self.stores.messages.append(user, &message).await?;
+            }
+        }
+        if titled {
             self.stores.chats.update(&chat).await?;
         }
-        self.finish(actor, chat, loaded, None).await
+        self.finish(actor, chat, loaded, staged, RunMode::Interactive)
+            .await
     }
 
     async fn regenerate(
@@ -237,18 +315,22 @@ impl ChatService {
         let Some(last) = loaded
             .history
             .iter()
-            .rev()
-            .find(|message| message.role() == Role::User)
+            .rposition(|message| message.role() == Role::User)
         else {
             return Err(DomainError::validation(
                 "There is no message to answer yet.",
             ));
         };
+        let planned = &loaded.history[..=last];
+        let staged = self
+            .stage(actor, &chat, &loaded, RunMode::Interactive, planned, None)
+            .await?;
         self.stores
             .messages
-            .delete_after(actor.user_id, chat.id(), last.id())
+            .delete_after(actor.user_id, chat.id(), loaded.history[last].id())
             .await?;
-        self.finish(actor, chat, loaded, None).await
+        self.finish(actor, chat, loaded, staged, RunMode::Interactive)
+            .await
     }
 
     async fn decide(
@@ -291,6 +373,28 @@ impl ChatService {
             })
             .map(|call| call.alias.clone())
             .collect();
+        let decided = message.clone().decided(&decisions, self.clock.now());
+        let planned: Vec<Message> = loaded
+            .history
+            .iter()
+            .map(|stored| {
+                if stored.id() == message_id {
+                    decided.clone()
+                } else {
+                    stored.clone()
+                }
+            })
+            .collect();
+        let staged = self
+            .stage(
+                actor,
+                &chat,
+                &loaded,
+                RunMode::Interactive,
+                &planned,
+                Some(snapshot),
+            )
+            .await?;
 
         if !self
             .stores
@@ -307,48 +411,37 @@ impl ChatService {
             }
             self.stores.chats.update(&chat).await?;
         }
-        self.finish(actor, chat, loaded, Some(snapshot)).await
+        self.finish(actor, chat, loaded, staged, RunMode::Interactive)
+            .await
     }
 
     /// Closes a paused round the user skipped: pending calls denied, and a `tool` message with a
     /// result for every call. A concurrent decision wins; then nothing is written.
-    async fn skip(&self, actor: &Actor, paused: &Message) -> DomainResult<()> {
-        let decisions: Vec<CallDecision> = paused
-            .pending_calls()
-            .map(|call| CallDecision {
-                call_id: call.id,
-                decision: Decision::Deny,
-                scope: DecisionScope::Once,
-                reason: Some(SKIPPED.to_owned()),
-            })
-            .collect();
+    async fn skip(&self, actor: &Actor, skip: Skip) -> DomainResult<()> {
         let user = actor.user_id;
         if self
             .stores
             .messages
-            .decide(user, paused.id(), &decisions)
+            .decide(user, skip.paused, &skip.decisions)
             .await?
         {
-            let results = Message::tool(
-                user,
-                paused.chat_id(),
-                skipped_results(paused),
-                self.clock.now(),
-            );
-            self.stores.messages.append(user, &results).await?;
+            self.stores.messages.append(user, &skip.results).await?;
         }
         Ok(())
     }
 
-    /// The prepared turn after the writes: the tools (none for a decision, which keeps its
-    /// snapshot's) and the history read again.
-    async fn finish(
+    /// What the turn reads once its input is valid, and its snapshot: the one a decision
+    /// continues from, or a new one built from `planned` (the history as it will be after the
+    /// writes), which checks the context and request budgets before anything is written.
+    async fn stage(
         &self,
         actor: &Actor,
-        chat: Chat,
-        loaded: Loaded,
+        chat: &Chat,
+        loaded: &Loaded,
+        mode: RunMode,
+        planned: &[Message],
         snapshot: Option<TurnContext>,
-    ) -> DomainResult<PreparedTurn> {
+    ) -> DomainResult<Staged> {
         let tools = if snapshot.is_none() && loaded.capabilities.tools {
             self.tools
                 .effective_tools(actor, &chat.tool_selection(loaded.project.as_ref()))
@@ -356,15 +449,69 @@ impl ChatService {
         } else {
             EffectiveTools::default()
         };
-        let history = self
-            .stores
-            .messages
-            .history(actor.user_id, chat.id())
+        let mut named = references(planned);
+        if let Some(snapshot) = &snapshot {
+            named.extend(snapshot.files.iter().map(|file| file.file_id));
+        }
+        let (servers, files) = try_join(
+            self.stores.servers.list(actor.user_id),
+            self.file_index(actor, &loaded.files, named),
+        )
+        .await?;
+        let context = match snapshot {
+            Some(snapshot) => snapshot,
+            None => context::build(&ContextInputs {
+                settings: &loaded.settings,
+                chat,
+                project: loaded.project.as_ref(),
+                schedule: loaded.schedule.as_ref(),
+                model: &loaded.model,
+                provider: &loaded.provider,
+                capabilities: &loaded.capabilities,
+                mode,
+                project_files: &loaded.files,
+                tools: &tools,
+                files: &files,
+                history: planned,
+            })?,
+        };
+        let servers = servers
+            .into_iter()
+            .filter(|server| {
+                context
+                    .tools
+                    .iter()
+                    .any(|tool| tool.server_id == Some(server.id()))
+            })
+            .collect();
+        Ok(Staged {
+            tools,
+            servers,
+            references: files,
+            context,
+        })
+    }
+
+    /// The prepared turn after the writes: the snapshot saved (a no-op for a decision's) and the
+    /// history read again.
+    async fn finish(
+        &self,
+        actor: &Actor,
+        chat: Chat,
+        loaded: Loaded,
+        staged: Staged,
+        mode: RunMode,
+    ) -> DomainResult<PreparedTurn> {
+        let user = actor.user_id;
+        self.stores
+            .contexts
+            .save(user, chat.id(), &staged.context)
             .await?;
+        let history = self.stores.messages.history(user, chat.id()).await?;
         Ok(PreparedTurn {
             actor: *actor,
             chat,
-            mode: RunMode::Interactive,
+            mode,
             settings: loaded.settings,
             project: loaded.project,
             schedule: loaded.schedule,
@@ -373,10 +520,36 @@ impl ChatService {
             capabilities: loaded.capabilities,
             target: loaded.target,
             files: loaded.files,
-            tools,
+            references: staged.references,
+            tools: staged.tools,
+            servers: staged.servers,
             history,
-            snapshot,
+            context: staged.context,
         })
+    }
+
+    /// Metadata of the project files and of every file in `named`, at most 4 reads at once.
+    async fn file_index(
+        &self,
+        actor: &Actor,
+        project_files: &[StoredFile],
+        named: Vec<FileId>,
+    ) -> DomainResult<HashMap<FileId, StoredFile>> {
+        let mut index: HashMap<FileId, StoredFile> = project_files
+            .iter()
+            .map(|file| (file.id(), file.clone()))
+            .collect();
+        let missing: Vec<FileId> = named
+            .into_iter()
+            .filter(|id| !index.contains_key(id))
+            .collect();
+        let found: Vec<Option<StoredFile>> = stream::iter(missing)
+            .map(|id| self.stores.files.get(actor.user_id, id))
+            .buffered(MAX_PARALLEL_READS)
+            .try_collect()
+            .await?;
+        index.extend(found.into_iter().flatten().map(|file| (file.id(), file)));
+        Ok(index)
     }
 
     async fn load(&self, actor: &Actor, chat: &Chat) -> DomainResult<Loaded> {
@@ -736,7 +909,36 @@ mod tests {
             .map(|tool| tool.alias.as_str())
             .collect();
         assert_eq!(aliases, ["github__search"]);
-        assert!(turn.snapshot.is_none());
+        let snapshot_aliases: Vec<&str> = turn
+            .context
+            .tools
+            .iter()
+            .map(|tool| tool.alias.as_str())
+            .collect();
+        assert_eq!(snapshot_aliases, ["github__search"]);
+        assert_eq!(
+            turn.servers
+                .iter()
+                .map(ToolServer::name)
+                .collect::<Vec<_>>(),
+            ["GitHub"],
+            "the servers the snapshot offers tools from"
+        );
+        assert!(turn.context.system.starts_with("Call me Sam."));
+        let files: Vec<FileId> = turn.context.files.iter().map(|file| file.file_id).collect();
+        assert_eq!(files, [included.id()], "the preamble");
+        for id in [included.id(), image.id(), clip.id()] {
+            assert!(turn.references.contains_key(&id), "metadata of {id}");
+        }
+        let saved = crate::domains::chat::TurnContextRepository::get(
+            f.store.as_ref(),
+            caller.user_id,
+            chat.id(),
+            &turn.context.hash,
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.as_ref(), Some(&turn.context), "the snapshot is saved");
 
         let message = turn.last_message().expect("the user message");
         assert_eq!(message.role(), Role::User);
@@ -844,6 +1046,47 @@ mod tests {
         assert_eq!(error.to_string(), "There is no message to answer yet.");
         assert!(history(&f, &caller, &chat).await.is_empty());
         assert_eq!(f.chats.get(&caller, chat.id()).await.unwrap().title(), "");
+    }
+
+    #[tokio::test]
+    async fn a_turn_over_the_context_window_writes_nothing() {
+        let f = fixture();
+        let caller = actor();
+        let chat = chat(&f, &caller).await;
+        let model = chat.model_id().unwrap();
+        let limits = ModelUpdate {
+            context_window: Some(Some(1_000)),
+            max_output_tokens: Some(Some(200)),
+            ..ModelUpdate::default()
+        };
+        f.models.update(&caller, model, limits).await.unwrap();
+        let error = f
+            .chats
+            .prepare(&caller, chat.id(), send(&"x".repeat(4_000)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "This message does not fit in the model's context window."
+        );
+        assert!(history(&f, &caller, &chat).await.is_empty());
+        assert_eq!(f.chats.get(&caller, chat.id()).await.unwrap().title(), "");
+
+        let paused = {
+            f.chats
+                .prepare(&caller, chat.id(), send("Short"))
+                .await
+                .unwrap();
+            pause(&f, &caller, &chat).await
+        };
+        f.chats
+            .prepare(&caller, chat.id(), send(&"y".repeat(4_000)))
+            .await
+            .unwrap_err();
+        let stored = history(&f, &caller, &chat).await;
+        assert_eq!(stored.len(), 2, "the paused round was not skipped");
+        assert_eq!(stored[1].id(), paused.id());
+        assert_eq!(stored[1].status(), MessageStatus::AwaitingApproval);
     }
 
     #[tokio::test]
@@ -1087,7 +1330,7 @@ mod tests {
         };
         let turn = f.chats.prepare(&caller, chat.id(), input).await.unwrap();
         assert_eq!(turn.mode, RunMode::Interactive);
-        let snapshot = turn.snapshot.as_ref().expect("the paused turn's snapshot");
+        let snapshot = &turn.context;
         assert_eq!(snapshot.system, "Be brief.");
         assert!(
             turn.tools.tools.is_empty(),

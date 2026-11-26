@@ -1,5 +1,7 @@
 //! What `ChatService::prepare` hands to the conversation engine.
 
+use std::collections::HashMap;
+
 use crate::domains::chat::context::TurnContext;
 use crate::domains::chat::entities::Chat;
 use crate::domains::chat::message::{CallDecision, Message};
@@ -8,7 +10,7 @@ use crate::domains::project::Project;
 use crate::domains::provider::{Capabilities, Model, Provider};
 use crate::domains::schedule::{OnAsk, Schedule};
 use crate::domains::settings::UserSettings;
-use crate::domains::tool::EffectiveTools;
+use crate::domains::tool::{EffectiveTools, ToolServer};
 use crate::ports::llm_gateway::ModelTarget;
 use crate::shared::actor::Actor;
 use crate::shared::ids::{FileId, MessageId};
@@ -41,9 +43,8 @@ pub enum RunMode {
     },
 }
 
-/// A validated turn, with the user message (or tail change) already saved. The engine builds
-/// the request from it (`conversation::context::build`, P1.3), which also checks the context
-/// and request budgets and saves the snapshot.
+/// A validated turn, with the user message (or tail change) and the turn's snapshot already
+/// saved. `ChatEngine::run` builds every request of the turn from `context`.
 #[derive(Clone, Debug)]
 pub struct PreparedTurn {
     pub actor: Actor,
@@ -61,13 +62,19 @@ pub struct PreparedTurn {
     pub target: ModelTarget,
     /// The project's included files, oldest first.
     pub files: Vec<StoredFile>,
-    /// The server tools of this turn. Empty for a decision (it keeps the snapshot's tools) and
-    /// for a standalone schedule run.
+    /// Metadata of every file the snapshot or the history names (the preamble, attachments,
+    /// tool result images). A named file that is missing here was deleted.
+    pub references: HashMap<FileId, StoredFile>,
+    /// The server tools this turn listed, with the servers that could not be listed (the UI
+    /// names them). Empty for a decision, which keeps its snapshot's tools.
     pub tools: EffectiveTools,
+    /// The current settings of the servers the snapshot offers tools from, for the approval
+    /// policy and the tool session.
+    pub servers: Vec<ToolServer>,
     /// The chat's messages after the write, ordered.
     pub history: Vec<Message>,
-    /// A decision's paused turn: the snapshot it continues from.
-    pub snapshot: Option<TurnContext>,
+    /// The turn's snapshot: built for this turn, or the paused turn's for a decision.
+    pub context: TurnContext,
 }
 
 impl PreparedTurn {

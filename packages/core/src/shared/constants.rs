@@ -1,6 +1,9 @@
 //! Tuning values (`docs/design/copilot.md`, Constants). Session, login-throttle, password, and
 //! Argon2 values belong to lib-rustauth.
 
+/// Database reads a use case runs at once (`parallel-db-reads`: the pool holds 4 connections).
+pub const MAX_PARALLEL_READS: usize = 4;
+
 /// Default pagination. A request may override limit and offset; these apply when it does not.
 pub const DEFAULT_PAGE_SIZE: u32 = 25;
 pub const DEFAULT_PAGE_OFFSET: u32 = 0;
