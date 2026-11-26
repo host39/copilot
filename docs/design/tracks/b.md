@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other track ch
 
 ## Status
 
-In progress: part 2 (P2.B.4 Anthropic adapter, P2.B.5 Gemini spike). Part 1 (the OpenAI-compatible adapter beyond text) is done. Last green CI: see the latest `p2.b` commit.
+In progress: part 2 (P2.B.4 Anthropic adapter, P2.B.5 Gemini spike). Part 1 (the OpenAI-compatible adapter beyond text) is done. Last green CI: `fe12082` (Code quality and Image), which holds part 1's commits `db0c888` and `b053906`.
 
 ## Sub-Steps
 
