@@ -92,11 +92,11 @@ Core must **not** depend on contracts; map between entity and DTO in the API.
 
 `apps/api/src/routes/<name>s.rs` (or a folder with `mod.rs` and `serializer.rs` once it grows)
 
-- Annotate each handler with `#[utoipa::path(...)]` using contract types for `body`, register with `OpenApiRouter::new().routes(routes!(list, create))`, and merge it in `apps/api/src/routes/mod.rs`.
+- Annotate each handler with `#[utoipa::path(...)]` using contract types for `body`, register with `OpenApiRouter::new().routes(routes!(list, create))`, and merge it into `api()` in `apps/api/src/routes/mod.rs` (mounted under `/api` behind lib-rustauth's guard; annotation paths are relative to `/api`). Give each operation `operation_id = "<module>_<handler>"` and `security(("bearerAuth" = []))`. Phase 1 declared every route of the spec as a stub answering `501` (`routes::pending`); replace the stub's body and signature instead of adding a second route.
 - Read bodies with `copilot_middleware::JsonBody<T>` (not `axum::Json`) so malformed JSON gets the shared `400` body.
 - Return `Result<Json<DetailsResponse<WidgetDto>>, HttpError>`; `?` converts `DomainError`. Deletes return `StatusCode::NO_CONTENT`.
-- Authenticated callers: authentication comes from lib-rustauth. From roadmap step P1.7 its guard wraps every `/api` route, and handlers take the caller as the `Caller(Actor)` extractor from `apps/api` and pass the `Actor` to core services (see "Identity (lib-rustauth)" in `docs/design/copilot.md`). Core never sees rustauth types.
-- Wire the service in the composition root: add a field to `AppState` (`apps/api/src/config/state.rs`) built in `create_app` / `ApiContext::create` from `SqlxWidgetRepository::new(db.clone())`. Handlers never construct repositories.
+- Authenticated callers: authentication comes from lib-rustauth. Its guard wraps every Copilot `/api` route, and handlers take the caller as the `Caller(Actor)` extractor (`crate::helpers::auth::Caller`) and pass the `Actor` to core services (see "Identity (lib-rustauth)" in `docs/design/copilot.md`). Core never sees rustauth types, and no module but `apps/api/src/helpers/auth.rs` names `rustauth`.
+- Wire the service in the composition root: add a field to `AppState` (`apps/api/src/config/state.rs`) built in `helpers::bootstrap::wire`. Copilot's repositories are one store, `copilot_database::PgStore`, with one module per port under `packages/database/src/repositories/`; implement the port there. Handlers never construct repositories.
 
 ### 9. Web
 
@@ -111,7 +111,7 @@ The web app only talks to the API over HTTP and only imports `@copilot/contracts
 
 - Core: `#[cfg(test)] mod tests` at the bottom of each entity and service file, using the fakes in `copilot_core::testing` (feature `testing`): add the repository trait's implementation to `MemoryStore` in `packages/core/src/testing/<name>.rs`.
 - API: colocated tests with `crate::helpers::testing::{app_with, get, send}` and `tower::ServiceExt::oneshot`.
-- Database: repository tests use `#[sqlx::test(migrations = false)]` plus `` #[ignore = "requires Postgres: run `make test-db`"] ``, take a `DbPool`, and start with `copilot_database::operations::migrate::run(&pool).await`, which applies the same migrations as a real install (lib-rustauth's `auth` schema first, from P1.4 on, because Copilot tables reference `auth.users`). `make test-db` points `DATABASE_URL` at the `postgres` maintenance database, so each test gets its own throwaway database and never touches `copilot`. API tests that need a database build the app with `crate::helpers::testing::app_on(pool)`.
+- Database: repository tests use `#[sqlx::test(migrations = false)]` plus `` #[ignore = "requires Postgres: run `make test-db`"] ``, take a `DbPool`, and start with `copilot_database::operations::migrate::run(&pool).await`, which applies the same migrations as a real install (lib-rustauth's `auth` schema first, from P1.4 on, because Copilot tables reference `auth.users`). `make test-db` points `DATABASE_URL` at the `postgres` maintenance database, so each test gets its own throwaway database and never touches `copilot`. API tests build the app with `crate::helpers::testing::app().await` (lib-rustauth on in-memory fakes; `register(&app, name)` returns a session token) or, with a database, `app_on(pool).await`.
 - Bruno: a new numbered folder under `apps/api/tests/bruno/` (`/bruno-tests`).
 - Run `make check` yourself; run `make test-db` (needs Postgres, not an applied migration) and `make test-bruno` (needs the migration applied with `make migrate`). Say so if you could not run them.
 

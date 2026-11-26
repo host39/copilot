@@ -12,7 +12,7 @@ Each track edits only the paths it owns. Everything in the frozen row changes on
 | B: Providers | `packages/providers/**` |
 | C: MCP | `packages/mcp/**` |
 | D: Web | `apps/web/src/routes/**`, `apps/web/src/components/**`, `apps/web/src/api/routes/**` |
-| Frozen for all tracks | Root `Cargo.toml` and `Cargo.lock`, `packages/core/**`, `packages/contracts/**`, `apps/api/src/{lib.rs,config/**,helpers/bootstrap.rs,routes/mod.rs}`, `packages/middleware/**`, `docs/env.md`, `apps/api/.env.sample`, `apps/web/src/{api/client.ts,api/endpoints.ts,config.ts,routes/index.tsx,routes/path.tsx}`, `apps/web/rsbuild.config.ts`, `pnpm-lock.yaml`, `.github/workflows/**` |
+| Frozen for all tracks | Root `Cargo.toml` and `Cargo.lock`, `packages/core/**`, `packages/contracts/**`, `apps/api/src/{lib.rs,config/**,helpers/auth.rs,helpers/bootstrap.rs,routes/mod.rs}`, `packages/middleware/**`, `docs/env.md`, `apps/api/.env.sample`, `apps/web/src/{api/client.ts,api/endpoints.ts,config.ts,routes/index.tsx,routes/path.tsx}`, `apps/web/rsbuild.config.ts`, `pnpm-lock.yaml`, `.github/workflows/**` |
 
 The rustauth pin (in the root `Cargo.toml`, `Cargo.lock`, and `pnpm-lock.yaml`) is frozen with them. A track that needs a change in lib-rustauth files an interface-change request; the change lands in lib-rustauth first, then as a pin bump on the base branch.
 
@@ -26,7 +26,7 @@ From the main checkout, once `p1-frozen` exists:
 bash scripts/worktree.sh a
 ```
 
-This creates `../copilot-a` on branch `claude/copilot-p2-a` from `p1-frozen`, runs `pnpm install --frozen-lockfile`, copies `apps/api/.env.sample` and `apps/web/.env.example`, and sets a distinct API `PORT` (3001 and up) plus the matching `PUBLIC_API_URL`. `make test-bruno` in the worktree starts that worktree's API and tests its port; it refuses to reuse a server that is already running unless `BASE_URL` is set explicitly.
+This creates `../copilot-a` on branch `claude/copilot-p2-a` from `p1-frozen`, runs `pnpm install --frozen-lockfile`, creates the env files from `apps/api/.env.sample` and `apps/web/.env.example` (`scripts/env-local.sh`, which also generates a `SECRET_KEY`), and sets a distinct API `PORT` (3001 and up) plus the matching `PUBLIC_API_URL`. `make test-bruno` in the worktree starts that worktree's API and tests its port; it refuses to reuse a server that is already running unless `BASE_URL` is set explicitly.
 
 Then create the track's status file from the template below and push the branch.
 

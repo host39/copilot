@@ -72,10 +72,15 @@ Authentication comes from lib-rustauth and has no bypass setting. Its routes liv
 
 The API starts only when lib-rustauth's `auth` migrations are applied (`make migrate` runs them before Copilot's); otherwise it stops with `api.server.start.failed api.auth.start.failed: Auth schema is out of date: run migrations`. While no account exists, the first registration needs the setup token, and that account becomes the administrator.
 
-`make test-bruno` registers a run-unique account in the database it tests (the first one becomes the administrator of an empty database), so register your own account first or test a throwaway database (`DB_NAME=<name> make migrate test-bruno`). The server it starts gets `AUTH_REGISTRATION_OPEN=true` and a setup token unless the shell sets them.
+`make test-bruno` registers a run-unique account in the database it tests (the first one becomes the administrator of an empty database), so register your own account first, or create a throwaway database and run `DB_NAME=<name> make migrate test-bruno`. The server it starts gets `AUTH_REGISTRATION_OPEN=true` and a setup token unless the shell sets them.
 
 ## Web (`apps/web/.env.local`)
 
+The web client calls the server that served it (`/api` and `/health` on the same origin); the image and `WEB_DIR` serve both from one origin. In development the dev server (port 4000) proxies `/api` and `/health` to the API.
+
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `PUBLIC_API_URL` | No | `http://localhost:3000` | Base URL for API requests from the browser (inlined at build time) |
+| `API_PROXY_TARGET` | No | `http://localhost:3000` | Where the dev server proxies `/api` and `/health` (for example a worktree's API on another port) |
+| `PUBLIC_API_URL` | No | none (same origin) | Another server to call directly, inlined at build time: requests go to `<PUBLIC_API_URL>/api/...` and `<PUBLIC_API_URL>/health`, and that server must list this origin in `CORS_ALLOWED_ORIGINS` |
+
+Native builds ignore both: they call the server URL stored by the Connect screen.

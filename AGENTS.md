@@ -15,7 +15,7 @@ Run these yourself from the repo root to verify work:
 | `make contracts` | Regenerates `packages/contracts/ts/generated/` after contract changes |
 | `make check` | format + lint + type-check + test + boundaries |
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
-| `make test-bruno` | Bruno API tests (needs Postgres; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set) |
+| `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
 | `make migrations name=<name>` | Scaffolds a migration pair |
 | `make migrate` | Applies migrations + readonly role grants (needs Postgres) |
 
@@ -36,7 +36,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 
 | Path | Role |
 | --- | --- |
-| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), OpenAPI routes, the `server` binary |
+| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), OpenAPI routes under `/api`, the web bundle (`WEB_DIR`), the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |

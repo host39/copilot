@@ -53,7 +53,7 @@ Infrastructure failures use `DomainError::internal("<dotted.key>", error)` and b
 
 ## Composition Root
 
-`apps/api/src/helpers/bootstrap.rs` (`ApiContext::create`) parses config, installs the logger, creates the pool, and calls `create_app`. Services and repositories are built there or in `create_app`, stored in `AppState`, and read by handlers via `State<AppState>`. Route handlers never construct repositories or pools.
+`apps/api/src/helpers/bootstrap.rs` (`ApiContext::create`, async) parses config, installs the logger, creates the pool, starts lib-rustauth (`helpers::auth::Identity`, the only module that names `rustauth`), and calls `create_app`, which builds every service once in `wire` on `PgStore`, `AesCipher`, and the outbound adapters, stores them in `AppState`, and mounts the routes under `/api` behind the guard. Handlers read services via `State<AppState>` and the caller via `Caller`. Route handlers never construct repositories or pools.
 
 ## Verification
 
