@@ -29,6 +29,11 @@ pub use crate::domains::provider::{
     ProviderParts, ProviderRepository, ProviderService, ProviderUpdate, ProviderUsage, SyncReport,
     reasoning_off_with_tools,
 };
+pub use crate::domains::schedule::{
+    CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RunOutcome,
+    RunRecord, RunStatus, Schedule, ScheduleParts, SchedulePreview, SchedulePrompt, ScheduleQuery,
+    ScheduleRepository, ScheduleService, ScheduleTool, ScheduleUpdate, ToolOrigin, cancel_target,
+};
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{
     ALIAS_MAX_CHARS, ApprovalMode, CredentialChange, EffectiveTool, EffectiveTools, NewToolServer,

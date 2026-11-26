@@ -10,6 +10,7 @@ mod file;
 mod gateway;
 mod project;
 mod provider;
+mod schedule;
 mod settings;
 mod store;
 mod tool;

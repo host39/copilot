@@ -279,12 +279,13 @@ mod tests {
             providers: ProviderService::new(
                 store.clone(),
                 store.clone(),
+                store.clone(),
                 gateway.clone(),
                 Arc::new(FakeCipher::new()),
                 clock.clone(),
                 PrivateNetwork::Admins,
             ),
-            models: ModelService::new(store.clone(), store, clock),
+            models: ModelService::new(store.clone(), store.clone(), store, clock),
             gateway,
         }
     }

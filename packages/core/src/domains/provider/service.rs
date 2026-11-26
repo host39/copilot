@@ -6,9 +6,10 @@ use std::sync::Arc;
 use crate::domains::provider::capabilities::{Capabilities, Locks};
 use crate::domains::provider::entities::{KeyState, Provider};
 use crate::domains::provider::ports::{
-    DetectedModel, ModelRepository, ProviderRepository, ProviderUsage, SyncReport,
+    DetectedModel, ModelQuery, ModelRepository, ProviderRepository, ProviderUsage, SyncReport,
 };
 use crate::domains::provider::values::{Preset, ProviderKind};
+use crate::domains::schedule::{MODEL_REMOVED, ScheduleRepository};
 use crate::ports::clock::Clock;
 use crate::ports::llm_gateway::{LlmGateway, ProviderTarget};
 use crate::ports::secret_cipher::{SECRET_UNREADABLE, SecretCipher};
@@ -60,6 +61,7 @@ pub struct ProviderDetails {
 pub struct ProviderService {
     providers: Arc<dyn ProviderRepository>,
     models: Arc<dyn ModelRepository>,
+    schedules: Arc<dyn ScheduleRepository>,
     gateway: Arc<dyn LlmGateway>,
     cipher: Arc<dyn SecretCipher>,
     clock: Arc<dyn Clock>,
@@ -71,6 +73,7 @@ impl ProviderService {
     pub fn new(
         providers: Arc<dyn ProviderRepository>,
         models: Arc<dyn ModelRepository>,
+        schedules: Arc<dyn ScheduleRepository>,
         gateway: Arc<dyn LlmGateway>,
         cipher: Arc<dyn SecretCipher>,
         clock: Arc<dyn Clock>,
@@ -79,6 +82,7 @@ impl ProviderService {
         Self {
             providers,
             models,
+            schedules,
             gateway,
             cipher,
             clock,
@@ -169,9 +173,20 @@ impl ProviderService {
         Ok(provider)
     }
 
-    /// Deletes the connection and its models. Chats, projects, and schedules that used one of its
-    /// models keep existing with no model (`ProviderDetails::usage` counts them first).
+    /// Deletes the connection and its models. Schedules that run one of its models are paused
+    /// first ("Model removed"); chats, projects, and schedules that used one keep existing with
+    /// no model (`ProviderDetails::usage` counts them first).
     pub async fn delete(&self, actor: &Actor, id: ProviderId) -> DomainResult<()> {
+        self.load(actor, id).await?;
+        let models = self
+            .models
+            .list(actor.user_id, ModelQuery::provider(id))
+            .await?;
+        for model in &models {
+            self.schedules
+                .disable_for_model(actor.user_id, model.id(), MODEL_REMOVED)
+                .await?;
+        }
         if self.providers.delete(actor.user_id, id).await? {
             Ok(())
         } else {
@@ -251,7 +266,6 @@ fn not_found(id: ProviderId) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domains::provider::ports::ModelQuery;
     use crate::ports::llm_gateway::{RemoteModel, ReportedCapabilities};
     use crate::shared::net::NetworkScope;
     use crate::testing::{
@@ -271,6 +285,7 @@ mod tests {
         let gateway = Arc::new(ScriptedGateway::new());
         let cipher = Arc::new(FakeCipher::new());
         let service = ProviderService::new(
+            store.clone(),
             store.clone(),
             store.clone(),
             gateway.clone(),

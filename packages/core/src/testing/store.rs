@@ -14,11 +14,15 @@ use chrono::{DateTime, Utc};
 use crate::domains::file::{FileOwner, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Model, Provider, ProviderUsage};
+use crate::domains::schedule::Schedule;
 use crate::domains::settings::UserSettings;
 use crate::domains::tool::ToolServer;
 use crate::ports::clock::Clock;
+use crate::shared::actor::Actor;
 use crate::shared::errors::DomainError;
-use crate::shared::ids::{FileId, ModelId, ProjectId, ProviderId, ToolServerId, UserId};
+use crate::shared::ids::{
+    FileId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId, UserId,
+};
 
 pub struct MemoryStore {
     clock: Arc<dyn Clock>,
@@ -35,6 +39,16 @@ pub(crate) struct Tables {
     pub(crate) projects: BTreeMap<ProjectId, Project>,
     pub(crate) files: BTreeMap<FileId, (StoredFile, Bytes)>,
     pub(crate) tool_servers: BTreeMap<ToolServerId, ToolServer>,
+    pub(crate) schedules: BTreeMap<ScheduleId, Schedule>,
+    /// The two `auth.users` columns Copilot reads (`ScheduleRepository::due`).
+    pub(crate) users: HashMap<UserId, Owner>,
+}
+
+/// A lib-rustauth user as `ScheduleRepository::due` sees it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Owner {
+    pub(crate) is_admin: bool,
+    pub(crate) disabled: bool,
 }
 
 impl MemoryStore {
@@ -44,6 +58,23 @@ impl MemoryStore {
             clock,
             tables: Mutex::new(Tables::default()),
         }
+    }
+
+    /// Records a lib-rustauth user's role for `ScheduleRepository::due`. Owners never added count
+    /// as active plain users.
+    pub fn add_user(&self, actor: &Actor) {
+        self.tables().users.insert(
+            actor.user_id,
+            Owner {
+                is_admin: actor.is_admin,
+                disabled: false,
+            },
+        );
+    }
+
+    /// Sets `auth.users.disabled_at`: the scheduler skips the user's schedules.
+    pub fn disable_user(&self, user: UserId) {
+        self.tables().users.entry(user).or_default().disabled = true;
     }
 
     pub(crate) fn tables(&self) -> MutexGuard<'_, Tables> {
@@ -63,6 +94,11 @@ impl Tables {
                 *project = project.clone().with_default_model(None);
             }
         }
+        for schedule in self.schedules.values_mut() {
+            if schedule.model_id() == Some(model) {
+                *schedule = schedule.clone().with_model(None);
+            }
+        }
     }
 
     /// Rows of `user` that reference one of `models`.
@@ -74,16 +110,30 @@ impl Tables {
                 .values()
                 .filter(|project| project.user_id() == user && uses(project.default_model_id()))
                 .count() as u64,
+            schedules: self
+                .schedules
+                .values()
+                .filter(|schedule| schedule.user_id() == user && uses(schedule.model_id()))
+                .count() as u64,
             ..ProviderUsage::default()
         }
     }
 
-    /// Deletes a project and what cascades with it: its files (and, once those domains exist,
-    /// its chats and schedules).
+    /// Deletes a project and what cascades with it: its files and schedules (and, once that
+    /// domain exists, its chats).
     pub(crate) fn delete_project(&mut self, id: ProjectId) {
         self.projects.remove(&id);
         self.files
             .retain(|_, (file, _)| file.owner() != FileOwner::Project(id));
+        let schedules: Vec<ScheduleId> = self
+            .schedules
+            .values()
+            .filter(|schedule| schedule.project_id() == Some(id))
+            .map(Schedule::id)
+            .collect();
+        for schedule in schedules {
+            self.delete_schedule(schedule);
+        }
     }
 }
 

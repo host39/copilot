@@ -11,6 +11,7 @@ use crate::domains::provider::capabilities::{
 use crate::domains::provider::entities::{Model, Provider};
 use crate::domains::provider::ports::{ModelQuery, ModelRepository, ProviderRepository};
 use crate::domains::provider::values::{Preset, ProviderKind};
+use crate::domains::schedule::{MODEL_TURNED_OFF, ScheduleRepository};
 use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::constants::NAME_MAX_CHARS;
@@ -69,6 +70,7 @@ pub struct ModelUpdate {
 pub struct ModelService {
     models: Arc<dyn ModelRepository>,
     providers: Arc<dyn ProviderRepository>,
+    schedules: Arc<dyn ScheduleRepository>,
     clock: Arc<dyn Clock>,
 }
 
@@ -76,11 +78,13 @@ impl ModelService {
     pub fn new(
         models: Arc<dyn ModelRepository>,
         providers: Arc<dyn ProviderRepository>,
+        schedules: Arc<dyn ScheduleRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             models,
             providers,
+            schedules,
             clock,
         }
     }
@@ -123,7 +127,7 @@ impl ModelService {
     }
 
     /// Enables, renames, overrides capabilities, or sets token limits. Overriding a locked flag
-    /// is rejected.
+    /// is rejected. Turning a model off pauses the schedules that run it ("Model turned off").
     pub async fn update(
         &self,
         actor: &Actor,
@@ -131,6 +135,7 @@ impl ModelService {
         changes: ModelUpdate,
     ) -> DomainResult<ModelView> {
         let (mut model, provider) = self.load(actor, id).await?;
+        let turned_off = changes.enabled == Some(false) && model.enabled();
         if let Some(enabled) = changes.enabled {
             model = model.with_enabled(enabled);
         }
@@ -169,6 +174,11 @@ impl ModelService {
             .with_limits(context_window, max_output_tokens)
             .touched(self.clock.now());
         self.models.update(&model).await?;
+        if turned_off {
+            self.schedules
+                .disable_for_model(actor.user_id, id, MODEL_TURNED_OFF)
+                .await?;
+        }
         Ok(ModelView::new(model, &provider))
     }
 
@@ -227,13 +237,14 @@ mod tests {
         let providers = ProviderService::new(
             store.clone(),
             store.clone(),
+            store.clone(),
             gateway.clone(),
             Arc::new(FakeCipher::new()),
             clock.clone(),
             PrivateNetwork::Admins,
         );
         Fixture {
-            models: ModelService::new(store.clone(), store, clock),
+            models: ModelService::new(store.clone(), store.clone(), store, clock),
             providers,
             gateway,
         }

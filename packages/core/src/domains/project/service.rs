@@ -201,6 +201,7 @@ mod tests {
         let providers = ProviderService::new(
             store.clone(),
             store.clone(),
+            store.clone(),
             gateway.clone(),
             Arc::new(FakeCipher::new()),
             clock.clone(),
