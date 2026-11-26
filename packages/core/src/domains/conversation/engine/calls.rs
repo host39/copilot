@@ -19,10 +19,17 @@ use crate::shared::ids::ChatId;
 /// The text of a failure the user should not see the details of.
 pub(crate) const FAILED: &str = "Something went wrong while answering. Try again.";
 
-/// A human-readable message for `error`; internal errors read as [`FAILED`].
+/// A human-readable message for `error`. Internal errors read as [`FAILED`] and are logged here
+/// with their dotted key and source, because the run's outcome and events only carry the text.
 pub(crate) fn human(error: &DomainError) -> String {
     match error {
-        DomainError::Internal { .. } => FAILED.to_owned(),
+        DomainError::Internal { key, source } => {
+            let detail = source
+                .as_ref()
+                .map_or_else(String::new, ToString::to_string);
+            tracing::error!(key = %key, error = %detail, "core.engine.failed");
+            FAILED.to_owned()
+        }
         other => other.to_string(),
     }
 }

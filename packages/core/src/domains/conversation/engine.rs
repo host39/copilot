@@ -126,8 +126,10 @@ impl ChatEngine {
     }
 
     /// Runs `turn` until it completes, pauses for an approval, fails, or `cancel` fires. Events
-    /// go to `sink`, ending with `done` on every exit. Provider and tool failures end the run
-    /// with an `error` outcome; `Err` means storage failed (an `error` event is sent too).
+    /// go to `sink`, ending with `done` on every exit. Provider, tool, and file read failures
+    /// end the run with an `error` outcome and a saved `error` answer; `Err` means a message
+    /// could not be saved (an `error` event is sent too). Internal errors are logged with their
+    /// dotted key (`core.engine.failed`) wherever they become the generic text.
     pub async fn run(
         &self,
         turn: PreparedTurn,
@@ -609,8 +611,9 @@ impl Run<'_> {
         }
     }
 
-    /// The next request, built from the snapshot, with the file bytes it needs (at most 4 reads
-    /// at once). A file that is gone by now reads as deleted.
+    /// The next request, built from the snapshot, with the file bytes it needs: one read per
+    /// file (the metadata is already in `files`), at most 4 at once. A file that is gone by now
+    /// reads as deleted.
     async fn request(&mut self) -> DomainResult<LlmRequest> {
         let turn = self.turn;
         let inputs = ContextInputs {
@@ -637,8 +640,8 @@ impl Run<'_> {
         let actor = &turn.actor;
         let loaded: Vec<Option<(FileId, Bytes)>> = stream::iter(missing)
             .map(|id| async move {
-                match files.content(actor, id).await {
-                    Ok((_, bytes)) => Ok(Some((id, bytes))),
+                match files.bytes(actor, id).await {
+                    Ok(bytes) => Ok(Some((id, bytes))),
                     Err(DomainError::EntityNotFound { .. }) => Ok(None),
                     Err(error) => Err(error),
                 }

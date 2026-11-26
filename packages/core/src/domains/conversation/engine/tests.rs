@@ -1,8 +1,12 @@
 //! `ChatEngine::run` against the fakes, end to end from `ChatService::prepare`.
 
-use std::sync::Arc;
+use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -23,14 +27,15 @@ use crate::domains::provider::{
 };
 use crate::domains::schedule::{CreatedBy, NewSchedule, OnAsk, ScheduleQuery};
 use crate::domains::tool::{
-    ApprovalMode, NewToolServer, ServerOverride, ToolMode, ToolServer, ToolServerUpdate,
+    ApprovalMode, NewToolServer, ServerOverride, ToolMode, ToolServer, ToolServerRepository,
+    ToolServerUpdate,
 };
 use crate::ports::llm_gateway::{LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities};
-use crate::ports::tool_host::{ToolContent, ToolOutput};
+use crate::ports::tool_host::{ToolContent, ToolListing, ToolOutput};
 use crate::shared::actor::Actor;
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::MCP_RESULT_MAX_BYTES;
-use crate::shared::ids::ModelId;
+use crate::shared::ids::{ModelId, ProjectId, ToolServerId, UserId};
 use crate::shared::net::PrivateNetwork;
 use crate::testing::{
     CallStep, FakeCipher, FixedClock, MemoryStore, RecordedCall, RecordingSink, ScriptedGateway,
@@ -40,6 +45,8 @@ use crate::testing::{
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n....";
 
 struct Fixture {
+    clock: Arc<FixedClock>,
+    cipher: Arc<FakeCipher>,
     chats: ChatService,
     engine: ChatEngine,
     providers: ProviderService,
@@ -100,11 +107,13 @@ fn fixture() -> Fixture {
             store.clone(),
             store.clone(),
             gateway.clone(),
-            cipher,
+            cipher.clone(),
             clock.clone(),
             network,
         ),
-        projects: ProjectService::new(store.clone(), store.clone(), store.clone(), clock),
+        projects: ProjectService::new(store.clone(), store.clone(), store.clone(), clock.clone()),
+        clock,
+        cipher,
         schedules,
         tools,
         gateway,
@@ -1389,4 +1398,268 @@ async fn a_stop_before_the_first_round_answers_with_an_empty_cancelled_message()
         [Role::User, Role::Assistant, Role::User, Role::User],
         "the empty answer never goes out"
     );
+}
+
+/// Collects formatted log lines.
+struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn internal_errors_are_logged_with_their_key() {
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let logs = logs.clone();
+            move || Capture(logs.clone())
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let f = fixture();
+    let chat = f.chat(NewChat::default()).await;
+    f.gateway.push_stream_error(DomainError::internal(
+        "provider.http.failed",
+        "connection reset",
+    ));
+    let (outcome, _) = f.send(&chat, "Hi").await;
+    assert_eq!(outcome.error.as_deref(), Some(FAILED));
+
+    let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("core.engine.failed"), "{text}");
+    assert!(text.contains("provider.http.failed"), "{text}");
+    assert!(text.contains("connection reset"), "{text}");
+}
+
+/// Passes file and tool server reads to the store, yielding inside each one so reads started
+/// together overlap, and records the most reads in flight at once.
+struct Gauge {
+    store: Arc<MemoryStore>,
+    now: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl Gauge {
+    fn new(store: Arc<MemoryStore>) -> Self {
+        Self {
+            store,
+            now: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        }
+    }
+
+    async fn read<T>(&self, read: impl Future<Output = T>) -> T {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        let output = read.await;
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        output
+    }
+
+    /// The most reads in flight at once since the last call.
+    fn peak(&self) -> usize {
+        self.peak.swap(0, Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl FileRepository for Gauge {
+    async fn list(&self, user: UserId, owner: FileOwner) -> DomainResult<Vec<StoredFile>> {
+        self.read(FileRepository::list(self.store.as_ref(), user, owner))
+            .await
+    }
+
+    async fn get(&self, user: UserId, id: FileId) -> DomainResult<Option<StoredFile>> {
+        self.read(FileRepository::get(self.store.as_ref(), user, id))
+            .await
+    }
+
+    async fn create(&self, file: &StoredFile, bytes: Bytes) -> DomainResult<()> {
+        FileRepository::create(self.store.as_ref(), file, bytes).await
+    }
+
+    async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>> {
+        self.read(FileRepository::content(self.store.as_ref(), user, id))
+            .await
+    }
+
+    async fn update(&self, file: &StoredFile) -> DomainResult<()> {
+        FileRepository::update(self.store.as_ref(), file).await
+    }
+
+    async fn move_to(&self, user: UserId, ids: &[FileId], project: ProjectId) -> DomainResult<()> {
+        FileRepository::move_to(self.store.as_ref(), user, ids, project).await
+    }
+
+    async fn delete(&self, user: UserId, id: FileId) -> DomainResult<bool> {
+        FileRepository::delete(self.store.as_ref(), user, id).await
+    }
+
+    async fn usage(&self, user: UserId) -> DomainResult<u64> {
+        FileRepository::usage(self.store.as_ref(), user).await
+    }
+}
+
+#[async_trait]
+impl ToolServerRepository for Gauge {
+    async fn list(&self, user: UserId) -> DomainResult<Vec<ToolServer>> {
+        self.read(ToolServerRepository::list(self.store.as_ref(), user))
+            .await
+    }
+
+    async fn get(&self, user: UserId, id: ToolServerId) -> DomainResult<Option<ToolServer>> {
+        self.read(ToolServerRepository::get(self.store.as_ref(), user, id))
+            .await
+    }
+
+    async fn insert(&self, server: &ToolServer) -> DomainResult<()> {
+        ToolServerRepository::insert(self.store.as_ref(), server).await
+    }
+
+    async fn update(&self, server: &ToolServer) -> DomainResult<()> {
+        ToolServerRepository::update(self.store.as_ref(), server).await
+    }
+
+    async fn delete(&self, user: UserId, id: ToolServerId) -> DomainResult<bool> {
+        ToolServerRepository::delete(self.store.as_ref(), user, id).await
+    }
+
+    async fn save_listing(
+        &self,
+        user: UserId,
+        id: ToolServerId,
+        listing: &ToolListing,
+        review_required: bool,
+        at: DateTime<Utc>,
+    ) -> DomainResult<()> {
+        ToolServerRepository::save_listing(
+            self.store.as_ref(),
+            user,
+            id,
+            listing,
+            review_required,
+            at,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn prepare_and_run_read_at_most_four_rows_at_once() {
+    let f = fixture();
+    let gauge = Arc::new(Gauge::new(f.store.clone()));
+    let files = FileService::new(
+        gauge.clone(),
+        f.store.clone(),
+        f.store.clone(),
+        f.store.clone(),
+        f.clock.clone(),
+        FileLimits::default(),
+    );
+    let chats = ChatService::new(
+        ChatRepositories {
+            files: gauge.clone(),
+            servers: gauge.clone(),
+            ..ChatRepositories::shared(f.store.clone())
+        },
+        f.tools.clone(),
+        f.cipher.clone(),
+        f.clock.clone(),
+        PrivateNetwork::Admins,
+    );
+    let engine = ChatEngine::new(
+        f.gateway.clone(),
+        f.host.clone(),
+        f.store.clone(),
+        f.tools.clone(),
+        f.schedules.clone(),
+        files.clone(),
+        f.clock.clone(),
+    );
+    let project = f
+        .projects
+        .create(
+            &f.caller,
+            NewProject {
+                name: "Docs".to_owned(),
+                ..NewProject::default()
+            },
+        )
+        .await
+        .unwrap();
+    for index in 0..8 {
+        files
+            .upload(
+                &f.caller,
+                FileOwner::Project(project.id()),
+                &format!("notes-{index}.md"),
+                Bytes::from(format!("Note {index}")),
+            )
+            .await
+            .unwrap();
+    }
+    let chat = f
+        .chat(NewChat {
+            project_id: Some(project.id()),
+            ..NewChat::default()
+        })
+        .await;
+    let mut attached = Vec::new();
+    for index in 0..4 {
+        let file = files
+            .upload(
+                &f.caller,
+                FileOwner::Chat(chat.id()),
+                &format!("draft-{index}.md"),
+                Bytes::from(format!("Draft {index}")),
+            )
+            .await
+            .unwrap();
+        attached.push(file.id());
+    }
+    gauge.peak();
+
+    let turn = chats
+        .prepare(
+            &f.caller,
+            chat.id(),
+            TurnInput::Send {
+                text: "Summarize".to_owned(),
+                file_ids: attached,
+                edit_from: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        gauge.peak(),
+        4,
+        "prepare reads the 4 attachments at once and nothing else"
+    );
+
+    f.gateway.push_events(text_reply("Done"));
+    let sink = Arc::new(RecordingSink::new());
+    let outcome = engine
+        .run(turn, sink, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, MessageStatus::Complete);
+    assert_eq!(
+        gauge.peak(),
+        4,
+        "the engine reads the bytes of 12 files, 4 at once"
+    );
+    let sent = format!("{:?}", f.gateway.requests()[0].messages);
+    assert!(sent.contains("Note 7") && sent.contains("Draft 3"));
 }

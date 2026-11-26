@@ -136,7 +136,8 @@ impl FileService {
             .ok_or_else(|| not_found(id))
     }
 
-    /// The file and its bytes. Serve them with `served_type(file.media_type())`.
+    /// The file and its bytes (two reads at once). Serve them with
+    /// `served_type(file.media_type())`.
     pub async fn content(&self, actor: &Actor, id: FileId) -> DomainResult<(StoredFile, Bytes)> {
         let (file, bytes) = try_join(
             self.files.get(actor.user_id, id),
@@ -147,6 +148,14 @@ impl FileService {
             (Some(file), Some(bytes)) => Ok((file, bytes)),
             _ => Err(not_found(id)),
         }
+    }
+
+    /// The file's bytes alone, in one read, for a caller that already has its metadata.
+    pub async fn bytes(&self, actor: &Actor, id: FileId) -> DomainResult<Bytes> {
+        self.files
+            .content(actor.user_id, id)
+            .await?
+            .ok_or_else(|| not_found(id))
     }
 
     /// Renames the file or includes it in (or leaves it out of) the project context.

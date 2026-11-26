@@ -453,11 +453,9 @@ impl ChatService {
         if let Some(snapshot) = &snapshot {
             named.extend(snapshot.files.iter().map(|file| file.file_id));
         }
-        let (servers, files) = try_join(
-            self.stores.servers.list(actor.user_id),
-            self.file_index(actor, &loaded.files, named),
-        )
-        .await?;
+        // One after the other: `file_index` alone may use all 4 reads.
+        let servers = self.stores.servers.list(actor.user_id).await?;
+        let files = self.file_index(actor, &loaded.files, named).await?;
         let context = match snapshot {
             Some(snapshot) => snapshot,
             None => context::build(&ContextInputs {
