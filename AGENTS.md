@@ -44,6 +44,8 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/middleware` | CORS, auth guard, error handler, request id, request logger, `JsonBody` extractor |
 | `packages/logger` | tracing subscriber setup |
 
+Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency): users, sessions, passwords, roles, user administration, and the `auth` schema. `copilot-core` never depends on it.
+
 ## Non-Negotiables
 
 - Domain logic lives in `copilot-core`; sqlx adapters in `copilot-database`. No domain logic in repositories or handlers.
