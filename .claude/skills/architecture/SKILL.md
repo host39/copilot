@@ -31,7 +31,7 @@ Dependencies point inward: adapters depend on the domain, never the reverse. See
 | `apps/api` (`copilot-api`) | Composition root, OpenAPI routes, entrypoints | (may use every crate above) |
 | `apps/web` (`@copilot/web`) | API clients, pages, components | anything but `@copilot/contracts`; reaches the API over HTTP only |
 
-Adapters ("providers", "mcp", "security") implement core ports and use the outbound `reqwest::Client` the composition root builds once with `copilot-security`; they never build their own. Identity comes from lib-rustauth: only `apps/api` and `copilot-database` (with the `migrate` feature, for the `auth` migrations) depend on it, both through the `rustauth` facade.
+Adapters ("providers", "mcp", "security") implement core ports. The provider and MCP adapters receive an `Outbound<reqwest::Client>` that the composition root builds once per adapter with `copilot_security::clients`, pick a client per request with core's `Outbound::pick`, and cap responses with core's `read_capped` and `cap_events`; they never build their own client or depend on `copilot-security`. Identity comes from lib-rustauth: only `apps/api` and `copilot-database` (with the `migrate` feature, for the `auth` migrations) depend on it, both through the `rustauth` facade.
 
 `boundaries.config.mjs` encodes these rules; `make boundaries` checks them against `cargo metadata`. Read each rule's `comment` when unsure.
 

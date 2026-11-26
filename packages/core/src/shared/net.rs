@@ -2,13 +2,22 @@
 //!
 //! `ALLOW_PRIVATE_NETWORK` ([`PrivateNetwork`]) and the caller's `is_admin` decide a connection's
 //! [`NetworkScope`]. [`is_allowed`] is the pure address check: `copilot-security` calls it from the
-//! outbound client's DNS resolver and for IP-literal hosts, and [`crate::shared::base_url`] calls
-//! it when a URL is saved. A plain `http` URL uses [`is_allowed_plaintext`] instead, so a name
-//! that only looks local never sends a key in the clear to a public address.
+//! outbound clients' DNS resolver and peer check, [`Outbound::pick`] calls it for IP-literal
+//! hosts, and [`crate::shared::base_url`] calls it when a URL is saved. A plain `http` URL uses
+//! [`is_allowed_plaintext`] instead, so a name that only looks local never sends a key in the
+//! clear to a public address.
+//!
+//! The provider and MCP adapters receive an [`Outbound`] of the hardened `reqwest` clients that
+//! `copilot-security` builds, pick one per request with [`Outbound::pick`], and tell a refused
+//! request from a failed one with [`Blocked::find`]. Both types live here because the adapters
+//! may not depend on `copilot-security` (`make boundaries`).
 
+use std::error::Error;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
+
+use url::{Host, Url};
 
 use crate::shared::actor::Actor;
 
@@ -111,6 +120,94 @@ pub fn is_allowed(ip: IpAddr, scope: NetworkScope) -> bool {
 /// and this check keeps such a name from sending keys in the clear when it resolves publicly.
 pub fn is_allowed_plaintext(ip: IpAddr, scope: NetworkScope) -> bool {
     classify(ip) == AddressClass::Private && scope == NetworkScope::Private
+}
+
+/// Why an outbound request was refused before any request bytes were sent. `Display` is a dotted
+/// key, and no variant carries a resolved address, so a refusal never echoes one to a client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Blocked {
+    /// The host is, or resolves only to, an address the connection may not reach.
+    #[error("outbound.address.blocked")]
+    Address,
+    /// Not `https`, or plain `http` for a connection that may not reach private addresses.
+    #[error("outbound.scheme.blocked")]
+    Scheme,
+    /// The URL carries a user name or password.
+    #[error("outbound.credentials.blocked")]
+    Credentials,
+}
+
+impl Blocked {
+    /// The refusal in an error's source chain, if the policy caused it. reqwest reports a refusal
+    /// by the outbound resolver or peer check as a connect error whose source chain holds it;
+    /// adapters log those as `*.http.blocked` and other failures as `*.http.failed`.
+    pub fn find(error: &(dyn Error + 'static)) -> Option<Self> {
+        let mut current = Some(error);
+        while let Some(error) = current {
+            if let Some(blocked) = error.downcast_ref::<Self>() {
+                return Some(*blocked);
+            }
+            current = error.source();
+        }
+        None
+    }
+}
+
+/// The three outbound clients (`docs/design/copilot.md`, Outbound Requests): public-only and
+/// private-allowed `https` clients, and a plain `http` client that reaches only private and
+/// loopback addresses. `copilot-security` builds them as `reqwest::Client`s.
+#[derive(Clone, Debug)]
+pub struct Outbound<T> {
+    public: T,
+    private: T,
+    plaintext: T,
+}
+
+impl<T> Outbound<T> {
+    pub fn new(public: T, private: T, plaintext: T) -> Self {
+        Self {
+            public,
+            private,
+            plaintext,
+        }
+    }
+
+    /// The client for a request to `url` by a connection with `scope`, after the checks that need
+    /// no network: `https`, or plain `http` only for a private-scope connection (and then only
+    /// to private addresses); no user name or password; and an IP-literal host must pass the
+    /// policy here, because no resolver sees it. The clients check every resolved and connected
+    /// address again.
+    pub fn pick(&self, url: &Url, scope: NetworkScope) -> Result<&T, Blocked> {
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(Blocked::Credentials);
+        }
+        let (client, plaintext) = match (url.scheme(), scope) {
+            ("https", NetworkScope::Public) => (&self.public, false),
+            ("https", NetworkScope::Private) => (&self.private, false),
+            ("http", NetworkScope::Private) => (&self.plaintext, true),
+            _ => return Err(Blocked::Scheme),
+        };
+        let allowed = match literal(url) {
+            Some(ip) if plaintext => is_allowed_plaintext(ip, scope),
+            Some(ip) => is_allowed(ip, scope),
+            None => true,
+        };
+        if allowed {
+            Ok(client)
+        } else {
+            Err(Blocked::Address)
+        }
+    }
+}
+
+/// The host as an address, when the URL names one. The URL parser has already normalized the
+/// other spellings (`2130706433`, `0x7f.1`, a trailing dot) to the dotted form.
+fn literal(url: &Url) -> Option<IpAddr> {
+    match url.host()? {
+        Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        Host::Domain(_) => None,
+    }
 }
 
 /// The Alibaba Cloud metadata address, inside the CGNAT range but always blocked.
@@ -281,6 +378,146 @@ mod tests {
         assert_eq!(PrivateNetwork::Admins.scope(&user), NetworkScope::Public);
         assert_eq!(PrivateNetwork::Admins.scope(&admin), NetworkScope::Private);
         assert_eq!(PrivateNetwork::All.scope(&user), NetworkScope::Private);
+    }
+
+    fn outbound() -> Outbound<&'static str> {
+        Outbound::new("public", "private", "plaintext")
+    }
+
+    fn url(text: &str) -> Url {
+        Url::parse(text).expect("a valid test URL")
+    }
+
+    #[test]
+    fn picks_the_client_by_scheme_and_scope() {
+        let outbound = outbound();
+        let cases = [
+            ("https://api.example.com/v1", NetworkScope::Public, "public"),
+            (
+                "https://api.example.com/v1",
+                NetworkScope::Private,
+                "private",
+            ),
+            ("https://gpu.lan/v1", NetworkScope::Private, "private"),
+            ("http://ollama:11434/v1", NetworkScope::Private, "plaintext"),
+            (
+                "http://10.0.0.5:1234/v1",
+                NetworkScope::Private,
+                "plaintext",
+            ),
+        ];
+        for (text, scope, client) in cases {
+            assert_eq!(outbound.pick(&url(text), scope), Ok(&client), "{text}");
+        }
+    }
+
+    #[test]
+    fn refuses_other_schemes_and_plain_http_for_public_connections() {
+        let outbound = outbound();
+        let cases = [
+            ("http://ollama:11434/v1", NetworkScope::Public),
+            ("http://api.example.com/v1", NetworkScope::Public),
+            ("ftp://example.com/", NetworkScope::Private),
+            ("ws://example.com/", NetworkScope::Private),
+            ("file:///etc/passwd", NetworkScope::Private),
+        ];
+        for (text, scope) in cases {
+            assert_eq!(
+                outbound.pick(&url(text), scope),
+                Err(Blocked::Scheme),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_urls_with_credentials() {
+        let outbound = outbound();
+        for text in ["https://user@example.com/", "https://user:pw@example.com/"] {
+            assert_eq!(
+                outbound.pick(&url(text), NetworkScope::Private),
+                Err(Blocked::Credentials),
+                "{text}"
+            );
+        }
+    }
+
+    /// IP-literal hosts, which no resolver sees: `(url, scope, allowed)`.
+    #[test]
+    fn checks_ip_literal_hosts_before_any_request() {
+        use NetworkScope::{Private, Public};
+        let cases = [
+            ("https://8.8.8.8/", Public, true),
+            ("https://[2606:4700:4700::1111]/", Public, true),
+            ("https://[::ffff:8.8.8.8]/", Public, true),
+            ("https://127.0.0.1/", Public, false),
+            ("https://2130706433/", Public, false),
+            ("https://0x7f.1/", Public, false),
+            ("https://0177.0.0.1/", Public, false),
+            ("https://127.0.0.1./", Public, false),
+            ("https://[::1]/", Public, false),
+            ("https://10.0.0.1/", Public, false),
+            ("https://100.64.0.1/", Public, false),
+            ("https://[::ffff:127.0.0.1]/", Public, false),
+            ("https://[::ffff:7f00:1]/", Public, false),
+            ("https://[64:ff9b::a00:1]/", Public, false),
+            ("https://[2002:a00:1::1]/", Public, false),
+            ("https://[::7f00:1]/", Public, false),
+            ("https://10.0.0.1/", Private, true),
+            ("https://100.64.0.1/", Private, true),
+            ("https://[::ffff:192.168.1.9]/", Private, true),
+            ("https://169.254.169.254/", Private, false),
+            ("https://[::ffff:169.254.169.254]/", Private, false),
+            ("https://[64:ff9b::a9fe:a9fe]/", Private, false),
+            ("https://[2002:a9fe:a9fe::1]/", Private, false),
+            ("https://[64:ff9b:1::a00:1]/", Private, false),
+            ("https://[fe80::1]/", Private, false),
+            ("https://[fd00:ec2::254]/", Private, false),
+            ("https://100.100.100.200/", Private, false),
+            ("https://0.0.0.0/", Private, false),
+            ("https://[::]/", Private, false),
+            ("https://224.0.0.1/", Private, false),
+            ("https://255.255.255.255/", Private, false),
+            ("http://10.0.0.5:1234/", Private, true),
+            ("http://[::1]:8080/", Private, true),
+            ("http://8.8.8.8/", Private, false),
+            ("http://[::ffff:8.8.8.8]/", Private, false),
+            ("http://169.254.169.254/latest/meta-data/", Private, false),
+        ];
+        let outbound = outbound();
+        for (text, scope, allowed) in cases {
+            let result = outbound.pick(&url(text), scope);
+            if allowed {
+                assert!(result.is_ok(), "{text} is allowed for {scope:?}");
+            } else {
+                assert_eq!(result, Err(Blocked::Address), "{text} {scope:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn leaves_names_to_the_resolver() {
+        let outbound = outbound();
+        for text in ["https://localhost/", "https://metadata.google.internal/"] {
+            assert_eq!(
+                outbound.pick(&url(text), NetworkScope::Public),
+                Ok(&"public")
+            );
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer")]
+    struct Outer(#[source] Box<dyn Error + Send + Sync>);
+
+    #[test]
+    fn finds_the_refusal_in_a_source_chain() {
+        let error = Outer(Box::new(Outer(Box::new(Blocked::Address))));
+        assert_eq!(Blocked::find(&error), Some(Blocked::Address));
+        assert_eq!(Blocked::find(&Blocked::Scheme), Some(Blocked::Scheme));
+        let other = Outer(Box::new(std::io::Error::other("refused")));
+        assert_eq!(Blocked::find(&other), None);
+        assert_eq!(Blocked::Address.to_string(), "outbound.address.blocked");
     }
 
     #[test]

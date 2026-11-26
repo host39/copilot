@@ -188,18 +188,18 @@ flowchart LR
 
 | Crate | Role | Implements |
 | --- | --- | --- |
-| `copilot-core` | Entities, value objects, services, ports, the conversation engine, the cron rule, the outbound address policy | none |
+| `copilot-core` | Entities, value objects, services, ports, the conversation engine, the cron rule, the outbound address policy and client choice (`Outbound`, `Blocked`), the response size caps | none |
 | `copilot-database` | sqlx repositories, versioned JSON records, file bytes in `file_contents`, `migrate` (rustauth's migrations, then Copilot's) and `seed` binaries | repository ports |
 | `copilot-providers` | OpenAI-compatible and Anthropic wire protocols over reqwest with SSE parsing | `LlmGateway` |
 | `copilot-mcp` | MCP client over Streamable HTTP (rmcp) | `ToolHost` |
-| `copilot-security` | AES-256-GCM sealing, the hardened outbound `reqwest::Client` builder (DNS resolver that applies the core address policy) | `SecretCipher` |
+| `copilot-security` | AES-256-GCM sealing, the hardened outbound `reqwest::Client` builder (a DNS resolver and a peer check that apply the core address policy) | `SecretCipher` |
 | `copilot-contracts` | DTOs, `ChatStreamEvent`, `UserEvent`, Zod schemas (re-exports rustauth's for the web app) | none |
 | `copilot-middleware` | CORS (dev), errors, request id, request logger | none |
 | `copilot-logger` | tracing subscriber setup | none |
 | `apps/api` | Composition root (including rustauth), routes, SSE serialization, `RunRegistry`, scheduler loop, SPA serving | none |
 | `rustauth` (lib-rustauth, git dependency) | Accounts, password hashing, sessions, roles, user administration, login throttling, setup token; its router, guard, and `auth` schema migrations | its own ports |
 
-**Dependencies.** Versions and features come from `docs/research/dependencies.md`: `reqwest` 0.13 with `rustls-no-provider` and the ring provider installed at startup (sqlx already uses ring), `sse-stream` for SSE parsing, `croner` on `jiff` for schedules, `aes-gcm`, `rmcp` 3.12 with `client` and `transport-streamable-http-client-reqwest` only. `argon2` and the session token code come with rustauth, which uses the template's versions of the shared crates, so the workspace keeps one copy of each. `copilot-core` may depend on these pure libraries: `uuid`, `chrono`, `jiff`, `croner`, `url`, `sha2`, `bytes`, `serde_json`, `thiserror`, `async-trait`, `futures-core`, `futures-util` (`default-features = false`, `std`), and `tokio-util` (`default-features = false`, for `sync::CancellationToken`; it brings in only tokio `sync`). `apps/web` may depend on `@tauri-apps/api`, `@tauri-apps/plugin-http`, `react-markdown`, `remark-gfm`, and `@tanstack/react-query` (recorded in ADR-005).
+**Dependencies.** Versions and features come from `docs/research/dependencies.md`: `reqwest` 0.13 with `rustls-no-provider` and the ring provider installed once by `copilot-security` before the first client is built (sqlx already uses ring), `sse-stream` for SSE parsing, `croner` on `jiff` for schedules, `aes-gcm`, `rmcp` 3.12 with `client` and `transport-streamable-http-client-reqwest` only. `copilot-security` also uses `hyper-util` and `http` (the peer address of each connection), `tower` (the connector layer), and `zeroize` (the decoded `SECRET_KEY`), all already in the tree through reqwest and rustls. `argon2` and the session token code come with rustauth, which uses the template's versions of the shared crates, so the workspace keeps one copy of each. `copilot-core` may depend on these pure libraries: `uuid`, `chrono`, `jiff`, `croner`, `url`, `sha2`, `bytes`, `serde_json`, `thiserror`, `async-trait`, `futures-core`, `futures-util` (`default-features = false`, `std`), and `tokio-util` (`default-features = false`, for `sync::CancellationToken`; it brings in only tokio `sync`). `apps/web` may depend on `@tauri-apps/api`, `@tauri-apps/plugin-http`, `react-markdown`, `remark-gfm`, and `@tanstack/react-query` (recorded in ADR-005).
 
 ### Boundary Rules
 
@@ -213,7 +213,7 @@ flowchart LR
 
 Only `apps/api` and `copilot-database` depend on lib-rustauth, both through the `rustauth` facade (lib-rustauth's inner crates may change in any release).
 
-The pure address policy (`net::is_allowed(ip, scope)`, std only) lives in core. The reqwest DNS resolver that calls it lives in `copilot-security`. The composition root builds the outbound clients once and injects them into the provider and MCP adapter constructors; adapters never build their own client.
+The pure address policy (`net::is_allowed(ip, scope)`, std only) lives in core, with what the adapters need around it: `Outbound<T>` (the three clients; `pick(url, scope)` chooses one and checks IP-literal hosts), `Blocked` (the refusal, found in an error's source chain with `Blocked::find`), and the response caps (`read_capped`, `cap_events`). The reqwest DNS resolver and peer check that call the policy live in `copilot-security`. The composition root builds one `Outbound<reqwest::Client>` per adapter with `copilot_security::clients(Purpose::Providers)` and `clients(Purpose::Tools)` and injects it into the provider and MCP adapter constructors; adapters never build their own client and never depend on `copilot-security`.
 
 ### Self-Hosting
 
@@ -904,22 +904,22 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 ### Secrets
 
-- Sealed format: version byte (`1`) || key id (1 byte) || 12-byte nonce || AES-256-GCM ciphertext. AAD = `<table>.<column>:<row id>:<user_id>`, so a value copied into another row does not decrypt.
-- `SECRET_KEY` is required in every environment and must decode to exactly 32 bytes, or startup fails with `api.config.env.invalid SECRET_KEY`.
+- Sealed format: version byte (`1`) || key id (1 byte) || 12-byte nonce || AES-256-GCM ciphertext with its 16-byte tag. AAD = `<table>.<column>:<row id>:<user_id>`, so a value copied into another row does not decrypt. The key id is the first byte of `SHA-256("copilot.secret-key.id" || key)`, so a later keyring finds the sealing key without a migration, and a changed key reads as "Key must be re-entered" before any decryption. Nonces are random (`getrandom`), one per seal. Every value that does not open (wrong version, key id, AAD, or tag, or truncated) gives `SECRET_UNREADABLE` and logs `security.seal.open.refused` with the reason, table, and column.
+- `SECRET_KEY` is required in every environment and must decode (standard base64, surrounding whitespace ignored) to exactly 32 bytes, or startup fails with `api.config.env.invalid SECRET_KEY` (`copilot_security::SecretKey::parse`). The decoded bytes and the key schedule are zeroized on drop.
 - If unsealing fails (key changed), the provider or tool server shows "Key must be re-entered" instead of a 500.
 - Responses never include secrets, only whether one is set.
 - When a `PATCH` changes the origin (scheme, host, or port) of a provider base URL or a tool server URL, the service clears the sealed key or headers unless the same request supplies new ones; the UI says the key must be re-entered.
 
 ### Outbound Requests
 
-1. Three hardened `reqwest::Client`s (public-only, private-allowed, and plaintext) are built once by `copilot-security` code in the composition root and shared by the provider and MCP adapters. A connection's `NetworkScope` picks between the first two for `https` URLs; a plain `http` URL always takes the plaintext client, whose resolver admits only private and loopback addresses the scope allows (`net::is_allowed_plaintext`), so a local-looking name such as `ollama` or `gpu.lan` that resolves to a public address fails instead of sending its key in the clear.
+1. Three hardened `reqwest::Client`s (public-only, private-allowed, and plaintext) are built once per adapter by `copilot_security::clients(purpose)` in the composition root and injected as a core `Outbound<reqwest::Client>`. `Outbound::pick(url, scope)` chooses: a connection's `NetworkScope` picks between the first two for `https` URLs (both refuse plain `http` with `https_only`); a plain `http` URL always takes the plaintext client, and only for a private-scope connection. The plaintext client's resolver and peer check admit only private and loopback addresses (`net::is_allowed_plaintext`), so a local-looking name such as `ollama` or `gpu.lan` that resolves to a public address fails instead of sending its key in the clear.
 2. URLs are parsed with `url::Url`. `https` is required for public hosts; `http` is allowed only for permitted private hosts. URLs with userinfo are rejected.
-3. Checks run in a custom `dns_resolver`, plus a separate check for IP-literal hosts (hyper skips the resolver for them). An IPv6 address that carries an IPv4 address is classified as that address: IPv4-mapped `::ffff:0:0/96`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and IPv4-compatible `::a.b.c.d`. The local-use NAT64 prefix `64:ff9b:1::/48` is always blocked, because its IPv4 layout is the operator's choice.
+3. Checks run in a custom `dns_resolver`, which keeps only the addresses the client's policy allows (reqwest connects to exactly those, so there is no rebinding window) and fails a name with none, plus two checks for IP-literal hosts, which hyper never passes to the resolver: `Outbound::pick` refuses a disallowed literal before any request (the URL parser has already turned `2130706433`, `0x7f.1`, and `127.0.0.1.` into dotted form), and a reqwest connector layer checks the peer address of every new connection and drops it before any request bytes, failing closed when the peer is unknown. An IPv6 address that carries an IPv4 address is classified as that address: IPv4-mapped `::ffff:0:0/96`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and IPv4-compatible `::a.b.c.d`. The local-use NAT64 prefix `64:ff9b:1::/48` is always blocked, because its IPv4 layout is the operator's choice.
 4. Always blocked, whatever the setting: `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200`, `0.0.0.0/8`, `::`, multicast, and broadcast.
 5. `ALLOW_PRIVATE_NETWORK` (`none`, `admins`, `all`; default `admins`): which connections may reach private and loopback ranges (RFC 1918, loopback, unique local `fc00::/7`, CGNAT `100.64.0.0/10`). With `admins`, only connections owned by an admin (rustauth role `administrator`) may.
-6. `redirect::Policy::none()` and `.no_proxy()` on both clients; `connect_timeout` 10 s; `read_timeout` as an idle timeout; no total timeout (it would cut streams); `pool_max_idle_per_host(0)` for MCP.
-7. Response caps: `MCP_RESPONSE_MAX_BYTES` (4 MiB) passed to rmcp's `max_json_response_size` and `max_sse_event_size`; the same per-event cap on provider SSE.
-8. Failed fetches never echo response bodies or resolved IPs to the client; they are logged as `provider.http.blocked`, `mcp.http.blocked`, or `*.http.failed`.
+6. `redirect::Policy::none()` and `.no_proxy()` on every client; `connect_timeout` `OUTBOUND_CONNECT_TIMEOUT_SECS` (10); `read_timeout` as an idle timeout (`PROVIDER_IDLE_TIMEOUT_SECS`, 300, for providers; `MCP_IDLE_TIMEOUT_SECS`, 60, for MCP); no total timeout (it would cut streams); `pool_max_idle_per_host(0)` for MCP. The MCP set is `clients(Purpose::Tools)`, the provider set `clients(Purpose::Providers)`.
+7. Response caps: `MCP_RESPONSE_MAX_BYTES` (4 MiB) passed to rmcp's `max_json_response_size` and `max_sse_event_size`; the same per-event cap on provider SSE through core's `cap_events` (bytes between blank lines, LF, CRLF, or CR line endings), and whole provider bodies through `read_capped` (a larger `Content-Length` fails before reading).
+8. Failed fetches never echo response bodies or resolved IPs to the client; they are logged as `provider.http.blocked`, `mcp.http.blocked` (when `Blocked::find` finds a refusal in the error's source chain), or `*.http.failed`.
 
 ### Tools and Prompt Injection
 
@@ -998,6 +998,8 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 
 | Constant | Value |
 | --- | --- |
+| `OUTBOUND_CONNECT_TIMEOUT_SECS` | 10 |
+| `PROVIDER_IDLE_TIMEOUT_SECS`, `MCP_IDLE_TIMEOUT_SECS` | 300, 60 |
 | `MCP_CALL_TIMEOUT_SECS` | 60 |
 | `MCP_RESULT_MAX_BYTES` | 65536 |
 | `MCP_RESPONSE_MAX_BYTES` | 4194304 |

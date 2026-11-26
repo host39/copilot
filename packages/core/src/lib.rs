@@ -67,6 +67,7 @@ pub use crate::ports::turn_sink::TurnSink;
 pub use crate::shared::actor::Actor;
 pub use crate::shared::base_url::BaseUrl;
 pub use crate::shared::builtin_tool::BuiltinTool;
+pub use crate::shared::caps::{CapError, cap_events, read_capped};
 pub use crate::shared::constants::{DEFAULT_PAGE_OFFSET, DEFAULT_PAGE_SIZE};
 pub use crate::shared::errors::{BoxError, Context, DomainError, DomainResult};
 pub use crate::shared::ids::{
@@ -74,7 +75,8 @@ pub use crate::shared::ids::{
     UserId,
 };
 pub use crate::shared::net::{
-    AddressClass, NetworkScope, PrivateNetwork, classify, is_allowed, is_allowed_plaintext,
+    AddressClass, Blocked, NetworkScope, Outbound, PrivateNetwork, classify, is_allowed,
+    is_allowed_plaintext,
 };
 pub use crate::shared::reasoning::ReasoningLevel;
 pub use crate::shared::secret::Secret;

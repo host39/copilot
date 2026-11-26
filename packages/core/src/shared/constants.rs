@@ -8,8 +8,17 @@ pub const MAX_PARALLEL_READS: usize = 4;
 pub const DEFAULT_PAGE_SIZE: u32 = 25;
 pub const DEFAULT_PAGE_OFFSET: u32 = 0;
 
+/// Connect timeout of every outbound connection (providers and MCP servers). Outbound clients
+/// have no total timeout, because it would cut long streams; the idle timeouts below end a
+/// response that stops sending.
+pub const OUTBOUND_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Longest silence in a provider response. Reasoning models may think for minutes before the
+/// first byte.
+pub const PROVIDER_IDLE_TIMEOUT_SECS: u64 = 300;
 /// Timeout of one MCP tool call.
 pub const MCP_CALL_TIMEOUT_SECS: u64 = 60;
+/// Longest silence in an MCP response: a call never outlives its timeout anyway.
+pub const MCP_IDLE_TIMEOUT_SECS: u64 = MCP_CALL_TIMEOUT_SECS;
 /// Tool result text kept for the model and for storage.
 pub const MCP_RESULT_MAX_BYTES: usize = 65_536;
 /// Largest MCP response (JSON body or SSE event) the client accepts.

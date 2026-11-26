@@ -1,9 +1,10 @@
 //! Cross-cutting domain types: ids, the caller, errors, constants, secrets, network policy,
-//! base URLs, reasoning levels, and list options.
+//! response size caps, base URLs, reasoning levels, and list options.
 
 pub mod actor;
 pub mod base_url;
 pub mod builtin_tool;
+pub mod caps;
 pub mod constants;
 pub mod errors;
 pub mod ids;

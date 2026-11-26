@@ -14,5 +14,7 @@
 
 pub mod cipher;
 pub mod crypto;
+pub mod outbound;
 
 pub use crate::cipher::{AesCipher, FORMAT_VERSION, KEY_LEN, KeyError, SecretKey};
+pub use crate::outbound::{Purpose, clients};

@@ -4,9 +4,10 @@
 //!
 //! Rules (see "Adapter Rules" in `docs/design/copilot.md` and `docs/research/mcp.md`):
 //!
-//! - Hand rmcp the `reqwest::Client` the composition root injects (built by `copilot-security`).
-//!   Never build a client here, and never enable rmcp's `reqwest` feature, which turns on
-//!   reqwest's aws-lc-rs provider.
+//! - Hand rmcp the client that `copilot_core::Outbound::pick` returns for the endpoint's URL and
+//!   network scope, from the `Outbound<reqwest::Client>` the composition root injects (built by
+//!   `copilot-security` for MCP). Never build a client here, and never enable rmcp's `reqwest`
+//!   feature, which turns on reqwest's aws-lc-rs provider.
 //! - Time out every call and cap every response (`MCP_RESPONSE_MAX_BYTES`).
 //! - No rmcp types leave this crate, so an rmcp major bump touches only this crate.
 //! - No `axum`, `sqlx`, `utoipa`, contracts, database, middleware, other adapter, or rustauth
