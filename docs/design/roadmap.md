@@ -28,7 +28,7 @@ Every step needs all of these:
 - [x] P0.1 Copy the RustInit template, rename to Copilot, CI on branch pushes
 - [x] P0.2 Research notes in `docs/research/` (voice, providers, MCP, native apps and CI, dependencies)
 - [x] P0.3 Design spec reviewed by six lenses (UX, architecture, security, protocols, footprint, delivery) and revised (`docs/design/copilot.md` v2); ADR-005 written. Owner review requested (non-blocking): the spec, the data model, and ADR-005.
-- [ ] P0.4 Delivery tooling:
+- [x] P0.4 Delivery tooling:
   - DB tests use `#[sqlx::test(migrations = false)]` plus `#[ignore = "requires Postgres: run make test-db"]` and start with `copilot_database::operations::migrate::run(&pool)`, which applies rustauth's migrations (from P1.4 on) and then Copilot's `MIGRATOR`, because Copilot tables reference `auth.users`. `make test-db` exports `DATABASE_URL` pointing at the `postgres` maintenance database, so every test gets a throwaway database and never touches `copilot`. sqlx with `migrate` and `macros` as a dev-dependency where needed; the add-domain skill's test step updated.
   - The CI split into a slim lint job and a Rust plus Postgres job.
   - `scripts/worktree.sh <track>`: `git worktree add ../copilot-<track> -b claude/copilot-p2-<track> p1-frozen`, `pnpm install --frozen-lockfile`, copy the env samples, set a distinct `PORT` (3001 and up) and Bruno base URL. The agent runs it once per track when Phase 2 starts.
