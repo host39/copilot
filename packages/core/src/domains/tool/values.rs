@@ -116,7 +116,7 @@ impl ToolAlias {
         Self(name.to_owned())
     }
 
-    /// A stored alias (a snapshot or `chats.approved_tools`).
+    /// A stored alias (a snapshot or a stored tool call).
     pub fn restore(value: String) -> Self {
         Self(value)
     }

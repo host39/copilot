@@ -12,7 +12,7 @@ use futures_util::future::{try_join, try_join3, try_join4};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 
 use crate::domains::chat::context::TurnContext;
-use crate::domains::chat::entities::Chat;
+use crate::domains::chat::entities::{ApprovedTool, Chat};
 use crate::domains::chat::message::{
     CallDecision, Decision, DecisionScope, Message, MessageStatus, Part, Role, SKIPPED,
     skipped_results,
@@ -30,7 +30,7 @@ use crate::ports::llm_gateway::ModelTarget;
 use crate::shared::actor::Actor;
 use crate::shared::constants::MAX_PARALLEL_READS;
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, FileId, MessageId, ModelId, ProjectId};
+use crate::shared::ids::{ChatId, FileId, MessageId, ModelId, ProjectId, ToolServerId};
 
 /// Code of a model that cannot answer (turned off, no longer listed, or its connection is off).
 const MODEL_UNAVAILABLE: &str = "MODEL_UNAVAILABLE";
@@ -362,7 +362,7 @@ impl ChatService {
             .get(user, chat.id(), hash)
             .await?
             .ok_or_else(|| missing_snapshot(message_id))?;
-        let approved: Vec<_> = message
+        let approved: Vec<(ToolServerId, String)> = message
             .pending_calls()
             .filter(|call| {
                 decisions.iter().any(|decision| {
@@ -371,7 +371,7 @@ impl ChatService {
                         && decision.scope == DecisionScope::Chat
                 })
             })
-            .map(|call| call.alias.clone())
+            .filter_map(|call| Some((call.server_id?, call.tool_name.clone())))
             .collect();
         let decided = message.clone().decided(&decisions, self.clock.now());
         let planned: Vec<Message> = loaded
@@ -404,10 +404,21 @@ impl ChatService {
         {
             return Err(not_awaiting());
         }
+        // Only servers the snapshot still reaches: a removed server's calls fail anyway.
+        let approved: Vec<ApprovedTool> = approved
+            .into_iter()
+            .filter(|(server_id, _)| {
+                staged
+                    .servers
+                    .iter()
+                    .any(|server| server.id() == *server_id)
+            })
+            .map(|(server_id, name)| ApprovedTool { server_id, name })
+            .collect();
         let mut chat = chat;
         if !approved.is_empty() {
-            for alias in approved {
-                chat = chat.approving(alias);
+            for tool in approved {
+                chat = chat.approving(tool);
             }
             self.stores.chats.update(&chat).await?;
         }
@@ -1334,9 +1345,10 @@ mod tests {
             turn.tools.tools.is_empty(),
             "the snapshot's tools, not today's"
         );
-        assert_eq!(turn.chat.approved_tools(), [calls[0].alias.clone()]);
-        let stored = f.chats.get(&caller, chat.id()).await.unwrap();
-        assert_eq!(stored.approved_tools(), [calls[0].alias.clone()]);
+        assert!(
+            turn.chat.approved_tools().is_empty(),
+            "the fixture's calls name no stored server, so there is nothing to approve"
+        );
 
         let decided = turn.last_message().unwrap();
         assert_eq!(decided.id(), paused.id());

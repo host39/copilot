@@ -1768,3 +1768,123 @@ async fn a_server_added_again_under_the_same_slug_gets_a_new_snapshot() {
     assert_eq!(calls.len(), 1, "the working server runs the approved call");
     assert_eq!(calls[0].server_id, new.id());
 }
+
+/// Approves every pending call of `message` for the rest of the chat.
+fn approve_for_chat(message: &Message) -> TurnInput {
+    TurnInput::Decide {
+        message_id: message.id(),
+        decisions: message
+            .pending_calls()
+            .map(|call| CallDecision {
+                call_id: call.id,
+                decision: Decision::Approve,
+                scope: DecisionScope::Chat,
+                reason: None,
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn a_chat_approval_never_reaches_a_new_server_under_the_same_slug() {
+    let f = fixture();
+    let (chat, old) = f.tool_chat(ApprovalMode::Ask).await;
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.send(&chat, "Search").await;
+    let paused = f.history(&chat).await[1].clone();
+    let turn = f.prepare(&chat, approve_for_chat(&paused)).await;
+    f.host.push_text("found");
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.host.push_text("found again");
+    f.gateway.push_events(text_reply("Done"));
+    let (outcome, _) = f.send(&chat, "Search again").await;
+    assert_eq!(
+        outcome.status,
+        MessageStatus::Complete,
+        "approved for the chat"
+    );
+    assert_eq!(f.host.calls().len(), 2);
+
+    f.tools.delete(&f.caller, old.id()).await.unwrap();
+    let stored = f.chats.get(&f.caller, chat.id()).await.unwrap();
+    assert!(
+        stored.approved_tools().is_empty(),
+        "deleting a server drops its approvals"
+    );
+    let new = f.server(ApprovalMode::Ask).await;
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                tool_overrides: Some(vec![ServerOverride {
+                    server_id: new.id(),
+                    enabled: true,
+                }]),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    let (outcome, _) = f.send(&chat, "And now?").await;
+    assert_eq!(outcome.status, MessageStatus::AwaitingApproval);
+    assert_eq!(f.host.calls().len(), 2, "the new server's tool asks first");
+}
+
+#[tokio::test]
+async fn a_chat_approval_stays_with_its_tool_when_the_alias_moves() {
+    let f = fixture();
+    let server = f
+        .tools
+        .create(
+            &f.caller,
+            NewToolServer {
+                name: "GitHub".to_owned(),
+                url: "https://mcp.example.com/mcp".to_owned(),
+                ..NewToolServer::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.host.push_tools(vec![remote_tool("a_b")]);
+    f.tools.test(&f.caller, server.id()).await.unwrap();
+    let chat = f
+        .chat(NewChat {
+            tool_overrides: vec![ServerOverride {
+                server_id: server.id(),
+                enabled: true,
+            }],
+            ..NewChat::default()
+        })
+        .await;
+    f.gateway.push_events(call_reply(&[("github__a_b", "{}")]));
+    f.send(&chat, "Go").await;
+    let paused = f.history(&chat).await[1].clone();
+    let turn = f.prepare(&chat, approve_for_chat(&paused)).await;
+    f.host.push_text("ok");
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+    assert_eq!(f.host.calls()[0].name, "a_b");
+
+    f.host
+        .push_tools(vec![remote_tool("a.b"), remote_tool("a_b")]);
+    f.tools.test(&f.caller, server.id()).await.unwrap();
+    f.tools.review(&f.caller, server.id()).await.unwrap();
+    f.gateway.push_events(call_reply(&[("github__a_b", "{}")]));
+    let (outcome, _) = f.send(&chat, "Again").await;
+    assert_eq!(
+        outcome.status,
+        MessageStatus::AwaitingApproval,
+        "github__a_b now names a.b, which was never approved"
+    );
+    let asked = f.history(&chat).await[5].calls().next().unwrap().clone();
+    assert_eq!(asked.tool_name, "a.b");
+    assert_eq!(f.host.calls().len(), 1);
+}

@@ -15,7 +15,7 @@ pub mod testing;
 
 // Domains
 pub use crate::domains::chat::{
-    Approval, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepositories,
+    Approval, ApprovedTool, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepositories,
     ChatRepository, ChatService, ChatSummary, ChatUpdate, ContextHash, Decision, DecisionScope,
     FinishReason, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus, NewChat,
     Page, Part, PreparedTurn, Rendering, ResultContent, Role, RunMode, SKIPPED, SearchHit,

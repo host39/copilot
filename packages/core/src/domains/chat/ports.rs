@@ -16,10 +16,10 @@ pub trait ChatRepository: Send + Sync {
     /// `query.limit` chats, each with its unread and awaiting-approval flags.
     async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>>;
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
-    /// With its `chat_tool_servers` rows, in one transaction.
+    /// With its `chat_tool_servers` and `chat_tool_approvals` rows, in one transaction.
     async fn insert(&self, chat: &Chat) -> DomainResult<()>;
-    /// Writes the chat's settings and replaces its `chat_tool_servers` rows, in one
-    /// transaction. `updated_at` and `last_read_at` are not written here: message writes move
+    /// Writes the chat's settings and replaces its `chat_tool_servers` and `chat_tool_approvals`
+    /// rows, in one transaction. `updated_at` and `last_read_at` are not written here: message writes move
     /// `updated_at`, and `mark_read` sets `last_read_at`.
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
     /// Cascades to its messages, snapshots, attachments, and join rows; schedules created from

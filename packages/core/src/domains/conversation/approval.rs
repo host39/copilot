@@ -1,9 +1,9 @@
 //! The approval policy (`docs/design/copilot.md`, Tool Execution and Approvals): whether a tool
 //! call runs, asks the user, is refused, or fails. First match wins.
 
-use crate::domains::chat::{RunMode, ToolCallPart, TurnContext};
+use crate::domains::chat::{ApprovedTool, RunMode, ToolCallPart, TurnContext};
 use crate::domains::schedule::{OnAsk, ScheduleTool};
-use crate::domains::tool::{ToolAlias, ToolMode, ToolServer};
+use crate::domains::tool::{ToolMode, ToolServer};
 
 /// The result of a call whose alias the turn does not offer.
 pub const UNKNOWN_TOOL: &str = "Unknown tool.";
@@ -35,8 +35,8 @@ pub struct Policy<'a> {
     pub context: &'a TurnContext,
     /// The current settings of the snapshot's servers.
     pub servers: &'a [ToolServer],
-    /// The chat's "Approve for this chat" aliases.
-    pub approved: &'a [ToolAlias],
+    /// The chat's "Approve for this chat" tools, by server id and original name.
+    pub approved: &'a [ApprovedTool],
     pub mode: RunMode,
 }
 
@@ -48,7 +48,8 @@ pub struct Policy<'a> {
 /// 4. A server that was turned off or removed fails.
 /// 5. A server whose tool list changed and was not reviewed asks.
 /// 6. The tool's mode, else the server's: `auto` runs; `off` (set during the turn) is denied.
-/// 7. `ask` runs when the chat approved the alias.
+/// 7. `ask` runs when the chat approved this server's tool (by server id and original name,
+///    never by alias).
 /// 8. Otherwise it asks. An unattended run cannot ask: with "Deny and continue" the call is
 ///    denied, with "Pause until I approve" the run pauses.
 pub fn decide(call: &ToolCallPart, policy: &Policy<'_>) -> Verdict {
@@ -76,7 +77,13 @@ pub fn decide(call: &ToolCallPart, policy: &Policy<'_>) -> Verdict {
                 match server.mode(&tool.name) {
                     ToolMode::Auto => return Verdict::Run,
                     ToolMode::Off => return Verdict::Deny(TOOL_OFF.to_owned()),
-                    ToolMode::Ask if policy.approved.contains(&call.alias) => return Verdict::Run,
+                    ToolMode::Ask
+                        if policy.approved.iter().any(|approved| {
+                            approved.server_id == id && approved.name == tool.name
+                        }) =>
+                    {
+                        return Verdict::Run;
+                    }
                     ToolMode::Ask => {}
                 }
             }
@@ -103,10 +110,10 @@ mod tests {
 
     use super::*;
     use crate::domains::chat::{Approval, ContextHash, SnapshotTool};
-    use crate::domains::tool::{ApprovalMode, Slug};
+    use crate::domains::tool::{ApprovalMode, Slug, ToolAlias};
     use crate::ports::tool_host::{RemoteTool, ToolListing};
     use crate::shared::base_url::BaseUrl;
-    use crate::shared::ids::{CallId, UserId};
+    use crate::shared::ids::{CallId, ToolServerId, UserId};
     use crate::shared::net::NetworkScope;
 
     fn now() -> DateTime<Utc> {
@@ -286,7 +293,10 @@ mod tests {
     fn chat_approvals_run_ask_tools() {
         let ask = server(ApprovalMode::Ask);
         let context = context(&ask);
-        let approved = [ToolAlias::restore("gh__search".to_owned())];
+        let approved = [ApprovedTool {
+            server_id: ask.id(),
+            name: "search".to_owned(),
+        }];
         let policy = Policy {
             context: &context,
             servers: std::slice::from_ref(&ask),
@@ -295,6 +305,19 @@ mod tests {
         };
         assert_eq!(decide(&call("gh__search"), &policy), Verdict::Run);
         assert_eq!(decide(&call("gh__delete"), &policy), Verdict::Ask);
+        let elsewhere = [ApprovedTool {
+            server_id: ToolServerId::generate(),
+            name: "search".to_owned(),
+        }];
+        let other = Policy {
+            approved: &elsewhere,
+            ..policy
+        };
+        assert_eq!(
+            decide(&call("gh__search"), &other),
+            Verdict::Ask,
+            "an approval of another server's tool with the same name"
+        );
         assert_eq!(
             decide(&call("schedule_prompt"), &policy),
             Verdict::Ask,

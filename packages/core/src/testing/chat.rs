@@ -373,11 +373,19 @@ impl Tables {
                 .get(&id)
                 .is_some_and(|row| row.user_id() == user)
         });
-        let servers_ok = chat.tool_overrides().iter().all(|row| {
+        let owned = |id| {
             self.tool_servers
-                .get(&row.server_id)
+                .get(id)
                 .is_some_and(|server| server.user_id() == user)
-        });
+        };
+        let servers_ok = chat
+            .tool_overrides()
+            .iter()
+            .all(|row| owned(&row.server_id))
+            && chat
+                .approved_tools()
+                .iter()
+                .all(|tool| owned(&tool.server_id));
         if project_ok && model_ok && schedule_ok && servers_ok {
             Ok(())
         } else {

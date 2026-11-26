@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::tool::{ToolServer, ToolServerParts, ToolServerRepository};
 use crate::ports::tool_host::ToolListing;
 use crate::shared::errors::{DomainError, DomainResult};
@@ -119,6 +120,22 @@ impl Tables {
                     .filter(|row| row.server_id != id)
                     .collect();
                 *chat = chat.clone().with_tool_overrides(kept);
+            }
+            if chat
+                .approved_tools()
+                .iter()
+                .any(|tool| tool.server_id == id)
+            {
+                let kept = chat
+                    .approved_tools()
+                    .iter()
+                    .filter(|tool| tool.server_id != id)
+                    .cloned()
+                    .collect();
+                *chat = Chat::restore(ChatParts {
+                    approved_tools: kept,
+                    ..chat.to_parts()
+                });
             }
         }
     }

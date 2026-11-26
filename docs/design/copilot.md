@@ -264,7 +264,7 @@ Copilot does not build accounts, passwords, sessions, roles, user administration
 | `provider` | `Provider`, `Model` | `ProviderRepository`, `ModelRepository` |
 | `project` | `Project` (with its tool server ids) | `ProjectRepository` |
 | `file` | `StoredFile` | `FileRepository` |
-| `chat` | `Chat` (with its tool overrides), `Message`, `TurnContext` | `ChatRepository`, `MessageRepository`, `TurnContextRepository` |
+| `chat` | `Chat` (with its tool overrides and chat approvals), `Message`, `TurnContext` | `ChatRepository`, `MessageRepository`, `TurnContextRepository` |
 | `tool` | `ToolServer`, `ToolSpec`, `ToolCall`, `ToolOutput` | `ToolServerRepository` |
 | `schedule` | `Schedule`, `CronRule`, built-in schedule tools | `ScheduleRepository` |
 | `conversation` | `ChatEngine`, `context::build`, approval policy, `TurnEvent` | none (uses the ports above) |
@@ -392,7 +392,7 @@ trait FileRepository {
 trait ChatRepository {
     async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>>; // filters: project, schedule, pinned, scheduled (runs vs recent); cursor (updated_at, id); unread and awaiting flags
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
-    async fn insert(&self, chat: &Chat) -> DomainResult<()>;        // with chat_tool_servers rows, one tx
+    async fn insert(&self, chat: &Chat) -> DomainResult<()>;        // with chat_tool_servers and chat_tool_approvals rows, one tx
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
     async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool>;
     async fn mark_read(&self, user: UserId, id: ChatId, at: DateTime<Utc>) -> DomainResult<()>;
@@ -519,7 +519,7 @@ Switching between Claude models on the same connection still replays, because th
 3. `schedule_prompt` or `cancel_schedule`: Ask. `list_schedules`: Run.
 4. Server has `tools_review_required`: Ask.
 5. Mode = `tool_modes[name]`, else the server's `approval`. `auto`: Run.
-6. `ask` and the alias is in `chats.approved_tools`: Run.
+6. `ask` and the chat approved this server's tool (a `chat_tool_approvals` row with its server id and original name; never matched by alias, which can move to another tool after a list change or to a new server under the same slug): Run.
 7. `ask` in an unattended run: `on_ask = deny` gives Deny("This tool needs approval, and scheduled runs cannot ask."); `on_ask = pause` gives Ask. This applies to every Ask of an unattended run, including step 4.
 8. Otherwise: Ask.
 
@@ -527,7 +527,7 @@ Switching between Claude models on the same connection still replays, because th
 
 - If any call is Ask: mark those `tool_call` parts `approval: pending`, set the assistant message to `awaiting_approval`, emit `tool.requested` (with `needsApproval`) for every call and `message.finished` (`awaiting_approval`), publish `approval.pending`, and end the run. Nothing waits in memory.
 - Otherwise: run the calls in call order through one `ToolSession` per run (`MCP_CALL_TIMEOUT_SECS`, 60, per call; status `timeout` on expiry), give denied calls a `denied` result with the reason, write **one** `tool` message with all results in call order, emit `tool.finished` for each, and continue.
-- **Decisions:** `POST /api/chats/{id}/messages/{messageId}/decisions` must cover exactly the pending calls of the chat's latest assistant message while it is `awaiting_approval`; each decision is applied once (`MessageRepository::decide` moves `pending` to `approved` or `denied` in one guarded update). "Approve for this chat" also adds the alias to `chats.approved_tools`. The response is the SSE stream of the continuation, which executes the stored arguments exactly, from the stored snapshot. A continuation started by a decision runs as interactive, because the user is present, but keeps the snapshot's tool list.
+- **Decisions:** `POST /api/chats/{id}/messages/{messageId}/decisions` must cover exactly the pending calls of the chat's latest assistant message while it is `awaiting_approval`; each decision is applied once (`MessageRepository::decide` moves `pending` to `approved` or `denied` in one guarded update). "Approve for this chat" also adds the call's server id and original tool name to `chat_tool_approvals` (only for a server the snapshot still reaches; deleting the server deletes its rows). The response is the SSE stream of the continuation, which executes the stored arguments exactly, from the stored snapshot. A continuation started by a decision runs as interactive, because the user is present, but keeps the snapshot's tool list.
 - **Results:** text is truncated to `MCP_RESULT_MAX_BYTES` (64 KiB) in total with a visible `[truncated N bytes]` note; images (PNG, JPEG, WebP, GIF) are saved as chat files through `FileService::upload`, so the size, magic-byte, and storage quota rules apply, and are sent only when the model has `vision` (any other image, or a failed save, becomes a one-line notice); audio and binary blobs become a one-line notice; `resource_link` becomes `<name>: <uri>`. A call past `MCP_CALL_TIMEOUT_SECS` fails in the adapter with the code `TOOL_TIMEOUT` and gets the status `timeout`; other call failures get `error` with the human message. The built-in schedule tools answer with JSON (`{"created": ...}`, `{"schedules": [...]}`, `{"deleted": ...}`).
 - **Continuing a decided round:** approved calls run unless the policy now fails them (the server was removed or turned off) or denies them because the tool was set to `off` (an approval answers an ask, never a turned-off tool); denied calls get their reason, or "Denied by the user."; `auto` calls of the round run unless the policy now fails, denies, or asks for them (an ask becomes the denial "This tool needs approval now. Ask again to run it.").
 - **Changes during a turn:** the engine reads the snapshot's servers again before it decides each round's calls, so the policy sees the current settings. A call to a server turned off or removed during the turn fails ("This tool server is turned off or was removed."), and a tool set to `off` during the turn is denied ("This tool is turned off."). Calls of a round already decided are not checked again.
@@ -778,7 +778,6 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `instructions` | `text` | not null, default `''` |
 | `reasoning` | `text` | null; inherits the project, then the model default |
 | `builtin_tools` | `text[]` | null inherits the project (none when standalone) |
-| `approved_tools` | `text[]` | not null, default `'{}'`; aliases approved for this chat |
 
 #### `chat_tool_servers`
 
@@ -788,6 +787,17 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `tool_server_id` | `uuid` | `(tool_server_id, user_id)` references `tool_servers` on delete cascade |
 | `user_id` | `uuid` | not null; primary key `(chat_id, tool_server_id)` |
 | `enabled` | `boolean` | not null; true adds the server, false removes a project server in this chat |
+
+#### `chat_tool_approvals`
+
+"Approve for this chat" decisions. A row names a server's tool by its original name, never by alias.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `chat_id` | `uuid` | `(chat_id, user_id)` references `chats` on delete cascade |
+| `tool_server_id` | `uuid` | `(tool_server_id, user_id)` references `tool_servers` on delete cascade |
+| `user_id` | `uuid` | not null |
+| `tool_name` | `text` | not null; primary key `(chat_id, tool_server_id, tool_name)` |
 
 #### `messages`
 

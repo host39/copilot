@@ -4,15 +4,25 @@ use chrono::{DateTime, Utc};
 
 use crate::domains::project::Project;
 use crate::domains::schedule::ToolOrigin;
-use crate::domains::tool::{ServerOverride, ToolAlias, ToolSelection};
+use crate::domains::tool::{ServerOverride, ToolSelection};
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::{NAME_MAX_CHARS, TITLE_MAX_CHARS};
 use crate::shared::errors::DomainResult;
-use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId, UserId};
+use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId, ToolServerId, UserId};
 use crate::shared::reasoning::ReasoningLevel;
 use crate::shared::text;
 
-/// A chat (`chats` plus its `chat_tool_servers` rows). It never loads its messages.
+/// A tool server's tool approved for the rest of a chat ("Approve for this chat"), by server id
+/// and original name (`chat_tool_approvals`). An alias is not enough: after a tool list change it
+/// can name another tool, and a server added again under the same slug reuses it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovedTool {
+    pub server_id: ToolServerId,
+    pub name: String,
+}
+
+/// A chat (`chats` plus its `chat_tool_servers` and `chat_tool_approvals` rows). It never loads
+/// its messages.
 ///
 /// `updated_at` moves with every message write, not with settings changes, so renaming or
 /// pinning a chat neither reorders the list nor marks it unread.
@@ -27,7 +37,7 @@ pub struct Chat {
     instructions: String,
     reasoning: Option<ReasoningLevel>,
     builtin_tools: Option<Vec<BuiltinTool>>,
-    approved_tools: Vec<ToolAlias>,
+    approved_tools: Vec<ApprovedTool>,
     tool_overrides: Vec<ServerOverride>,
     pinned: bool,
     voice_replies: bool,
@@ -48,7 +58,7 @@ pub struct ChatParts {
     pub instructions: String,
     pub reasoning: Option<ReasoningLevel>,
     pub builtin_tools: Option<Vec<BuiltinTool>>,
-    pub approved_tools: Vec<ToolAlias>,
+    pub approved_tools: Vec<ApprovedTool>,
     pub tool_overrides: Vec<ServerOverride>,
     pub pinned: bool,
     pub voice_replies: bool,
@@ -209,11 +219,12 @@ impl Chat {
         self
     }
 
-    /// "Approve for this chat": later calls to `alias` in this chat run without asking.
+    /// "Approve for this chat": later calls to this server's tool in this chat run without
+    /// asking.
     #[must_use]
-    pub fn approving(mut self, alias: ToolAlias) -> Self {
-        if !self.approved_tools.contains(&alias) {
-            self.approved_tools.push(alias);
+    pub fn approving(mut self, tool: ApprovedTool) -> Self {
+        if !self.approved_tools.contains(&tool) {
+            self.approved_tools.push(tool);
         }
         self
     }
@@ -309,7 +320,7 @@ impl Chat {
         self.builtin_tools.as_deref()
     }
 
-    pub fn approved_tools(&self) -> &[ToolAlias] {
+    pub fn approved_tools(&self) -> &[ApprovedTool] {
         &self.approved_tools
     }
 
@@ -351,7 +362,6 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::shared::ids::ToolServerId;
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
@@ -454,10 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn approves_each_alias_once() {
-        let alias = ToolAlias::builtin("list_schedules");
-        let chat = chat().approving(alias.clone()).approving(alias.clone());
-        assert_eq!(chat.approved_tools(), [alias]);
+    fn approves_each_tool_once() {
+        let tool = ApprovedTool {
+            server_id: ToolServerId::generate(),
+            name: "search".to_owned(),
+        };
+        let chat = chat().approving(tool.clone()).approving(tool.clone());
+        assert_eq!(chat.approved_tools(), [tool]);
     }
 
     #[test]

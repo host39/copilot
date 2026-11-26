@@ -12,7 +12,7 @@ mod turn;
 pub use crate::domains::chat::context::{
     ContextHash, Rendering, SnapshotFile, SnapshotTool, TurnContext,
 };
-pub use crate::domains::chat::entities::{Chat, ChatParts};
+pub use crate::domains::chat::entities::{ApprovedTool, Chat, ChatParts};
 pub use crate::domains::chat::message::{
     Approval, CallDecision, Decision, DecisionScope, FinishReason, INTERRUPTED, Message,
     MessageParts, MessageStatus, Part, ResultContent, Role, SKIPPED, ToolCallPart, ToolResultPart,

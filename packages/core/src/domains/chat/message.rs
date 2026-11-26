@@ -203,8 +203,8 @@ pub enum Decision {
     Deny,
 }
 
-/// How far an approval reaches: this call, or this alias for the rest of the chat
-/// (`chats.approved_tools`).
+/// How far an approval reaches: this call, or this server's tool for the rest of the chat
+/// (`chat_tool_approvals`).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum DecisionScope {
     #[default]
