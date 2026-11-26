@@ -904,7 +904,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Readonly Role
 
-`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed`), `models`, `tool_servers` (omitting `headers_sealed`), `schedules`, and `files`. `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
+`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, and `tools_cached`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
 
 ### Portability
 
@@ -957,14 +957,14 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 1. Assistant, tool, and file text renders with `react-markdown` and `remark-gfm` only, without raw HTML. A components override turns remote images into a plain link showing the URL; only `blob:` and `data:image/` images render inline.
 2. Links open only on click, show their full URL, and allow only `http`, `https`, and `mailto`.
-3. Web CSP (sent by the server with the SPA): `default-src 'self'; script-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`.
+3. Web CSP (sent by the server with the SPA): `default-src 'self'; script-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`. Swagger UI (`/api/ui`) shares that origin and its stored token, so it loads its two CDN files with Subresource Integrity and gets its own policy that allows only those files and its inline script by hash, `connect-src 'self'`, and `frame-ancestors 'none'`.
 4. `tauri.conf.json` sets `app.security.csp` to the same policy with `connect-src ipc: http://ipc.localhost`. The opener capability is scoped to `http`, `https`, and `mailto`.
 
 ### Logging and Data Access
 
 1. Provider and MCP credentials go only in headers (Gemini uses `x-goog-api-key` or bearer, never `?key=`).
 2. Outbound errors are logged after `reqwest::Error::without_url()`.
-3. Authorization headers, secret values, prompts, tool arguments, and results are never logged at `info`; logs carry ids, tool names, durations, statuses, and byte counts.
+3. Authorization headers, secret values, prompts, tool arguments, and results are never logged at `info`; logs carry ids, tool names, durations, statuses, and byte counts. The request logger writes a query string as its parameter names only (`GET /api/search?q=...` logs `q`), at every level.
 4. The readonly role sees only the tables and columns in [Readonly Role](#readonly-role).
 
 ### Limits

@@ -87,13 +87,27 @@ async fn reads_registered_columns_only_and_nothing_in_auth(pool: DbPool) {
         .filter(|table| !READABLE.contains(table))
         .map(|table| format!("SELECT * FROM {table}"))
         .collect();
-    denied.extend([
-        "SELECT * FROM later".to_owned(),
-        "SELECT api_key_sealed FROM providers".to_owned(),
-        "SELECT headers_sealed FROM tool_servers".to_owned(),
-        "SELECT * FROM providers".to_owned(),
-        "SELECT * FROM tool_servers".to_owned(),
-    ]);
+    denied.extend(
+        [
+            "SELECT * FROM later",
+            "SELECT api_key_sealed FROM providers",
+            "SELECT base_url FROM providers",
+            "SELECT headers_sealed FROM tool_servers",
+            "SELECT url FROM tool_servers",
+            "SELECT tools_cached FROM tool_servers",
+            "SELECT name FROM schedules",
+            "SELECT prompt FROM schedules",
+            "SELECT instructions FROM schedules",
+            "SELECT last_error FROM schedules",
+            "SELECT name FROM files",
+            "SELECT sha256 FROM files",
+            "SELECT * FROM providers",
+            "SELECT * FROM tool_servers",
+            "SELECT * FROM schedules",
+            "SELECT * FROM files",
+        ]
+        .map(str::to_owned),
+    );
     denied.extend(
         auth_tables
             .iter()
@@ -106,10 +120,16 @@ async fn reads_registered_columns_only_and_nothing_in_auth(pool: DbPool) {
             "{sql}"
         );
     }
-    for table in ["models", "schedules", "files"] {
-        let sql = format!("SELECT * FROM {table}");
+    for sql in [
+        "SELECT * FROM models",
+        "SELECT id, user_id, kind, preset, name, enabled FROM providers",
+        "SELECT id, user_id, slug, approval, tool_modes, tools_fetched_at FROM tool_servers",
+        "SELECT id, user_id, model_id, cron, timezone, enabled, next_run_at, last_status, \
+         consecutive_failures, disabled_reason FROM schedules",
+        "SELECT id, user_id, media_type, size_bytes, token_estimate, page_count FROM files",
+    ] {
         assert_eq!(
-            fixtures::failure(&mut *connection, &sql).await,
+            fixtures::failure(&mut *connection, sql).await,
             None,
             "{sql}"
         );

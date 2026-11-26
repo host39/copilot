@@ -40,6 +40,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+# Checks the hash of Swagger UI's inline script against its Content-Security-Policy.
+sha2 = { workspace = true }
 # The real router and guard on in-memory fakes, for route tests without Postgres.
 rustauth = { workspace = true, features = ["axum", "postgres", "testing"] }
 # `#[sqlx::test]` database tests (`make test-db`).

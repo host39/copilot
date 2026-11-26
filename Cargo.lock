@@ -378,6 +378,7 @@ dependencies = [
  "http-body-util",
  "rustauth",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tokio-util",
@@ -481,6 +482,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

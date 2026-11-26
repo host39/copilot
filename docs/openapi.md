@@ -9,7 +9,7 @@ With the API running locally:
 - **OpenAPI JSON**: <http://localhost:3000/api/doc>
 - **Swagger UI**: <http://localhost:3000/api/ui> (assets load from the jsDelivr CDN)
 
-Both endpoints are public (no token required). The document holds Copilot's routes and lib-rustauth's (`/api/auth/*`, `/api/admin/users*`, with schemas named `rustauth.*` and tags `rustauth.auth` and `rustauth.admin`). Every Copilot route lists the `bearerAuth` security scheme and has an operation id `<module>_<handler>` (`chats_send`); a test checks that ids are unique.
+Both endpoints are public (no token required). Swagger UI shares the web app's origin, where the browser keeps the session token, so `/api/ui` pins its two CDN files with Subresource Integrity (`integrity="sha384-..."`) and sends a Content-Security-Policy (`UI_CSP` in `apps/api/src/routes/docs.rs`) that runs only those files and its one inline script, by hash. To move to another `swagger-ui-dist` version, change the version in both URLs and in `UI_CSP`, and take the new hashes from the files in the npm package (`openssl dgst -sha384 -binary swagger-ui-bundle.js | openssl base64 -A`); a test checks that the policy names every file and the inline script's hash. The document holds Copilot's routes and lib-rustauth's (`/api/auth/*`, `/api/admin/users*`, with schemas named `rustauth.*` and tags `rustauth.auth` and `rustauth.admin`). Every Copilot route lists the `bearerAuth` security scheme and has an operation id `<module>_<handler>` (`chats_send`); a test checks that ids are unique.
 
 ## Adding a Documented Route
 

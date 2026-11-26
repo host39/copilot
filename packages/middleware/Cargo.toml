@@ -21,6 +21,8 @@ uuid = { workspace = true, features = ["v4"] }
 http-body-util = { workspace = true }
 serde_json = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+# Captures the request log in tests.
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
