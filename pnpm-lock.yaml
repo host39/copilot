@@ -105,6 +105,9 @@ importers:
       '@rsbuild/plugin-react':
         specifier: ^2.1.1
         version: 2.1.1(@rsbuild/core@2.3.5)(@rspack/core@2.3.4(@swc/helpers@0.5.24))
+      '@rstest/core':
+        specifier: 'catalog:'
+        version: 0.12.6
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.11
