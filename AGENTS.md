@@ -54,7 +54,7 @@ Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency)
 ## Non-Negotiables
 
 - Domain logic lives in `copilot-core`; sqlx adapters in `copilot-database`. No domain logic in repositories or handlers.
-- `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, `tokio`, `reqwest`, `rmcp`, contracts, database, middleware, logger, the adapter crates (providers, mcp, security), rustauth crates, or apps (`make boundaries`). Only `apps/api` and `copilot-database` (`rustauth-postgres`) may depend on lib-rustauth.
+- `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, `tokio`, `reqwest`, `rmcp`, contracts, database, middleware, logger, the adapter crates (providers, mcp, security), rustauth crates, or apps (`make boundaries`). Only `apps/api` and `copilot-database` may depend on lib-rustauth, through its `rustauth` facade; `copilot-database` only with the `migrate` feature, for the `auth` migrations.
 - Services fail with `DomainError` variants carrying human-readable messages; HTTP mapping lives in `copilot-middleware` (`HttpError`). Infrastructure failures use `DomainError::internal("<dotted.key>", error)`.
 - Wire services in the composition root (`ApiContext::create` / `create_app`), store them in `AppState`, and never construct repositories in handlers.
 - Contracts are for the API and the web app; core does not depend on contracts. After changing a contract struct, run `make contracts` and update the Zod schema in `packages/contracts/ts/index.ts` (it must `satisfies` the generated type).

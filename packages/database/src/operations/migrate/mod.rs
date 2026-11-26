@@ -6,7 +6,7 @@
 //!
 //! [`run`] is the one entry point for the `migrate` binary and for database tests. Tests use
 //! `#[sqlx::test(migrations = false)]` and call [`run`] first, so they get the same schema as a
-//! real install (from P1.4 on, lib-rustauth's `auth` migrations followed by [`MIGRATOR`]).
+//! real install: lib-rustauth's `auth` migrations, then [`MIGRATOR`].
 
 pub mod seed;
 
@@ -14,10 +14,31 @@ use sqlx::migrate::{MigrateError, Migrator};
 
 use crate::types::DbPool;
 
+/// Copilot's own migrations, tracked in `public._sqlx_migrations`. They reference `auth.users`,
+/// so they only run after lib-rustauth's (see [`run`]).
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-/// Applies pending migrations and returns how many the binary embeds in total.
-pub async fn run(pool: &DbPool) -> Result<usize, MigrateError> {
+/// The Postgres schema lib-rustauth owns. Copilot never writes to it, and the readonly role gets
+/// no grant on it.
+pub const AUTH_SCHEMA: &str = "auth";
+
+#[derive(Debug, thiserror::Error)]
+pub enum MigrationError {
+    /// lib-rustauth's migrations failed; the source says why.
+    #[error("database.migrate.auth.failed")]
+    Auth(#[source] rustauth::AuthError),
+    #[error("database.migrate.copilot.failed")]
+    Copilot(#[from] MigrateError),
+}
+
+/// Applies lib-rustauth's pending `auth` migrations (history in `auth._sqlx_migrations`), then
+/// Copilot's ([`MIGRATOR`], history in `_sqlx_migrations`), and returns how many Copilot
+/// migrations the binary embeds. Both steps skip applied migrations, so running it again is a
+/// no-op.
+pub async fn run(pool: &DbPool) -> Result<usize, MigrationError> {
+    rustauth::migrate(pool)
+        .await
+        .map_err(MigrationError::Auth)?;
     MIGRATOR.run(pool).await?;
     Ok(MIGRATOR.iter().count())
 }
@@ -38,5 +59,11 @@ mod tests {
             .await
             .expect("the history table exists");
         assert_eq!(usize::try_from(applied).expect("non-negative"), embedded);
+
+        let auth: i64 = sqlx::query_scalar("SELECT count(*) FROM auth._sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("rustauth keeps its own history in the auth schema");
+        assert!(auth > 0, "rustauth's migrations run first");
     }
 }

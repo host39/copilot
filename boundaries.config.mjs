@@ -2,12 +2,16 @@
 // (scripts/boundaries.mjs). Cargo already limits a crate to what its Cargo.toml lists; these
 // rules stop the wrong entries from being added there.
 //
-// `from` is a crate name; `to` lists crates it must not depend on directly (normal or build
-// dependencies; dev-dependencies are only compiled for tests and are not checked). A `to` entry
-// may name a crate that is not in the workspace yet (the rustauth crates arrive with the pin).
+// `forbidden`: `from` is a crate name; `to` lists crates it must not depend on directly (normal or
+// build dependencies; dev-dependencies are only compiled for tests and are not checked). A `to`
+// entry may name a crate that is not a dependency of anything yet.
 //
-// Identity comes from lib-rustauth. Only `apps/api` (the `rustauth` facade) and
-// `copilot-database` (`rustauth-postgres`, for its migrations) may depend on it.
+// `limited`: `from` may depend on `to` only with default features off and no features beyond
+// `features`.
+//
+// Identity comes from lib-rustauth, through its `rustauth` facade only (the inner crates may
+// change in any release). Only `apps/api` and `copilot-database` may depend on it, and
+// `copilot-database` only with the `migrate` feature, for the `auth` migrations.
 
 const RUSTAUTH = [
   "rustauth",
@@ -41,7 +45,11 @@ function adapterRule(crate) {
   };
 }
 
-/** @type {{ forbidden: { name: string, severity: "error" | "warn", comment: string, from: string, to: string[] }[] }} */
+/**
+ * @typedef {{ name: string, severity: "error" | "warn", comment: string, from: string, to: string[] }} Forbidden
+ * @typedef {{ name: string, severity: "error" | "warn", comment: string, from: string, to: string, features: string[] }} Limited
+ * @type {{ forbidden: Forbidden[], limited: Limited[] }}
+ */
 export default {
   forbidden: [
     {
@@ -78,13 +86,13 @@ export default {
       name: "database-no-apps",
       severity: "error",
       comment:
-        "packages/database must not depend on apps, adapters, HTTP crates, or rustauth (except rustauth-postgres for the auth migrations)",
+        "packages/database must not depend on apps, adapters, HTTP crates, or rustauth's inner crates (the rustauth facade runs the auth migrations)",
       from: "copilot-database",
       to: [
         "copilot-api",
         "copilot-middleware",
         ...ADAPTERS,
-        ...RUSTAUTH.filter((crate) => crate !== "rustauth-postgres"),
+        ...RUSTAUTH.filter((crate) => crate !== "rustauth"),
         "axum",
         "tower-http",
         "utoipa",
@@ -119,6 +127,17 @@ export default {
         "axum",
         "sqlx",
       ],
+    },
+  ],
+  limited: [
+    {
+      name: "database-rustauth-migrate-only",
+      severity: "error",
+      comment:
+        'packages/database uses the rustauth facade for the auth migrations only: default-features = false, features = ["migrate"]',
+      from: "copilot-database",
+      to: "rustauth",
+      features: ["migrate"],
     },
   ],
 };

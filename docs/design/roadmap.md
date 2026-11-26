@@ -49,7 +49,7 @@ lib-rustauth (`host39/lib-rustauth`) is the owner's shared authentication and au
 
 ### How Copilot Pins It
 
-- Until `v0.1.0` exists, the root `Cargo.toml` pins a commit: `rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "<sha>", default-features = false }` and `rustauth-postgres` from the same `rev`. Members enable only what they use: `apps/api` the facade with `postgres` and `axum`, `copilot-database` `rustauth-postgres` for `migrate`. After the tag, `rev` becomes `tag = "v0.1.0"`. `@rustauth/contracts` is pinned to the same commit.
+- Until `v0.1.0` exists, the root `Cargo.toml` pins a commit: `rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "<sha>", default-features = false }`. Members use the facade only and enable only what they use: `apps/api` the `postgres` and `axum` features, `copilot-database` the `migrate` feature (checked by `make boundaries`). After the tag, `rev` becomes `tag = "v0.1.0"`. `@rustauth/contracts` is pinned to the same commit.
 - A pin bump is its own serial commit on the base branch (`chore(<step>): bump rustauth to <sha>`), runs `make check` and `make test-db`, and is the only way Copilot picks up rustauth changes. During Phase 2 the pin is frozen with `Cargo.lock` and `pnpm-lock.yaml`.
 - Gates: P1.1 to P1.3, P1.5, and P1.6 need nothing from Track R. P1.4 needs L3 (the `auth` migrations). P1.7 needs L4. P1.8 needs L5, or the `ts` fallback described in the spec's Identity section.
 - Copilot never patches or vendors rustauth. A change Copilot needs (an extractor, a route, a column) becomes a step in lib-rustauth, then a pin bump here.

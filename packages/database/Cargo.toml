@@ -10,6 +10,8 @@ license.workspace = true
 [dependencies]
 copilot-core = { workspace = true }
 copilot-logger = { workspace = true }
+# The `auth` schema migrations only, which run before Copilot's (no HTTP or hashing crates).
+rustauth = { workspace = true, features = ["migrate"] }
 sqlx = { workspace = true, features = [
   "chrono",
   "json",
