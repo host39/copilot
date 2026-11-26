@@ -14,6 +14,14 @@ pub mod shared;
 pub mod testing;
 
 // Domains
+pub use crate::domains::chat::{
+    Approval, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepositories,
+    ChatRepository, ChatService, ChatSummary, ChatUpdate, ContextHash, Decision, DecisionScope,
+    FinishReason, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus, NewChat,
+    Page, Part, PreparedTurn, ResultContent, Role, RunMode, SKIPPED, SearchHit, SnapshotFile,
+    SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext, TurnContextRepository,
+    TurnInput, Usage, skipped_results,
+};
 pub use crate::domains::file::{
     Capacity, CapacityLevel, FileKind, FileLimits, FileOwner, FileRepository, FileService,
     FileUpdate, Measured, MediaType, OCTET_STREAM, StoredFile, StoredFileParts, served_type,
@@ -56,7 +64,8 @@ pub use crate::shared::builtin_tool::BuiltinTool;
 pub use crate::shared::constants::{DEFAULT_PAGE_OFFSET, DEFAULT_PAGE_SIZE};
 pub use crate::shared::errors::{BoxError, Context, DomainError, DomainResult};
 pub use crate::shared::ids::{
-    ChatId, FileId, MessageId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId, UserId,
+    CallId, ChatId, FileId, MessageId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId,
+    UserId,
 };
 pub use crate::shared::net::{AddressClass, NetworkScope, PrivateNetwork, classify, is_allowed};
 pub use crate::shared::reasoning::ReasoningLevel;

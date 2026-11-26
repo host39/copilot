@@ -384,7 +384,7 @@ trait FileRepository {
     async fn usage(&self, user: UserId) -> DomainResult<u64>;       // SUM(size_bytes)
 }
 trait ChatRepository {
-    async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>>; // filters: project, schedule, pinned; unread and awaiting flags
+    async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>>; // filters: project, schedule, pinned, scheduled (runs vs recent); cursor (updated_at, id); unread and awaiting flags
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
     async fn insert(&self, chat: &Chat) -> DomainResult<()>;        // with chat_tool_servers rows, one tx
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
@@ -397,7 +397,7 @@ trait MessageRepository {
     async fn update(&self, user: UserId, message: &Message) -> DomainResult<()>;
     async fn replace_tail(&self, user: UserId, chat: ChatId, from: MessageId, message: &Message) -> DomainResult<()>; // delete from `from` on, then append, one tx
     async fn delete_after(&self, user: UserId, chat: ChatId, after: MessageId) -> DomainResult<u64>;
-    async fn decide(&self, user: UserId, message: MessageId, decisions: &[CallDecision]) -> DomainResult<bool>; // pending -> approved or denied, only while status = awaiting_approval
+    async fn decide(&self, user: UserId, message: MessageId, decisions: &[CallDecision]) -> DomainResult<bool>; // pending -> approved or denied and status -> complete, only while status = awaiting_approval
     async fn search(&self, user: UserId, query: &str, limit: u32) -> DomainResult<Vec<SearchHit>>;
     async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64>;  // system: streaming -> error
 }
@@ -438,10 +438,10 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway`, a scripte
 | `ModelService` | `list` (picker), `update` (enable, rename, overrides; locked flags rejected; disabling pauses schedules) |
 | `ProjectService` | CRUD; `delete` (the handler cancels live runs of the project's chats first) |
 | `FileService` | `upload` (allowlist, magic bytes, quota, `sha256`, token estimate, page count), `content`, `update`, `move_to_project`, `delete` |
-| `ChatService` | `list`, `create`, `update`, `delete`, `prepare` (validates and builds a `PreparedTurn`), `save_as_project`, `save_instructions`, `search`, `mark_read`, `recover` |
+| `ChatService` | `list`, `create`, `update`, `delete`, `messages`, `prepare` (validates and builds a `PreparedTurn`), `prepare_scheduled(firing) -> PreparedTurn` (a schedule run's new chat and prompt), `save_as_project`, `save_instructions`, `search`, `mark_read`, `recover` |
 | `ChatEngine` | `run(turn, sink, cancel) -> DomainResult<TurnOutcome>` |
 | `ToolService` | CRUD; `test` (list tools, store cache, detect changed tools); `review` (clear `tools_review_required`); `effective_tools(chat)`; tool cache refresh on expiry or unknown tool |
-| `ScheduleService` | CRUD with limits; `preview(cron, tz) -> {description, next_runs}`; `fire_due(now) -> Vec<PreparedTurn>`; `run_now(id) -> PreparedTurn`; `record(id, outcome)`; the built-in tool handlers |
+| `ScheduleService` | CRUD with limits; `preview(cron, tz) -> {description, next_runs}`; `fire_due(now, limit) -> Vec<Firing>` (compare-and-set claims); `run_now(id) -> Firing`; `record(id, outcome, started_at)`; the built-in tool handlers. `ChatService::prepare_scheduled` turns a `Firing` into a `PreparedTurn`, so the schedule domain never depends on the chat service |
 
 ### Aggregates and Atomic Writes
 
@@ -456,7 +456,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway`, a scripte
 ### Turn Lifecycle
 
 1. **Reserve.** The handler calls `RunRegistry::reserve(user, chat_id)`. A chat already answering fails with `DomainError::business_rule("This chat is already answering. Stop it or wait for it to finish.", "CHAT_BUSY")` (422). A user with `MAX_ACTIVE_RUNS_PER_USER` (3) live runs fails with `TOO_MANY_RUNS` (422).
-2. **Prepare.** `ChatService::prepare(actor, chat_id, input) -> PreparedTurn`, where `input` is `Send { text, file_ids, edit_from }`, `Regenerate`, or `Decide { message_id, decisions }`, and the scheduler builds `Scheduled` turns through `ScheduleService`. It loads the chat, user settings, project, model, provider, file metadata, and tool servers (at most 4 concurrent reads), validates (model set, enabled and available; attachments readable or warned; context and request budgets), decrypts the key through `SecretCipher`, and saves the user message (or the tail change). For `Send`, pending approvals in the chat are first resolved as denied ("Skipped by user."). For `Regenerate`, messages after the last user message are deleted (as is any errored answer on Retry). Prepare builds and saves the `TurnContext` snapshot, except for `Decide`, which reloads the snapshot named by the paused message's `context_hash`. Every failure returns 4xx through `HttpError` and releases the reservation.
+2. **Prepare.** `ChatService::prepare(actor, chat_id, input) -> PreparedTurn`, where `input` is `Send { text, file_ids, edit_from }`, `Regenerate`, or `Decide { message_id, decisions }`, and the scheduler claims due schedules with `ScheduleService::fire_due` and builds their turns with `ChatService::prepare_scheduled`. It loads the chat, user settings, project, model, provider, file metadata, and tool servers (at most 4 concurrent reads), validates (model set, enabled and available; attachments readable or warned; context and request budgets), decrypts the key through `SecretCipher`, and saves the user message (or the tail change). For `Send`, pending approvals in the chat are first resolved as denied ("Skipped by user."). For `Regenerate`, messages after the last user message are deleted (as is any errored answer on Retry). Prepare builds and saves the `TurnContext` snapshot, except for `Decide`, which reloads the snapshot named by the paused message's `context_hash`. Every failure returns 4xx through `HttpError` and releases the reservation.
 3. **Stream.** Only then does the response switch to SSE. The handler spawns `ChatEngine::run(turn, sink, cancel)` in the reserved slot. Provider and tool failures from here on become `error` events.
 4. **Rounds.** Up to `MAX_TOOL_ROUNDS` (8) rounds, counted from saved assistant messages with tool calls since the last user message (so the limit holds across approval pauses):
    1. Stream from `LlmGateway`, racing every `stream.next()` against `cancel.cancelled()` with `futures_util::future::select`. Emit events through `TurnSink`.

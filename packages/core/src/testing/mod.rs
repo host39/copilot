@@ -4,6 +4,7 @@
 //! (`copilot-core = { workspace = true, features = ["testing"] }` under `[dev-dependencies]`).
 //! Never enable the feature for a normal dependency.
 
+mod chat;
 mod cipher;
 mod clock;
 mod file;

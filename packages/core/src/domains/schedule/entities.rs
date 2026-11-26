@@ -1,8 +1,5 @@
 //! Schedules: prompts that run on a cron rule, each firing in a new chat.
 
-use std::fmt;
-use std::str::FromStr;
-
 use chrono::{DateTime, Utc};
 
 use crate::domains::schedule::cron::CronRule;
@@ -11,6 +8,7 @@ use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId, UserId};
 use crate::shared::reasoning::ReasoningLevel;
 use crate::shared::text;
+use crate::shared::text::text_enum;
 
 /// Why a schedule paused after its model went away (`disabled_reason`).
 pub const MODEL_REMOVED: &str = "Model removed";
@@ -41,35 +39,6 @@ pub enum RunStatus {
     Ok,
     Error,
     AwaitingApproval,
-}
-
-macro_rules! text_enum {
-    ($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
-        impl $name {
-            pub fn as_str(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $text,)+
-                }
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(self.as_str())
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = String;
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                match value {
-                    $($text => Ok(Self::$variant),)+
-                    other => Err(other.to_owned()),
-                }
-            }
-        }
-    };
 }
 
 text_enum!(OnAsk { Deny => "deny", Pause => "pause" });

@@ -110,6 +110,17 @@ impl Tables {
                 *project = project.clone().with_tool_servers(kept);
             }
         }
+        for chat in self.chats.values_mut() {
+            if chat.tool_overrides().iter().any(|row| row.server_id == id) {
+                let kept = chat
+                    .tool_overrides()
+                    .iter()
+                    .copied()
+                    .filter(|row| row.server_id != id)
+                    .collect();
+                *chat = chat.clone().with_tool_overrides(kept);
+            }
+        }
     }
 }
 

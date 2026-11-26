@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 
+use crate::domains::chat::{Chat, Message, MessageParts, TurnContext};
 use crate::domains::file::{FileOwner, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Model, Provider, ProviderUsage};
@@ -21,7 +22,7 @@ use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::errors::DomainError;
 use crate::shared::ids::{
-    FileId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId, UserId,
+    ChatId, FileId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId, UserId,
 };
 
 pub struct MemoryStore {
@@ -40,6 +41,11 @@ pub(crate) struct Tables {
     pub(crate) files: BTreeMap<FileId, (StoredFile, Bytes)>,
     pub(crate) tool_servers: BTreeMap<ToolServerId, ToolServer>,
     pub(crate) schedules: BTreeMap<ScheduleId, Schedule>,
+    pub(crate) chats: BTreeMap<ChatId, Chat>,
+    /// Keyed by `seq`, so iteration is message order.
+    pub(crate) messages: BTreeMap<u64, Message>,
+    pub(crate) next_seq: u64,
+    pub(crate) turn_contexts: BTreeMap<(ChatId, [u8; 32]), (UserId, TurnContext)>,
     /// The two `auth.users` columns Copilot reads (`ScheduleRepository::due`).
     pub(crate) users: HashMap<UserId, Owner>,
 }
@@ -99,12 +105,42 @@ impl Tables {
                 *schedule = schedule.clone().with_model(None);
             }
         }
+        for chat in self.chats.values_mut() {
+            if chat.model_id() == Some(model) {
+                *chat = chat.clone().with_model(None);
+            }
+        }
+        for message in self.messages.values_mut() {
+            if message.model_id() == Some(model) {
+                *message = Message::restore(MessageParts {
+                    model_id: None,
+                    ..message.to_parts()
+                });
+            }
+        }
+    }
+
+    /// Nulls every message reference to a deleted provider (`ON DELETE SET NULL (provider_id)`).
+    pub(crate) fn clear_provider_references(&mut self, provider: ProviderId) {
+        for message in self.messages.values_mut() {
+            if message.provider_id() == Some(provider) {
+                *message = Message::restore(MessageParts {
+                    provider_id: None,
+                    ..message.to_parts()
+                });
+            }
+        }
     }
 
     /// Rows of `user` that reference one of `models`.
     pub(crate) fn model_usage(&self, user: UserId, models: &[ModelId]) -> ProviderUsage {
         let uses = |model: Option<ModelId>| model.is_some_and(|model| models.contains(&model));
         ProviderUsage {
+            chats: self
+                .chats
+                .values()
+                .filter(|chat| chat.user_id() == user && uses(chat.model_id()))
+                .count() as u64,
             projects: self
                 .projects
                 .values()
@@ -115,14 +151,22 @@ impl Tables {
                 .values()
                 .filter(|schedule| schedule.user_id() == user && uses(schedule.model_id()))
                 .count() as u64,
-            ..ProviderUsage::default()
         }
     }
 
-    /// Deletes a project and what cascades with it: its files and schedules (and, once that
-    /// domain exists, its chats).
+    /// Deletes a project and what cascades with it: its chats (with their messages and
+    /// attachments), files, and schedules.
     pub(crate) fn delete_project(&mut self, id: ProjectId) {
         self.projects.remove(&id);
+        let chats: Vec<ChatId> = self
+            .chats
+            .values()
+            .filter(|chat| chat.project_id() == Some(id))
+            .map(Chat::id)
+            .collect();
+        for chat in chats {
+            self.delete_chat(chat);
+        }
         self.files
             .retain(|_, (file, _)| file.owner() != FileOwner::Project(id));
         let schedules: Vec<ScheduleId> = self

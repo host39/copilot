@@ -99,15 +99,17 @@ impl FileRepository for MemoryStore {
 }
 
 impl Tables {
-    /// The composite foreign keys `(project_id, user_id)` and `(chat_id, user_id)`. The fake has
-    /// no chats table until the chat domain (P1.2g), so a chat owner never exists yet.
+    /// The composite foreign keys `(project_id, user_id)` and `(chat_id, user_id)`.
     fn check_owner(&self, user: UserId, owner: FileOwner) -> DomainResult<()> {
         let exists = match owner {
             FileOwner::Project(project) => self
                 .projects
                 .get(&project)
                 .is_some_and(|stored| stored.user_id() == user),
-            FileOwner::Chat(_) => false,
+            FileOwner::Chat(chat) => self
+                .chats
+                .get(&chat)
+                .is_some_and(|stored| stored.user_id() == user),
         };
         if exists {
             Ok(())

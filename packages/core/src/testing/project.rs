@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 
 use async_trait::async_trait;
 
+use crate::domains::file::FileOwner;
 use crate::domains::project::{Project, ProjectQuery, ProjectRepository};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ChatId, ProjectId, UserId};
@@ -70,12 +71,32 @@ impl ProjectRepository for MemoryStore {
         Ok(true)
     }
 
-    /// Completed by the chat domain (P1.2g), which brings the chats table this move needs.
-    async fn create_from_chat(&self, _project: &Project, _chat: ChatId) -> DomainResult<()> {
-        Err(DomainError::Internal {
-            key: "testing.projects.create-from-chat.unsupported".to_owned(),
-            source: None,
-        })
+    async fn create_from_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()> {
+        let mut tables = self.tables();
+        if tables.projects.contains_key(&project.id()) {
+            return Err(duplicate("projects"));
+        }
+        let Some(stored) = tables
+            .chats
+            .get(&chat)
+            .filter(|stored| stored.user_id() == project.user_id())
+            .cloned()
+        else {
+            return Err(foreign_key("chat"));
+        };
+        tables.check_references(project)?;
+        tables.projects.insert(project.id(), project.clone());
+        let moved = stored
+            .with_project(Some(project.id()))
+            .with_instructions("")
+            .with_tool_overrides(Vec::new());
+        tables.chats.insert(chat, moved);
+        for (file, _) in tables.files.values_mut() {
+            if file.owner() == FileOwner::Chat(chat) {
+                *file = file.clone().moved(project.id());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -135,18 +156,5 @@ mod tests {
             .await
             .unwrap();
         assert!(stored.is_none());
-    }
-
-    #[tokio::test]
-    async fn create_from_chat_waits_for_the_chat_domain() {
-        let clock = Arc::new(FixedClock::default());
-        let store = MemoryStore::new(clock.clone());
-        let project = Project::create(actor().user_id, "Work", clock.now()).unwrap();
-        assert!(
-            store
-                .create_from_chat(&project, ChatId::generate())
-                .await
-                .is_err()
-        );
     }
 }

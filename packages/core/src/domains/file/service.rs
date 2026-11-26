@@ -6,6 +6,7 @@ use bytes::Bytes;
 use futures_util::future::try_join;
 use sha2::{Digest, Sha256};
 
+use crate::domains::chat::ChatRepository;
 use crate::domains::file::capacity::Capacity;
 use crate::domains::file::entities::{FileOwner, Measured, StoredFile};
 use crate::domains::file::media::{FileKind, MediaType, estimate, pdf_pages};
@@ -47,6 +48,7 @@ pub struct FileUpdate {
 pub struct FileService {
     files: Arc<dyn FileRepository>,
     projects: Arc<dyn ProjectRepository>,
+    chats: Arc<dyn ChatRepository>,
     models: Arc<dyn ModelRepository>,
     clock: Arc<dyn Clock>,
     limits: FileLimits,
@@ -56,6 +58,7 @@ impl FileService {
     pub fn new(
         files: Arc<dyn FileRepository>,
         projects: Arc<dyn ProjectRepository>,
+        chats: Arc<dyn ChatRepository>,
         models: Arc<dyn ModelRepository>,
         clock: Arc<dyn Clock>,
         limits: FileLimits,
@@ -63,6 +66,7 @@ impl FileService {
         Self {
             files,
             projects,
+            chats,
             models,
             clock,
             limits,
@@ -216,12 +220,12 @@ impl FileService {
                 .await?
                 .map(|_| ())
                 .ok_or_else(|| project_not_found(project)),
-            // The chat check needs the chat domain's `ChatRepository` (roadmap P1.2g). Until then
-            // chat attachments fail closed.
-            FileOwner::Chat(_) => Err(DomainError::business_rule(
-                "Chat attachments are not available yet.",
-                "CHAT_FILES_UNAVAILABLE",
-            )),
+            FileOwner::Chat(chat) => self
+                .chats
+                .get(actor.user_id, chat)
+                .await?
+                .map(|_| ())
+                .ok_or_else(|| DomainError::not_found("Chat", chat.to_string())),
         }
     }
 }
@@ -264,6 +268,7 @@ mod tests {
         let gateway = Arc::new(ScriptedGateway::new());
         Fixture {
             files: FileService::new(
+                store.clone(),
                 store.clone(),
                 store.clone(),
                 store.clone(),
@@ -467,7 +472,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.code(), "CHAT_FILES_UNAVAILABLE");
+        assert!(is_not_found(&error, "Chat"));
     }
 
     #[tokio::test]

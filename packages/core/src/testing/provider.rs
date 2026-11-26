@@ -71,6 +71,7 @@ impl ProviderRepository for MemoryStore {
         for model in removed {
             tables.delete_model(model);
         }
+        tables.clear_provider_references(id);
         Ok(true)
     }
 

@@ -30,6 +30,38 @@ pub fn trimmed(value: &str) -> String {
     value.trim().to_owned()
 }
 
+/// Implements `as_str`, `Display`, and `FromStr` for a fieldless enum stored as text.
+macro_rules! text_enum {
+    ($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+        impl $name {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)+
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value {
+                    $($text => Ok(Self::$variant),)+
+                    other => Err(other.to_owned()),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use text_enum;
+
 #[cfg(test)]
 mod tests {
     use super::*;

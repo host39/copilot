@@ -98,6 +98,10 @@ generated_id!(
     MessageId
 );
 generated_id!(
+    /// A tool call in an assistant message (Copilot's id, never the provider's).
+    CallId
+);
+generated_id!(
     /// A registered MCP tool server.
     ToolServerId
 );

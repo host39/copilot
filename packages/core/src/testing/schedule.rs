@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::schedule::{
     RunRecord, Schedule, ScheduleParts, ScheduleQuery, ScheduleRepository,
 };
@@ -192,8 +193,17 @@ impl Tables {
         }
     }
 
+    /// Deletes a schedule; the chats of its runs lose `schedule_id`.
     pub(crate) fn delete_schedule(&mut self, id: ScheduleId) {
         self.schedules.remove(&id);
+        for chat in self.chats.values_mut() {
+            if chat.schedule_id() == Some(id) {
+                *chat = Chat::restore(ChatParts {
+                    schedule_id: None,
+                    ..chat.to_parts()
+                });
+            }
+        }
     }
 }
 
