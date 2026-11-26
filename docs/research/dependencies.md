@@ -72,6 +72,7 @@ Versions from the crates.io API (`https://crates.io/api/v1/crates/<name>`) on 20
 | `wiremock` (dev) | 0.6.5 | 2025-08-24 | none (edition 2024) | **Use** |
 | `tower-http` | 0.7.1 | 2026-08-31 | 1.65 | Add the `limit` feature |
 | `axum` | 0.8.9 | 2026-04-14 | 1.80 | Add the `multipart` feature where uploads live |
+| `miniz_oxide` | 0.9.1 | 2026-03-13 | none declared | **Use** in `copilot-core` (added in the P1.3 review): inflates PDF object streams so `pdf_pages` counts pages that PDF 1.5+ files compress; pure Rust, `#![forbid(unsafe_code)]`, brings only `adler2` |
 
 ### Proposed Workspace Lines
 
@@ -110,7 +111,7 @@ Suggested placement (matches the crate plan in `docs/design/copilot.md`):
 
 | Crate | New dependencies |
 | --- | --- |
-| `copilot-core` | `futures-core`, `chrono`, `uuid`, `croner`, `jiff` (all pure libraries, allowed by the design's boundary note) |
+| `copilot-core` | `futures-core`, `chrono`, `uuid`, `croner`, `jiff`, `miniz_oxide` (all pure libraries, allowed by the design's boundary note) |
 | `copilot-providers` | `reqwest`, `sse-stream`, `futures-util`, `bytes`, `base64`, `tokio-util`; dev: `wiremock`, `tokio` |
 | `copilot-security` | `aes-gcm`, `argon2`, `sha2`, `getrandom`, `base64` |
 | `copilot-storage` | `sha2`, `bytes`, `tokio-util` (add its `io` feature only if streaming files with `ReaderStream`) |

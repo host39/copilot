@@ -245,8 +245,76 @@ fn utf8(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok()
 }
 
-/// Pages of a PDF, counted heuristically: page objects (`/Type /Page`, not `/Pages`). At least 1.
+/// Inflated object stream bytes read per PDF at most, so a compression bomb costs little.
+const PDF_INFLATE_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// The size of a page when no page object can be read (an encrypted or unusual PDF), so such a
+/// file never counts as one page whatever its length.
+const PDF_BYTES_PER_PAGE: usize = 50 * 1024;
+
+/// Pages of a PDF, counted heuristically: page objects (`/Type /Page`, not `/Pages`), both in the
+/// file and inside its Flate-compressed object streams (`/Type /ObjStm`, PDF 1.5 and later,
+/// where most LaTeX and modern producers put every page dictionary). When no page object can be
+/// read at all, one page per 50 KiB. At least 1.
 pub fn pdf_pages(bytes: &[u8]) -> u32 {
+    let mut pages = page_objects(bytes);
+    let mut budget = PDF_INFLATE_MAX_BYTES;
+    for stream in object_streams(bytes) {
+        if budget == 0 {
+            break;
+        }
+        let Ok(inflated) = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(stream, budget)
+        else {
+            continue;
+        };
+        budget = budget.saturating_sub(inflated.len());
+        pages = pages.saturating_add(page_objects(&inflated));
+    }
+    if pages == 0 {
+        pages = u32::try_from(bytes.len() / PDF_BYTES_PER_PAGE).unwrap_or(u32::MAX);
+    }
+    pages.max(1)
+}
+
+/// The raw data of every Flate-compressed object stream: the bytes between `stream` and
+/// `endstream` of an object whose dictionary holds `/ObjStm` and `/FlateDecode`.
+fn object_streams(bytes: &[u8]) -> Vec<&[u8]> {
+    const MARK: &[u8] = b"/ObjStm";
+    const STREAM: &[u8] = b"stream";
+    const END: &[u8] = b"endstream";
+    let mut streams = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = find(&bytes[index..], MARK) {
+        let mark = index + offset;
+        index = mark + MARK.len();
+        let Some(keyword) = find(&bytes[index..], STREAM).map(|found| index + found) else {
+            break;
+        };
+        let start = bytes[..mark]
+            .windows(3)
+            .rposition(|window| window == b"obj")
+            .unwrap_or(0);
+        let dictionary = &bytes[start..keyword];
+        if find(dictionary, b"/FlateDecode").is_none() || find(dictionary, b"endobj").is_some() {
+            continue;
+        }
+        let mut data = keyword + STREAM.len();
+        if bytes.get(data) == Some(&b'\r') {
+            data += 1;
+        }
+        if bytes.get(data) == Some(&b'\n') {
+            data += 1;
+        }
+        let Some(end) = find(&bytes[data..], END).map(|found| data + found) else {
+            break;
+        };
+        streams.push(&bytes[data..end]);
+        index = end + END.len();
+    }
+    streams
+}
+
+/// Page objects (`/Type /Page`, not `/Pages` or `/PageLabel`) in `bytes`.
+fn page_objects(bytes: &[u8]) -> u32 {
     const TYPE: &[u8] = b"/Type";
     const PAGE: &[u8] = b"/Page";
     let mut pages: u32 = 0;
@@ -266,7 +334,7 @@ pub fn pdf_pages(bytes: &[u8]) -> u32 {
         }
         index = cursor;
     }
-    pages.max(1)
+    pages
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -392,6 +460,43 @@ mod tests {
             1,
             "a trailing /Type does not overrun"
         );
+    }
+
+    /// A PDF 1.5 whose page dictionaries all sit in one compressed object stream.
+    fn compressed_pdf(pages: usize) -> Vec<u8> {
+        let mut objects = String::from("<< /Type /Catalog /Pages 2 0 R >> ");
+        objects.push_str(&format!("<< /Type /Pages /Count {pages} >> "));
+        for _ in 0..pages {
+            objects.push_str("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >> ");
+        }
+        let data = miniz_oxide::deflate::compress_to_vec_zlib(objects.as_bytes(), 6);
+        let mut pdf = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n5 0 obj\n<< /Length ".to_vec();
+        pdf.extend_from_slice(data.len().to_string().as_bytes());
+        pdf.extend_from_slice(b" /Filter /FlateDecode /Type /ObjStm /N 9 /First 40 >>\nstream\r\n");
+        pdf.extend_from_slice(&data);
+        pdf.extend_from_slice(b"\r\nendstream\nendobj\n");
+        pdf.extend_from_slice(b"6 0 obj\n<< /Type /XRef /Filter /FlateDecode /Length 3 >>\nstream\nabc\nendstream\nendobj\n%%EOF\n");
+        pdf
+    }
+
+    #[test]
+    fn counts_pages_inside_compressed_object_streams() {
+        let pdf = compressed_pdf(30);
+        assert_eq!(page_objects(&pdf), 0, "nothing visible without inflating");
+        assert_eq!(pdf_pages(&pdf), 30);
+        assert_eq!(
+            estimate(MediaType::Pdf, pdf.len() as u64, Some(pdf_pages(&pdf))),
+            90_000
+        );
+    }
+
+    #[test]
+    fn an_unreadable_pdf_counts_one_page_per_50_kib() {
+        let mut pdf =
+            b"%PDF-1.7\n5 0 obj << /Type /ObjStm /Filter /FlateDecode >>\nstream\n".to_vec();
+        pdf.extend(std::iter::repeat_n(0xa5, 500 * 1024));
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        assert_eq!(pdf_pages(&pdf), 10);
     }
 
     #[test]

@@ -82,7 +82,7 @@ The new chat screen holds a client-side draft (project chip, model, tools, chat 
 
 Name and icon; a composer at the top ("Start a chat in `<project>`"); the project's chats below. A side panel (a tab on phones) holds Instructions, Files with the capacity bar, Default model and reasoning, Tools, and Schedules (with **New schedule**).
 
-Files show an estimated token size each and in total, as a capacity bar against the default model's context window. Estimates: text bytes / 4; PDF pages x 3,000; image 1,600; these are rough and live in core constants. Each file has an **Include in context** toggle. Uploads past 80% warn. Past 100%, sending is blocked with a message naming the largest included files. The context window value is editable on the model when the provider does not report it.
+Files show an estimated token size each and in total, as a capacity bar against the default model's context window. Estimates: text bytes / 4; PDF pages x 3,000; image 1,600; these are rough and live in core constants. PDF pages are counted from the page objects, including those inside compressed object streams (PDF 1.5 and later); a PDF whose pages cannot be read counts one page per 50 KiB, never just one. Each file has an **Include in context** toggle. Uploads past 80% warn. Past 100%, sending is blocked with a message naming the largest included files. The context window value is editable on the model when the provider does not report it.
 
 #### Scheduled
 
