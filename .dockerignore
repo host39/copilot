@@ -11,5 +11,6 @@ target
 **/.run
 **/.env
 **/.env*.local
-apps/web
+apps/native
+deploy
 docs

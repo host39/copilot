@@ -1,0 +1,72 @@
+# Self-hosted Copilot: Postgres, a one-off migrate step, and the server, from one image.
+#
+#   export SECRET_KEY="$(openssl rand -base64 32)" DB_PASSWORD="$(openssl rand -hex 24)"
+#   docker compose -f deploy/compose.yml up -d
+#
+# Keep SECRET_KEY and DB_PASSWORD (for example in deploy/.env, which compose reads): a new
+# SECRET_KEY makes every stored provider key unreadable. Install and upgrade are the same
+# command: `migrate` applies lib-rustauth's `auth` migrations, then Copilot's, and the server
+# starts only after it succeeds. The server listens on 127.0.0.1:3000; put a TLS reverse proxy
+# in front for other hosts (docs/deployment-container.md). See docs/env.md for every variable.
+name: copilot
+
+x-database: &database
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: copilot
+  DB_USER: copilot
+  DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+  # Postgres is reachable only on the compose network.
+  DB_SSL: "false"
+
+services:
+  postgres:
+    image: postgres:18.1
+    environment:
+      POSTGRES_DB: copilot
+      POSTGRES_USER: copilot
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copilot -d copilot"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    image: ${COPILOT_IMAGE:-copilot:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["migrate"]
+    environment:
+      <<: *database
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  copilot:
+    image: ${COPILOT_IMAGE:-copilot:local}
+    environment:
+      <<: *database
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (openssl rand -base64 32)}
+      ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-admins}
+      AUTH_REGISTRATION_OPEN: ${AUTH_REGISTRATION_OPEN:-false}
+      # Unset: the server logs a setup token once (`rustauth.setup.token-issued`).
+      AUTH_SETUP_TOKEN: ${AUTH_SETUP_TOKEN:-}
+      # Your reverse proxy's address, so per-IP sign-in limits see the real client.
+      AUTH_TRUSTED_PROXIES: ${AUTH_TRUSTED_PROXIES:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres:
