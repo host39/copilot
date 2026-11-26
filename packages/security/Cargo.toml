@@ -25,6 +25,9 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls = { workspace = true }
 uuid = { workspace = true }
 wiremock = { workspace = true }
 

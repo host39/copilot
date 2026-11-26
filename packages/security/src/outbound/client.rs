@@ -282,6 +282,99 @@ mod tests {
         );
     }
 
+    /// An HTTPS server on 127.0.0.1 with a certificate for `localhost` and `127.0.0.1` from a
+    /// throwaway CA. It answers every connection with `200 ok`. Returns its port and the CA.
+    async fn tls_server() -> (u16, reqwest::Certificate) {
+        use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut authority = CertificateParams::new(Vec::<String>::new()).unwrap();
+        authority.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let issuer = CertifiedIssuer::self_signed(authority, KeyPair::generate().unwrap()).unwrap();
+        let key = KeyPair::generate().unwrap();
+        let leaf = CertificateParams::new(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
+            .unwrap()
+            .signed_by(&key, &issuer)
+            .unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match tls.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => request.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    let response =
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
+                    let _ = tls.write_all(response).await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        let authority = reqwest::Certificate::from_der(issuer.der()).unwrap();
+        (port, authority)
+    }
+
+    /// An `https` client with `policy` that trusts only `authority`.
+    fn trusting(policy: Policy, authority: reqwest::Certificate) -> Client {
+        crypto::install();
+        builder(policy, Purpose::Providers.tuning())
+            .https_only(true)
+            .tls_certs_only([authority])
+            .build()
+            .expect("the client builds")
+    }
+
+    #[tokio::test]
+    async fn checks_the_resolver_and_the_peer_over_tls() {
+        let (port, authority) = tls_server().await;
+
+        // The peer address survives the TLS layer, so allowed HTTPS connections go through.
+        let private = trusting(Policy::Scope(NetworkScope::Private), authority.clone());
+        for host in ["localhost", "127.0.0.1"] {
+            let response = private
+                .get(format!("https://{host}:{port}/v1/models"))
+                .send()
+                .await
+                .unwrap_or_else(|error| panic!("{host}: {error:?}"));
+            assert_eq!(response.status(), 200, "{host}");
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+
+        // A public-only client refuses the same server by name (resolver) and by literal (peer).
+        let public = trusting(Policy::Scope(NetworkScope::Public), authority);
+        for host in ["localhost", "127.0.0.1"] {
+            let error = public
+                .get(format!("https://{host}:{port}/v1/models"))
+                .send()
+                .await
+                .expect_err("a public-only client must not reach loopback");
+            assert_eq!(Blocked::find(&error), Some(Blocked::Address), "{host}");
+        }
+    }
+
     #[test]
     fn tunes_each_purpose() {
         let providers = Purpose::Providers.tuning();

@@ -48,6 +48,8 @@ jiff = { version = "1.0.3", default-features = false, features = ["std", "tzdb-z
 # Inflates PDF object streams to count their pages (pure Rust, no unsafe in the inflater).
 miniz_oxide = "0.9.1"
 mime_guess = { version = "2.0.5", default-features = false }
+# Dev only: a throwaway CA and certificate for the outbound clients' TLS test.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "multipart"] }
 # MCP client over Streamable HTTP only: the default features are server-side, and rmcp's `reqwest`
 # feature would enable reqwest's aws-lc-rs provider.
@@ -62,6 +64,8 @@ thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tokio-stream = { version = "0.1.19", default-features = false }
 tokio-util = { version = "0.7.20", default-features = false }
+# Dev only: the TLS server of the outbound clients' TLS test (ring provider passed explicitly).
+tokio-rustls = { version = "0.26.6", default-features = false }
 tower = "0.5.2"
 tower-http = "0.7.1"
 tracing = "0.1.41"
