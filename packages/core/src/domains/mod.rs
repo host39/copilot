@@ -2,6 +2,7 @@
 //! Each domain's public API is re-exported from `lib.rs`.
 
 pub mod chat;
+pub mod conversation;
 pub mod file;
 pub mod project;
 pub mod provider;

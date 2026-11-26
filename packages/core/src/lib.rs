@@ -22,6 +22,7 @@ pub use crate::domains::chat::{
     SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext, TurnContextRepository,
     TurnInput, Usage, skipped_results,
 };
+pub use crate::domains::conversation::TurnEvent;
 pub use crate::domains::file::{
     Capacity, CapacityLevel, FileKind, FileLimits, FileOwner, FileRepository, FileService,
     FileUpdate, Measured, MediaType, OCTET_STREAM, StoredFile, StoredFileParts, served_type,
@@ -52,11 +53,16 @@ pub use crate::domains::tool::{
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::clock::{Clock, SystemClock};
 pub use crate::ports::llm_gateway::{
-    LlmGateway, ModelTarget, ProviderTarget, RemoteModel, ReportedCapabilities,
+    AudioOut, LlmEvent, LlmGateway, LlmMessage, LlmPart, LlmRequest, ModelTarget, PartKind,
+    ProviderTarget, Refusal, RemoteModel, ReportedCapabilities,
 };
 pub use crate::ports::logger::LogLevel;
 pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher};
-pub use crate::ports::tool_host::{RemoteTool, ToolEndpoint, ToolHost, ToolListing};
+pub use crate::ports::tool_host::{
+    RemoteTool, TOOL_TIMEOUT, ToolContent, ToolEndpoint, ToolHost, ToolListing, ToolOutput,
+    ToolSession,
+};
+pub use crate::ports::turn_sink::TurnSink;
 // Shared types
 pub use crate::shared::actor::Actor;
 pub use crate::shared::base_url::BaseUrl;

@@ -3,12 +3,12 @@
 //! `copilot-mcp` implements [`ToolHost`] over Streamable HTTP with rmcp. Core builds every
 //! endpoint, so the adapter never reads the database or the cipher.
 //!
-//! This step defines tool listing. P1.3 (the conversation engine) adds `open` with `ToolSession`
-//! (calls) and `ToolOutput`, and then freezes the port.
+//! The port is frozen from P1.3 on (`docs/design/roadmap.md`, Freeze List).
 
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use serde_json::Value;
 
 use crate::shared::base_url::BaseUrl;
@@ -22,6 +22,62 @@ pub trait ToolHost: Send + Sync {
     /// The server's tools (`tools/list`, every page). Adapters map connection failures to
     /// human-readable `DomainError`s.
     async fn list(&self, endpoint: &ToolEndpoint) -> DomainResult<ToolListing>;
+
+    /// A session for one run over `endpoints`. The adapter connects to each server lazily, on its
+    /// first call, and keeps one connection per server until [`ToolSession::close`].
+    async fn open(&self, endpoints: Vec<ToolEndpoint>) -> DomainResult<Box<dyn ToolSession>>;
+}
+
+/// The error code of a call that ran out of time; core gives the call the status `timeout`.
+pub const TOOL_TIMEOUT: &str = "TOOL_TIMEOUT";
+
+/// The tool calls of one run.
+#[async_trait]
+pub trait ToolSession: Send + Sync {
+    /// Calls tool `name` (the original name, never the alias) on the server. A call that does
+    /// not answer within `timeout` fails with the code [`TOOL_TIMEOUT`]; other failures are
+    /// human-readable `DomainError`s. A tool that ran and reported an error is `Ok` with
+    /// `is_error`.
+    async fn call(
+        &self,
+        server_id: ToolServerId,
+        name: &str,
+        arguments: Value,
+        timeout: Duration,
+    ) -> DomainResult<ToolOutput>;
+
+    /// Ends every connection of the session.
+    async fn close(self: Box<Self>);
+}
+
+/// What a tool returned, untruncated (core truncates text to `MCP_RESULT_MAX_BYTES`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolOutput {
+    pub content: Vec<ToolContent>,
+    pub is_error: bool,
+}
+
+/// A piece of tool output. Everything here is untrusted server input.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToolContent {
+    Text(String),
+    Image {
+        media_type: String,
+        data: Bytes,
+    },
+    Audio {
+        media_type: String,
+        data: Bytes,
+    },
+    /// A `resource_link` (or an embedded resource without text): sent to the model as text.
+    Link {
+        uri: String,
+        name: Option<String>,
+    },
+    /// Any other binary content: sent to the model as a one-line notice.
+    Binary {
+        media_type: Option<String>,
+    },
 }
 
 /// Everything the adapter needs to reach a tool server. `headers` is the opened
