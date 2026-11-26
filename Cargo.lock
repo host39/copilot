@@ -1674,7 +1674,7 @@ dependencies = [
 [[package]]
 name = "rustauth"
 version = "0.1.0"
-source = "git+https://github.com/host39/lib-rustauth?rev=c88666f8ff43281f6f04c6d68f1e39e287df1d7e#c88666f8ff43281f6f04c6d68f1e39e287df1d7e"
+source = "git+https://github.com/host39/lib-rustauth?rev=6412ed3f2424d3e586b7d7aab413af85ea70ac63#6412ed3f2424d3e586b7d7aab413af85ea70ac63"
 dependencies = [
  "rustauth-core",
  "rustauth-postgres",
@@ -1686,7 +1686,7 @@ dependencies = [
 [[package]]
 name = "rustauth-core"
 version = "0.1.0"
-source = "git+https://github.com/host39/lib-rustauth?rev=c88666f8ff43281f6f04c6d68f1e39e287df1d7e#c88666f8ff43281f6f04c6d68f1e39e287df1d7e"
+source = "git+https://github.com/host39/lib-rustauth?rev=6412ed3f2424d3e586b7d7aab413af85ea70ac63#6412ed3f2424d3e586b7d7aab413af85ea70ac63"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1698,7 +1698,7 @@ dependencies = [
 [[package]]
 name = "rustauth-postgres"
 version = "0.1.0"
-source = "git+https://github.com/host39/lib-rustauth?rev=c88666f8ff43281f6f04c6d68f1e39e287df1d7e#c88666f8ff43281f6f04c6d68f1e39e287df1d7e"
+source = "git+https://github.com/host39/lib-rustauth?rev=6412ed3f2424d3e586b7d7aab413af85ea70ac63#6412ed3f2424d3e586b7d7aab413af85ea70ac63"
 dependencies = [
  "async-trait",
  "chrono",
