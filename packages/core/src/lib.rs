@@ -73,7 +73,9 @@ pub use crate::shared::ids::{
     CallId, ChatId, FileId, MessageId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId,
     UserId,
 };
-pub use crate::shared::net::{AddressClass, NetworkScope, PrivateNetwork, classify, is_allowed};
+pub use crate::shared::net::{
+    AddressClass, NetworkScope, PrivateNetwork, classify, is_allowed, is_allowed_plaintext,
+};
 pub use crate::shared::reasoning::ReasoningLevel;
 pub use crate::shared::secret::Secret;
 pub use crate::shared::types::{

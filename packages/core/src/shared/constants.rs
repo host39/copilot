@@ -16,6 +16,8 @@ pub const MCP_RESULT_MAX_BYTES: usize = 65_536;
 pub const MCP_RESPONSE_MAX_BYTES: usize = 4_194_304;
 /// Tool list cache lifetime when the server sends no `ttlMs`.
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
+/// Longest tool list cache lifetime, whatever `ttlMs` the server sends.
+pub const TOOL_CACHE_MAX_TTL_SECS: u64 = 86_400;
 /// Provider rounds per turn before tool calls get `cancelled` results.
 pub const MAX_TOOL_ROUNDS: u32 = 8;
 /// Output token limit of a model without one: this, or a quarter of its context window when

@@ -2,6 +2,7 @@
 //! tools a turn gets.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 
 use crate::domains::provider::KeyState;
@@ -18,9 +19,10 @@ use crate::shared::base_url::BaseUrl;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ToolServerId;
 use crate::shared::net::PrivateNetwork;
+use crate::shared::secret::REDACTED;
 
-/// Input of [`ToolService::create`].
-#[derive(Clone, Debug, Default)]
+/// Input of [`ToolService::create`]. `Debug` prints `***` for the token and header values.
+#[derive(Clone, Default)]
 pub struct NewToolServer {
     pub name: String,
     /// `None` derives a free slug from the name.
@@ -30,6 +32,20 @@ pub struct NewToolServer {
     pub bearer: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub approval: ApprovalMode,
+}
+
+impl fmt::Debug for NewToolServer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NewToolServer")
+            .field("name", &self.name)
+            .field("slug", &self.slug)
+            .field("url", &self.url)
+            .field("bearer", &self.bearer.as_ref().map(|_| REDACTED))
+            .field("headers", &Redacted(&self.headers))
+            .field("approval", &self.approval)
+            .finish()
+    }
 }
 
 /// Input of [`ToolService::update`]; `None` keeps a field. The slug never changes.
@@ -44,8 +60,9 @@ pub struct ToolServerUpdate {
     pub enabled: Option<bool>,
 }
 
-/// A change to the stored bearer token and headers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A change to the stored bearer token and headers. `Debug` prints `***` for the token and
+/// header values.
+#[derive(Clone, Eq, PartialEq)]
 pub enum CredentialChange {
     /// Replaces both; all blank clears them.
     Set {
@@ -53,6 +70,31 @@ pub enum CredentialChange {
         headers: BTreeMap<String, String>,
     },
     Clear,
+}
+
+impl fmt::Debug for CredentialChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Set { bearer, headers } => formatter
+                .debug_struct("Set")
+                .field("bearer", &bearer.as_ref().map(|_| REDACTED))
+                .field("headers", &Redacted(headers))
+                .finish(),
+            Self::Clear => formatter.write_str("Clear"),
+        }
+    }
+}
+
+/// Header names with `***` for each value.
+struct Redacted<'a>(&'a BTreeMap<String, String>);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(self.0.keys().map(|name| (name, REDACTED)))
+            .finish()
+    }
 }
 
 /// A server with whether its credentials still open ("Key must be re-entered").
@@ -150,7 +192,8 @@ impl ToolService {
 
     /// Changing the origin (scheme, host, or port) of the URL clears the stored credentials
     /// unless the same update sets new ones, so a token never goes to a host it was not entered
-    /// for.
+    /// for. Any new URL is listed again before its tools are offered, and every tool asks until
+    /// [`ToolService::review`].
     pub async fn update(
         &self,
         actor: &Actor,
@@ -235,8 +278,9 @@ impl ToolService {
 
     /// The server tools a turn with `selection` may use, sorted by alias. Only enabled servers
     /// of the caller count; `off` tools are dropped. A server whose cached list expired (or that
-    /// was never listed) is listed again first. When that fails the stale list is used, and a
-    /// server with no list at all is reported in `unavailable`.
+    /// was never listed at its current URL) is listed again first. When that fails the stale list
+    /// is used if it came from the current URL, and any other server is reported in
+    /// `unavailable`.
     pub async fn effective_tools(
         &self,
         actor: &Actor,
@@ -260,7 +304,7 @@ impl ToolService {
             if server.needs_refresh(now) {
                 match self.fetch(actor, &server).await {
                     Ok(listing) => server = self.store(actor, server, listing).await?.0,
-                    Err(_) if server.cache().is_some() => {}
+                    Err(_) if server.listed() => {}
                     Err(_) => {
                         effective.unavailable.push(id);
                         continue;
@@ -407,6 +451,34 @@ mod tests {
         RemoteTool {
             description: description.to_owned(),
             ..remote_tool(name)
+        }
+    }
+
+    #[test]
+    fn inputs_never_print_credentials() {
+        let new = NewToolServer {
+            bearer: Some("ghp_TOPSECRET".to_owned()),
+            headers: headers(&[("X-Api-Key", "hdr-TOPSECRET")]),
+            ..named("GitHub")
+        };
+        let change = CredentialChange::Set {
+            bearer: Some("ghp_TOPSECRET".to_owned()),
+            headers: headers(&[("X-Api-Key", "hdr-TOPSECRET")]),
+        };
+        let update = ToolServerUpdate {
+            credentials: Some(change.clone()),
+            ..ToolServerUpdate::default()
+        };
+        for printed in [
+            format!("{new:?}"),
+            format!("{change:?}"),
+            format!("{update:?}"),
+        ] {
+            assert!(!printed.contains("TOPSECRET"), "{printed}");
+            assert!(
+                printed.contains("X-Api-Key"),
+                "header names stay: {printed}"
+            );
         }
     }
 
@@ -887,5 +959,75 @@ mod tests {
                 .tools
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_url_is_listed_again_and_every_tool_asks_until_a_review() {
+        let f = fixture();
+        let caller = actor();
+        let github = listed(&f, &caller, "GitHub", vec![remote_tool("search")]).await;
+        f.service
+            .update(
+                &caller,
+                github,
+                ToolServerUpdate {
+                    approval: Some(ApprovalMode::Auto),
+                    ..ToolServerUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        let moved = f
+            .service
+            .update(
+                &caller,
+                github,
+                ToolServerUpdate {
+                    url: Some("https://other-host.example.net/mcp".to_owned()),
+                    ..ToolServerUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(moved.review_required());
+
+        f.host
+            .push_error(DomainError::business_rule("down", "DOWN"));
+        let effective = f
+            .service
+            .effective_tools(&caller, &selection(vec![github], vec![]))
+            .await
+            .unwrap();
+        assert!(
+            effective.tools.is_empty(),
+            "the old URL's list is never offered for the new URL"
+        );
+        assert_eq!(effective.unavailable, [github]);
+
+        f.host.push_tools(vec![remote_tool("search")]);
+        let effective = f
+            .service
+            .effective_tools(&caller, &selection(vec![github], vec![]))
+            .await
+            .unwrap();
+        let endpoints = f.host.endpoints();
+        assert_eq!(
+            endpoints.last().unwrap().url.as_str(),
+            "https://other-host.example.net/mcp"
+        );
+        assert_eq!(aliases(&effective), ["github__search"]);
+        assert!(
+            effective.tools.iter().all(|tool| tool.review_required),
+            "the same tools still ask on a new host"
+        );
+
+        f.service.review(&caller, github).await.unwrap();
+        let effective = f
+            .service
+            .effective_tools(&caller, &selection(vec![github], vec![]))
+            .await
+            .unwrap();
+        assert_eq!(effective.tools[0].mode, ToolMode::Auto);
+        assert!(!effective.tools[0].review_required);
     }
 }

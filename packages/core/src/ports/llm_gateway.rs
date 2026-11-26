@@ -39,7 +39,8 @@ pub trait LlmGateway: Send + Sync {
 }
 
 /// Everything an adapter needs to reach a provider connection. `network` picks the outbound
-/// client (public-only or private-allowed).
+/// client (public-only or private-allowed); a plain `http` `base_url` (`!is_https()`) takes the
+/// plaintext client, whose resolver admits only `net::is_allowed_plaintext` addresses.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderTarget {
     pub provider_id: ProviderId,

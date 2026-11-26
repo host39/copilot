@@ -1,6 +1,7 @@
 //! Provider connection use cases.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::domains::provider::capabilities::{Capabilities, Locks};
@@ -19,9 +20,10 @@ use crate::shared::constants::MODEL_AUTO_ENABLE_MAX;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ProviderId;
 use crate::shared::net::PrivateNetwork;
+use crate::shared::secret::REDACTED;
 
-/// Input of [`ProviderService::create`].
-#[derive(Clone, Debug)]
+/// Input of [`ProviderService::create`]. `Debug` prints `***` for the key.
+#[derive(Clone)]
 pub struct NewProvider {
     pub kind: ProviderKind,
     pub preset: Preset,
@@ -30,6 +32,19 @@ pub struct NewProvider {
     pub base_url: Option<String>,
     /// Blank means no key.
     pub api_key: Option<String>,
+}
+
+impl fmt::Debug for NewProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NewProvider")
+            .field("kind", &self.kind)
+            .field("preset", &self.preset)
+            .field("name", &self.name)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| REDACTED))
+            .finish()
+    }
 }
 
 /// Input of [`ProviderService::update`]; `None` keeps a field. Kind and preset never change.
@@ -41,12 +56,21 @@ pub struct ProviderUpdate {
     pub enabled: Option<bool>,
 }
 
-/// A change to the stored API key.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A change to the stored API key. `Debug` prints `***` for the key.
+#[derive(Clone, Eq, PartialEq)]
 pub enum KeyChange {
     /// A new key; blank clears it.
     Set(String),
     Clear,
+}
+
+impl fmt::Debug for KeyChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Set(_) => formatter.debug_tuple("Set").field(&REDACTED).finish(),
+            Self::Clear => formatter.write_str("Clear"),
+        }
+    }
 }
 
 /// A connection with what its settings page and delete confirmation show.
@@ -271,6 +295,26 @@ mod tests {
     use crate::testing::{
         FakeCipher, FixedClock, MemoryStore, ScriptedGateway, actor, admin, remote_model,
     };
+
+    #[test]
+    fn inputs_never_print_the_key() {
+        let new = NewProvider {
+            kind: ProviderKind::OpenAi,
+            preset: Preset::OpenAi,
+            name: "OpenAI".to_owned(),
+            base_url: None,
+            api_key: Some("sk-live-TOPSECRET".to_owned()),
+        };
+        let update = ProviderUpdate {
+            api_key: Some(KeyChange::Set("sk-live-TOPSECRET".to_owned())),
+            ..ProviderUpdate::default()
+        };
+        for printed in [format!("{new:?}"), format!("{update:?}")] {
+            assert!(!printed.contains("TOPSECRET"), "{printed}");
+            assert!(printed.contains("***"), "{printed}");
+        }
+        assert_eq!(format!("{:?}", KeyChange::Clear), "Clear");
+    }
 
     struct Fixture {
         service: ProviderService,

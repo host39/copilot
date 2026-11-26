@@ -140,7 +140,7 @@ Users register remote MCP servers in Settings: name, URL, optional bearer token 
 - **Approval:** new servers default to `ask`; `auto` is an explicit choice with a warning. After Test, the server page lists its tools, each set to Off, Ask, or Auto (default: the server mode). Auto is suggested, as a hint only, for tools annotated `readOnlyHint` (annotations are untrusted). Off tools are never sent to the model.
 - **Approval card:** Approve, Approve for this chat, Deny (with an optional reason passed to the model). Approvals are stored, so any device can answer them, and nothing waits in memory.
 - **Changed tools:** when a refresh changes any tool's name, description, or input schema, the server falls back to `ask` for every tool until the user reviews the change.
-- **Tool list cache:** Copilot stores each server's tool list (refreshed on Test, on expiry using the server's `ttlMs` or 1 hour, and when a call reports an unknown tool), so building a request does not connect to every server.
+- **Tool list cache:** Copilot stores each server's tool list (refreshed on Test, on expiry using the server's `ttlMs` capped at 24 hours, or 1 hour without one, and when a call reports an unknown tool), so building a request does not connect to every server. Changing a server's URL makes the next turn list the new URL first (a stale list from the old URL is never offered) and puts every tool back to `ask` until the user reviews the server.
 - **Authentication:** bearer token or custom headers in v1. A custom `Authorization` header is rejected when the bearer field is set.
 
 ### Providers and Models
@@ -894,9 +894,9 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 ### Outbound Requests
 
-1. Two hardened `reqwest::Client`s (public-only and private-allowed) are built once by `copilot-security` code in the composition root and shared by the provider and MCP adapters. A connection's `NetworkScope` picks the client.
+1. Three hardened `reqwest::Client`s (public-only, private-allowed, and plaintext) are built once by `copilot-security` code in the composition root and shared by the provider and MCP adapters. A connection's `NetworkScope` picks between the first two for `https` URLs; a plain `http` URL always takes the plaintext client, whose resolver admits only private and loopback addresses the scope allows (`net::is_allowed_plaintext`), so a local-looking name such as `ollama` or `gpu.lan` that resolves to a public address fails instead of sending its key in the clear.
 2. URLs are parsed with `url::Url`. `https` is required for public hosts; `http` is allowed only for permitted private hosts. URLs with userinfo are rejected.
-3. Checks run in a custom `dns_resolver`, plus a separate check for IP-literal hosts (hyper skips the resolver for them). IPv4-mapped IPv6 is normalized first.
+3. Checks run in a custom `dns_resolver`, plus a separate check for IP-literal hosts (hyper skips the resolver for them). An IPv6 address that carries an IPv4 address is classified as that address: IPv4-mapped `::ffff:0:0/96`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, and IPv4-compatible `::a.b.c.d`. The local-use NAT64 prefix `64:ff9b:1::/48` is always blocked, because its IPv4 layout is the operator's choice.
 4. Always blocked, whatever the setting: `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200`, `0.0.0.0/8`, `::`, multicast, and broadcast.
 5. `ALLOW_PRIVATE_NETWORK` (`none`, `admins`, `all`; default `admins`): which connections may reach private and loopback ranges (RFC 1918, loopback, unique local `fc00::/7`, CGNAT `100.64.0.0/10`). With `admins`, only connections owned by an admin (rustauth role `administrator`) may.
 6. `redirect::Policy::none()` and `.no_proxy()` on both clients; `connect_timeout` 10 s; `read_timeout` as an idle timeout; no total timeout (it would cut streams); `pool_max_idle_per_host(0)` for MCP.
@@ -984,6 +984,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `MCP_RESULT_MAX_BYTES` | 65536 |
 | `MCP_RESPONSE_MAX_BYTES` | 4194304 |
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
+| `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
 | `MAX_TOOL_ROUNDS` | 8 |
 | `DEFAULT_MAX_OUTPUT_TOKENS` | 8192 (or a quarter of a known context window, when smaller) |
 | `REQUEST_MAX_BYTES`, `GEMINI_REQUEST_MAX_BYTES`, `REQUEST_MAX_PDF_PAGES` | 32 MiB, 20 MiB, 100 (**verify** per provider in P2.B) |

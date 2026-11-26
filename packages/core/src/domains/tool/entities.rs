@@ -9,7 +9,9 @@ use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::secret_cipher::SealContext;
 use crate::ports::tool_host::{RemoteTool, ToolEndpoint, ToolListing};
 use crate::shared::base_url::BaseUrl;
-use crate::shared::constants::{NAME_MAX_CHARS, TOOL_CACHE_DEFAULT_TTL_SECS};
+use crate::shared::constants::{
+    NAME_MAX_CHARS, TOOL_CACHE_DEFAULT_TTL_SECS, TOOL_CACHE_MAX_TTL_SECS,
+};
 use crate::shared::errors::DomainResult;
 use crate::shared::ids::{ToolServerId, UserId};
 use crate::shared::net::NetworkScope;
@@ -67,16 +69,17 @@ pub struct ToolCache {
 }
 
 impl ToolCache {
-    /// Past `fetched_at` plus the server's `ttlMs`, or `TOOL_CACHE_DEFAULT_TTL_SECS` without one.
+    /// Past `fetched_at` plus the server's `ttlMs` (at most `TOOL_CACHE_MAX_TTL_SECS`), or
+    /// `TOOL_CACHE_DEFAULT_TTL_SECS` without one.
     pub fn expired(&self, now: DateTime<Utc>) -> bool {
         let ttl = self
             .ttl
-            .unwrap_or(Duration::from_secs(TOOL_CACHE_DEFAULT_TTL_SECS));
-        // A TTL past the end of the calendar never expires.
+            .unwrap_or(Duration::from_secs(TOOL_CACHE_DEFAULT_TTL_SECS))
+            .min(Duration::from_secs(TOOL_CACHE_MAX_TTL_SECS));
         let ttl = chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX);
         self.fetched_at
             .checked_add_signed(ttl)
-            .is_some_and(|expiry| expiry <= now)
+            .is_none_or(|expiry| expiry <= now)
     }
 
     pub fn tool(&self, name: &str) -> Option<&RemoteTool> {
@@ -136,12 +139,15 @@ impl ToolServer {
         Ok(self)
     }
 
-    /// A new URL forgets the negotiated protocol version (it may be another server). The cached
-    /// tool list stays, so the next test compares against it and flags any change for review.
+    /// A new URL may be another server: it forgets the negotiated protocol version, so the
+    /// cached tool list no longer counts as this URL's ([`ToolServer::listed`]) and the next turn
+    /// lists the new URL first, and every tool asks until the user reviews the server again. The
+    /// cached list stays only so the next listing can show what changed.
     #[must_use]
     pub fn with_url(mut self, url: BaseUrl) -> Self {
         if url != self.url {
             self.protocol_version = None;
+            self.review_required = true;
         }
         self.url = url;
         self
@@ -243,9 +249,15 @@ impl ToolServer {
         }
     }
 
-    /// No tool list yet, or the cached one expired.
+    /// No tool list from the current URL yet, or the cached one expired.
     pub fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
-        self.cache.as_ref().is_none_or(|cache| cache.expired(now))
+        !self.listed() || self.cache.as_ref().is_none_or(|cache| cache.expired(now))
+    }
+
+    /// The cached tool list came from the current URL. A listing always stores the protocol
+    /// version and a new URL clears it, so a cache without one belongs to an old URL.
+    pub fn listed(&self) -> bool {
+        self.cache.is_some() && self.protocol_version.is_some()
     }
 
     pub fn id(&self) -> ToolServerId {
@@ -390,19 +402,30 @@ mod tests {
         assert!(!short.needs_refresh(now() + chrono::Duration::seconds(59)));
         assert!(short.needs_refresh(now() + chrono::Duration::seconds(60)));
 
-        let huge = short.with_listing(&listing(Some(Duration::MAX)), false, now());
-        assert!(!huge.needs_refresh(now() + chrono::Duration::days(365)));
+        let day = short.with_listing(&listing(Some(Duration::from_secs(172_800))), false, now());
+        assert!(!day.needs_refresh(now() + chrono::Duration::hours(23)));
+        assert!(
+            day.needs_refresh(now() + chrono::Duration::hours(24)),
+            "a server cannot keep its list for longer than a day"
+        );
+        let huge = day.with_listing(&listing(Some(Duration::MAX)), false, now());
+        assert!(huge.needs_refresh(now() + chrono::Duration::days(365)));
     }
 
     #[test]
-    fn a_new_url_forgets_the_protocol_version_but_keeps_the_tools() {
+    fn a_new_url_needs_a_new_listing_and_a_review() {
         let server = server().with_listing(&listing(None), false, now());
         let same = server.clone().with_url(server.url().clone());
         assert_eq!(same.protocol_version(), Some("2026-07-28"));
+        assert!(!same.review_required());
+        assert!(!same.needs_refresh(now()));
         let other = BaseUrl::parse("https://other.example.com/mcp", NetworkScope::Public).unwrap();
         let moved = server.with_url(other);
         assert_eq!(moved.protocol_version(), None);
-        assert!(moved.cache().is_some());
+        assert!(moved.cache().is_some(), "kept to show what changed");
+        assert!(!moved.listed());
+        assert!(moved.needs_refresh(now()));
+        assert!(moved.review_required(), "every tool asks until a review");
     }
 
     #[test]

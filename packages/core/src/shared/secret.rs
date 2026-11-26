@@ -2,6 +2,9 @@
 
 use std::fmt;
 
+/// What `Debug` prints in place of a secret value.
+pub const REDACTED: &str = "***";
+
 /// A decrypted provider key or tool server header map.
 ///
 /// `Debug` prints `***` and there is no `Display`, so a secret cannot end up in a log line or an
@@ -27,7 +30,7 @@ impl Secret {
 
 impl fmt::Debug for Secret {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("***")
+        formatter.write_str(REDACTED)
     }
 }
 

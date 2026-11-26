@@ -3,7 +3,8 @@
 //! `ALLOW_PRIVATE_NETWORK` ([`PrivateNetwork`]) and the caller's `is_admin` decide a connection's
 //! [`NetworkScope`]. [`is_allowed`] is the pure address check: `copilot-security` calls it from the
 //! outbound client's DNS resolver and for IP-literal hosts, and [`crate::shared::base_url`] calls
-//! it when a URL is saved.
+//! it when a URL is saved. A plain `http` URL uses [`is_allowed_plaintext`] instead, so a name
+//! that only looks local never sends a key in the clear to a public address.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -77,11 +78,14 @@ pub enum AddressClass {
     /// [`NetworkScope::Private`].
     Private,
     /// Never reachable: link-local and cloud metadata addresses, `0.0.0.0/8`, `::`, multicast,
-    /// and broadcast.
+    /// broadcast, and the local-use NAT64 prefix `64:ff9b:1::/48` (its IPv4 layout is the
+    /// operator's choice, so the address it reaches cannot be read).
     Blocked,
 }
 
-/// Classifies an address. IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is classified as its IPv4 address.
+/// Classifies an address. An IPv6 address that carries an IPv4 address a gateway on the path
+/// connects to is classified as that IPv4 address: IPv4-mapped (`::ffff:a.b.c.d`), the NAT64
+/// well-known prefix (`64:ff9b::/96`), 6to4 (`2002::/16`), and IPv4-compatible (`::a.b.c.d`).
 pub fn classify(ip: IpAddr) -> AddressClass {
     match ip {
         IpAddr::V4(v4) => classify_v4(v4),
@@ -99,6 +103,14 @@ pub fn is_allowed(ip: IpAddr, scope: NetworkScope) -> bool {
         AddressClass::Private => scope == NetworkScope::Private,
         AddressClass::Blocked => false,
     }
+}
+
+/// Whether a plain `http` request of a connection with `scope` may go to `ip`: only a private or
+/// loopback address the scope allows, never a public one. A URL is saved with `http` only for a
+/// host that looks private (a private IP literal or a local name such as `ollama` or `gpu.lan`),
+/// and this check keeps such a name from sending keys in the clear when it resolves publicly.
+pub fn is_allowed_plaintext(ip: IpAddr, scope: NetworkScope) -> bool {
+    classify(ip) == AddressClass::Private && scope == NetworkScope::Private
 }
 
 /// The Alibaba Cloud metadata address, inside the CGNAT range but always blocked.
@@ -124,7 +136,14 @@ fn classify_v4(ip: Ipv4Addr) -> AddressClass {
 }
 
 fn classify_v6(ip: Ipv6Addr) -> AddressClass {
-    let first = ip.segments()[0];
+    let segments = ip.segments();
+    if segments[..3] == [0x64, 0xff9b, 1] {
+        return AddressClass::Blocked;
+    }
+    if let Some(v4) = embedded(ip) {
+        return classify_v4(v4);
+    }
+    let first = segments[0];
     let link_local = (first & 0xffc0) == 0xfe80;
     if ip.is_unspecified() || link_local || ip == AWS_METADATA_V6 || ip.is_multicast() {
         return AddressClass::Blocked;
@@ -134,6 +153,19 @@ fn classify_v6(ip: Ipv6Addr) -> AddressClass {
         return AddressClass::Private;
     }
     AddressClass::Public
+}
+
+/// The IPv4 address a NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), or IPv4-compatible
+/// (`::a.b.c.d`, other than `::` and `::1`) address carries.
+fn embedded(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let octets = ip.octets();
+    let last = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+    match ip.segments() {
+        [0x64, 0xff9b, 0, 0, 0, 0, _, _] => Some(last),
+        [0x2002, ..] => Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5])),
+        [0, 0, 0, 0, 0, 0, _, _] if !ip.is_unspecified() && !ip.is_loopback() => Some(last),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +224,44 @@ mod tests {
         );
         assert_eq!(classify(ip("::ffff:10.1.2.3")), AddressClass::Private);
         assert_eq!(classify(ip("::ffff:8.8.8.8")), AddressClass::Public);
+    }
+
+    #[test]
+    fn classifies_ipv6_that_carries_an_ipv4_address_as_that_address() {
+        let cases = [
+            ("64:ff9b::a00:1", AddressClass::Private),
+            ("64:ff9b::7f00:1", AddressClass::Private),
+            ("64:ff9b::a9fe:a9fe", AddressClass::Blocked),
+            ("64:ff9b::808:808", AddressClass::Public),
+            ("64:ff9b:1::a00:1", AddressClass::Blocked),
+            ("64:ff9b:1::808:808", AddressClass::Blocked),
+            ("2002:a9fe:a9fe::1", AddressClass::Blocked),
+            ("2002:a00:1::1", AddressClass::Private),
+            ("2002:808:808::1", AddressClass::Public),
+            ("::7f00:1", AddressClass::Private),
+            ("::a9fe:a9fe", AddressClass::Blocked),
+            ("::808:808", AddressClass::Public),
+            ("::1", AddressClass::Private),
+            ("::", AddressClass::Blocked),
+        ];
+        for (address, expected) in cases {
+            assert_eq!(classify(ip(address)), expected, "{address}");
+        }
+        assert!(!is_allowed(ip("64:ff9b::a9fe:a9fe"), NetworkScope::Private));
+        assert!(!is_allowed(ip("64:ff9b::a00:1"), NetworkScope::Public));
+        assert!(!is_allowed(ip("2002:a00:1::1"), NetworkScope::Public));
+    }
+
+    #[test]
+    fn plain_http_reaches_only_private_addresses_the_scope_allows() {
+        assert!(is_allowed_plaintext(ip("10.0.0.5"), NetworkScope::Private));
+        assert!(is_allowed_plaintext(ip("::1"), NetworkScope::Private));
+        assert!(!is_allowed_plaintext(ip("8.8.8.8"), NetworkScope::Private));
+        assert!(!is_allowed_plaintext(ip("10.0.0.5"), NetworkScope::Public));
+        assert!(!is_allowed_plaintext(
+            ip("169.254.169.254"),
+            NetworkScope::Private
+        ));
     }
 
     #[test]

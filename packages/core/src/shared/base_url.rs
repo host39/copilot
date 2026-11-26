@@ -16,7 +16,9 @@ use crate::shared::net::{AddressClass, NetworkScope, classify};
 /// name that only resolves locally (`localhost`, a single label such as `ollama`, or a name under
 /// `.localhost`, `.local`, `.internal`, `.lan`, or `.home.arpa`). The outbound client checks the
 /// resolved addresses again at connect time, so a public-looking name that resolves to a private
-/// address is still blocked for a public-only connection.
+/// address is still blocked for a public-only connection, and a plain `http` URL connects only to
+/// private or loopback addresses ([`crate::shared::net::is_allowed_plaintext`]), so a local-looking
+/// name that resolves publicly fails instead of sending its key in the clear.
 #[derive(Clone, Eq, PartialEq)]
 pub struct BaseUrl {
     url: Url,
@@ -95,6 +97,11 @@ impl BaseUrl {
 
     pub fn url(&self) -> &Url {
         &self.url
+    }
+
+    /// `false` for plain `http`: connect with [`crate::shared::net::is_allowed_plaintext`].
+    pub fn is_https(&self) -> bool {
+        self.url.scheme() == "https"
     }
 
     /// Same scheme, host, and port (default ports included).
@@ -220,11 +227,14 @@ mod tests {
             "http://[::1]:8080/v1",
             "http://[::ffff:192.168.1.9]/v1",
         ] {
+            let url = BaseUrl::parse(input, NetworkScope::Private).unwrap();
             assert!(
-                BaseUrl::parse(input, NetworkScope::Private).is_ok(),
-                "{input}"
+                !url.is_https(),
+                "{input} connects through the plaintext check"
             );
         }
+        let url = BaseUrl::parse("https://gpu.lan:8000/v1", NetworkScope::Private).unwrap();
+        assert!(url.is_https());
     }
 
     #[test]

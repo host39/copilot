@@ -81,7 +81,9 @@ pub enum ToolContent {
 }
 
 /// Everything the adapter needs to reach a tool server. `headers` is the opened
-/// `ToolHeaders` JSON (read it with `ToolHeaders::entries`); `network` picks the outbound client.
+/// `ToolHeaders` JSON (read it with `ToolHeaders::entries`); `network` picks the outbound client,
+/// and a plain `http` `url` (`!is_https()`) takes the plaintext client, whose resolver admits only
+/// `net::is_allowed_plaintext` addresses.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolEndpoint {
     pub server_id: ToolServerId,
