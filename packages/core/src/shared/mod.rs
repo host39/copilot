@@ -3,6 +3,7 @@
 
 pub mod actor;
 pub mod base_url;
+pub mod builtin_tool;
 pub mod constants;
 pub mod errors;
 pub mod ids;

@@ -14,6 +14,10 @@ pub mod shared;
 pub mod testing;
 
 // Domains
+pub use crate::domains::project::{
+    NewProject, Project, ProjectParts, ProjectQuery, ProjectRepository, ProjectService,
+    ProjectUpdate,
+};
 pub use crate::domains::provider::{
     ANTHROPIC_VERSION, Capabilities, Capability, CapabilityOverrides, DetectedModel, Dialect,
     KeyChange, KeyState, Lock, Locks, Model, ModelParts, ModelQuery, ModelRepository, ModelService,
@@ -32,6 +36,7 @@ pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCiph
 // Shared types
 pub use crate::shared::actor::Actor;
 pub use crate::shared::base_url::BaseUrl;
+pub use crate::shared::builtin_tool::BuiltinTool;
 pub use crate::shared::constants::{DEFAULT_PAGE_OFFSET, DEFAULT_PAGE_SIZE};
 pub use crate::shared::errors::{BoxError, Context, DomainError, DomainResult};
 pub use crate::shared::ids::{

@@ -7,6 +7,7 @@
 mod cipher;
 mod clock;
 mod gateway;
+mod project;
 mod provider;
 mod settings;
 mod store;
