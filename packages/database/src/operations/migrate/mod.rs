@@ -40,7 +40,15 @@ pub async fn run(pool: &DbPool) -> Result<usize, MigrationError> {
         .await
         .map_err(MigrationError::Auth)?;
     MIGRATOR.run(pool).await?;
-    Ok(MIGRATOR.iter().count())
+    Ok(count())
+}
+
+/// How many Copilot migrations the binary embeds (each reversible pair counts once).
+pub fn count() -> usize {
+    MIGRATOR
+        .iter()
+        .filter(|migration| migration.migration_type.is_up_migration())
+        .count()
 }
 
 #[cfg(test)]
@@ -65,5 +73,15 @@ mod tests {
             .await
             .expect("rustauth keeps its own history in the auth schema");
         assert!(auth > 0, "rustauth's migrations run first");
+    }
+
+    #[test]
+    fn every_migration_can_be_reverted() {
+        let downs = MIGRATOR
+            .iter()
+            .filter(|migration| migration.migration_type.is_down_migration())
+            .count();
+        assert!(count() > 0);
+        assert_eq!(downs, count(), "every .up.sql has a .down.sql");
     }
 }

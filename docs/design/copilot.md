@@ -650,6 +650,13 @@ Root routes: `GET /health`, `GET /health/ready`, and the SPA. HTTP statuses add 
 
 Column order in each table follows `postgres-column-alignment`. Types: `text` with `CHECK` constraints instead of enum types; ids generated in Rust; `created_at` and `updated_at` set by repositories from `Clock`.
 
+Migrations, one per domain, in dependency order: `user_settings`; `providers` (with `models`); `tool_servers`; `projects` (with `project_tool_servers`); `schedules`; `chats` (with `chat_tool_servers`, `chat_tool_approvals`, `messages`, `turn_contexts`, and the `schedules.source_chat_id` foreign key); `files` (with `file_contents`). Each has a `.down.sql` that reverts it exactly. Beyond the notes in the tables below, they add:
+
+- `CHECK` constraints on every enumerated `text` value and `builtin_tools` array, the slug pattern, 32-byte hashes (`sha256`, `context_hash`, `turn_contexts.hash`), non-negative counts (columns core reads as unsigned), `tools_cached` and `tools_fetched_at` set together, `enabled OR next_run_at IS NULL` on schedules, and `context_hash` on assistant messages only.
+- An index on every referencing column that a delete cascades or sets null through (unless another index starts with it), and a `user_id` index on the tables listed per user (`providers`, `models`, `projects`, `schedules`, `files`).
+
+`packages/database/tests/schema` checks these rules against a migrated database: the alignment order, `user_id` on every owner-scoped table, the composite keys and their delete actions, the checks, the defaults, the readonly role, and every cascade.
+
 Copilot's tables live in the `public` schema. Users, password credentials, and sessions are rustauth's tables in the `auth` schema (`auth.users`, `auth.password_credentials`, `auth.sessions`), created by rustauth's migrations before Copilot's (see [Identity (lib-rustauth)](#identity-lib-rustauth)). Copilot migrations never alter the `auth` schema.
 
 ### Tables
@@ -750,7 +757,7 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `user_id` | `uuid` | not null, references `auth.users (id)` on delete cascade |
 | `project_id` | `uuid` | null (standalone); `(project_id, user_id)` references `projects` on delete cascade |
 | `model_id` | `uuid` | null; `(model_id, user_id)` references `models`, on delete set null (`model_id`) |
-| `source_chat_id` | `uuid` | null; `(source_chat_id, user_id)` references `chats`, on delete set null (`source_chat_id`); added with `ALTER TABLE` after `chats` exists, in the same migration |
+| `source_chat_id` | `uuid` | null; `(source_chat_id, user_id)` references `chats`, on delete set null (`source_chat_id`); the column is created with the table, and the chat migration adds the foreign key with `ALTER TABLE` once `chats` exists |
 | `enabled` | `boolean` | not null, default true |
 | `name`, `cron`, `timezone`, `prompt` | `text` | not null; `timezone` is an IANA name |
 | `instructions` | `text` | not null, default `''`; used only without a project |

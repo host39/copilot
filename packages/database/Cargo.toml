@@ -26,5 +26,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# Ids for the schema tests (`tests/schema`).
+uuid = { workspace = true }
+
 [lints]
 workspace = true
