@@ -41,7 +41,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
 | `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas |
-| `packages/middleware` | CORS, auth guard, error handler, request id, request logger, `JsonBody` extractor |
+| `packages/middleware` | CORS, error handler, request id, request logger, `JsonBody` extractor (authentication comes from lib-rustauth's guard) |
 | `packages/logger` | tracing subscriber setup |
 
 Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency): users, sessions, passwords, roles, user administration, and the `auth` schema. `copilot-core` never depends on it.

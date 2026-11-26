@@ -9,7 +9,6 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub log_level: LogLevel,
-    pub auth_disabled: bool,
     /// Hostnames (or `.suffix` patterns) browsers may call the API from, besides localhost.
     pub cors_allowed_origins: Vec<String>,
     pub db: DbConfig,
@@ -24,7 +23,6 @@ impl AppConfig {
             .unwrap_or_else(|| "127.0.0.1".to_owned());
         let port = parser.parse_or::<u16>("PORT", 3000);
         let log_level = parser.parse_or("LOG_LEVEL", LogLevel::Info);
-        let auth_disabled = parser.parse_or("AUTH_DISABLED", environment.is_local());
         let cors_allowed_origins = parser
             .optional("CORS_ALLOWED_ORIGINS")
             .map(|value| comma_list(&value))
@@ -33,10 +31,6 @@ impl AppConfig {
         if port == 0 {
             parser.reject("PORT");
         }
-        // Production must verify tokens; a forgotten flag must not leave the API open.
-        if auth_disabled && environment == Environment::Production {
-            parser.reject("AUTH_DISABLED");
-        }
         parser.finish("api.config.env.invalid")?;
 
         Ok(Self {
@@ -44,7 +38,6 @@ impl AppConfig {
             host,
             port,
             log_level,
-            auth_disabled,
             cors_allowed_origins,
             db: DbConfig::parse(env)?,
         })
@@ -85,25 +78,15 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 3000);
         assert_eq!(config.log_level, LogLevel::Info);
-        assert!(config.auth_disabled);
         assert!(config.cors_allowed_origins.is_empty());
     }
 
     #[test]
-    fn requires_auth_outside_local_by_default() {
-        let config = AppConfig::parse(&env(&[("ENVIRONMENT", "staging")])).expect("valid");
-        assert!(!config.auth_disabled);
-    }
-
-    #[test]
-    fn refuses_disabled_auth_in_production() {
-        let error = AppConfig::parse(&env(&[
-            ("ENVIRONMENT", "production"),
-            ("AUTH_DISABLED", "true"),
-        ]))
-        .expect_err("refused");
+    fn rejects_port_zero() {
+        let error = AppConfig::parse(&env(&[("ENVIRONMENT", "production"), ("PORT", "0")]))
+            .expect_err("refused");
         assert_eq!(error.key, "api.config.env.invalid");
-        assert_eq!(error.fields, vec!["AUTH_DISABLED"]);
+        assert_eq!(error.fields, vec!["PORT"]);
     }
 
     #[test]

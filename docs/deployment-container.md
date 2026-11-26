@@ -22,7 +22,7 @@ docker run --rm --env-file api.env copilot-api migrate
 docker run -d --env-file api.env -p 3000:3000 copilot-api
 ```
 
-The image sets `HOST=0.0.0.0` and `PORT=3000`. Provide the remaining variables from [env.md](./env.md); in production set `ENVIRONMENT=production`, keep `AUTH_DISABLED=false`, and inject `DB_PASSWORD` from your secret store.
+The image sets `HOST=0.0.0.0` and `PORT=3000`. Provide the remaining variables from [env.md](./env.md); in production set `ENVIRONMENT=production` and inject `DB_PASSWORD` from your secret store.
 
 Health checks:
 

@@ -19,7 +19,6 @@ Invalid or missing variables stop the process with a dotted key and every offend
 | `HOST` | No | `127.0.0.1` | Bind address (`0.0.0.0` in containers) |
 | `PORT` | No | `3000` | HTTP port |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
-| `AUTH_DISABLED` | No | `true` for `local`, else `false` | `true` accepts every request (`NoopTokenVerifier`); `false` uses the configured `TokenVerifier`. Refused in `production` |
 | `CORS_ALLOWED_ORIGINS` | No | none | Comma-separated hostnames (`app.example.com`) or suffixes (`.example.com`) browsers may call from. Localhost is always allowed in `local` |
 | `DB_HOST` | Yes | none | Postgres host |
 | `DB_PORT` | Yes | none | Postgres port |
@@ -47,14 +46,7 @@ Both read the `DB_*` variables above, plus:
 
 ## Authentication
 
-| `AUTH_DISABLED` | Behavior |
-| --- | --- |
-| `true` (default for `local`) | `NoopTokenVerifier`: every route passes; the caller is `dev-user` |
-| `false` | `RejectingTokenVerifier` placeholder: returns `401` until you wire a real provider |
-
-Implement the `TokenVerifier` trait from `copilot-core` and pass it to `create_app` (`AppDependencies::token_verifier`) when enabling auth.
-
-Public routes (no token required): `/`, `/health`, `/health/ready`, `/doc`, `/ui`.
+Authentication comes from lib-rustauth and has no bypass setting. Its guard and its `AUTH_*` variables arrive with the first protected routes (roadmap step P1.7); until then the API serves only the public health and OpenAPI routes (`/`, `/health`, `/health/ready`, `/doc`, `/ui`).
 
 ## Web (`apps/web/.env.local`)
 

@@ -68,16 +68,13 @@ pub async fn ready(State(state): State<AppState>) -> (StatusCode, Json<ReadyResp
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use copilot_core::RejectingTokenVerifier;
     use copilot_database::DbPool;
     use copilot_middleware::REQUEST_ID_HEADER;
     use serde_json::json;
 
-    use crate::helpers::testing::{app, app_on, app_with, config, get, send};
+    use crate::helpers::testing::{app, app_on, get, send};
 
     #[tokio::test]
     async fn root_returns_api_info() {
@@ -135,20 +132,5 @@ mod tests {
         assert_eq!(response.body["error"], "Not found");
         assert_eq!(response.body["code"], "NOT_FOUND");
         assert!(response.body["requestId"].is_string());
-    }
-
-    #[tokio::test]
-    async fn health_stays_public_when_auth_is_enabled() {
-        let verifier = Some(Arc::new(RejectingTokenVerifier) as Arc<_>);
-        let response = get(app_with(config(), verifier), "/health").await;
-        assert_eq!(response.status, StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn other_routes_require_a_token_when_auth_is_enabled() {
-        let verifier = Some(Arc::new(RejectingTokenVerifier) as Arc<_>);
-        let response = get(app_with(config(), verifier), "/missing").await;
-        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(response.body["code"], "UNAUTHORIZED");
     }
 }

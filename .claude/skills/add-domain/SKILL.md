@@ -95,7 +95,7 @@ Core must **not** depend on contracts; map between entity and DTO in the API.
 - Annotate each handler with `#[utoipa::path(...)]` using contract types for `body`, register with `OpenApiRouter::new().routes(routes!(list, create))`, and merge it in `apps/api/src/routes/mod.rs`.
 - Read bodies with `copilot_middleware::JsonBody<T>` (not `axum::Json`) so malformed JSON gets the shared `400` body.
 - Return `Result<Json<DetailsResponse<WidgetDto>>, HttpError>`; `?` converts `DomainError`. Deletes return `StatusCode::NO_CONTENT`.
-- Authenticated callers: read `Extension<UserId>`. Public routes must be added to `PUBLIC_PATHS` in `packages/middleware/src/auth.rs`.
+- Authenticated callers: authentication comes from lib-rustauth. From roadmap step P1.7 its guard wraps every `/api` route, and handlers take the caller as the `Caller(Actor)` extractor from `apps/api` and pass the `Actor` to core services (see "Identity (lib-rustauth)" in `docs/design/copilot.md`). Core never sees rustauth types.
 - Wire the service in the composition root: add a field to `AppState` (`apps/api/src/config/state.rs`) built in `create_app` / `ApiContext::create` from `SqlxWidgetRepository::new(db.clone())`. Handlers never construct repositories.
 
 ### 9. Web

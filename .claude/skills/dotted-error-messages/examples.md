@@ -27,7 +27,7 @@ tracing::warn!(folder, "database.seed.skipped.no-files");
 
 ```rust
 tracing::warn!(status, code, reason, request_id, "middleware.error.client");
-tracing::warn!(path, reason = %error, request_id, "middleware.auth.rejected");
+tracing::warn!(method, path, status, duration_ms, request_id, "middleware.http.client-error");
 tracing::info!(method, path, status, duration_ms, request_id, "middleware.http.ok");
 ```
 

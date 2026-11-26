@@ -1,12 +1,11 @@
 //! Helpers for colocated route tests.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use copilot_core::{Environment, LogLevel, TokenVerifier};
+use copilot_core::{Environment, LogLevel};
 use copilot_database::{DbConfig, DbPool, DbSsl};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -22,7 +21,6 @@ pub fn config() -> AppConfig {
         host: "127.0.0.1".to_owned(),
         port: 3000,
         log_level: LogLevel::Error,
-        auth_disabled: true,
         cors_allowed_origins: Vec::new(),
         db: DbConfig {
             host: "127.0.0.1".to_owned(),
@@ -37,17 +35,13 @@ pub fn config() -> AppConfig {
     }
 }
 
-pub fn app_with(config: AppConfig, token_verifier: Option<Arc<dyn TokenVerifier>>) -> Router {
+pub fn app_with(config: AppConfig) -> Router {
     let db = copilot_database::create_pool(&config.db);
-    create_app(AppDependencies {
-        config,
-        db,
-        token_verifier,
-    })
+    create_app(AppDependencies { config, db })
 }
 
 pub fn app() -> Router {
-    app_with(config(), None)
+    app_with(config())
 }
 
 /// The app on an existing pool, for `#[sqlx::test]` tests that get a throwaway database.
@@ -55,7 +49,6 @@ pub fn app_on(db: DbPool) -> Router {
     create_app(AppDependencies {
         config: config(),
         db,
-        token_verifier: None,
     })
 }
 

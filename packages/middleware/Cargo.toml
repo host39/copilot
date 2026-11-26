@@ -1,6 +1,6 @@
 [package]
 name = "copilot-middleware"
-description = "HTTP cross-cutting concerns: CORS, auth, error handler, request id, request logger."
+description = "HTTP cross-cutting concerns: CORS, error handler, request id, request logger."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

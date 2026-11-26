@@ -108,7 +108,7 @@ HTTP `404`:
 
 ## 8. Error: Unauthorized
 
-HTTP `401` (auth enabled, token rejected):
+HTTP `401` (missing or rejected session token; lib-rustauth's guard answers with the same envelope):
 
 ```json
 {

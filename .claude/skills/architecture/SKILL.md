@@ -23,7 +23,7 @@ Dependencies point inward: adapters depend on the domain, never the reverse. See
 | `packages/core` (`copilot-core`) | Entities, services, repository traits (ports), `DomainError`, shared types | `axum`, `sqlx`, `utoipa`, `tower*`, `hyper`, database, contracts, middleware, logger, apps |
 | `packages/database` (`copilot-database`) | Postgres pool, env parsing, migrations, seed, sqlx repositories | apps, middleware, `axum`, `utoipa` |
 | `packages/contracts` (`copilot-contracts` + `@copilot/contracts`) | Request/response DTOs, OpenAPI schemas, TS bindings, Zod schemas | database, apps, `axum`, `sqlx` |
-| `packages/middleware` (`copilot-middleware`) | CORS, auth guard, error handler, request id, request logger, `JsonBody` | database, `sqlx` |
+| `packages/middleware` (`copilot-middleware`) | CORS, error handler, request id, request logger, `JsonBody` | database, `sqlx`, rustauth crates |
 | `packages/logger` (`copilot-logger`) | tracing subscriber setup | database, `sqlx` |
 | `apps/api` (`copilot-api`) | Composition root, OpenAPI routes, entrypoints | (may use every crate above) |
 | `apps/web` (`@copilot/web`) | API clients, pages, components | anything but `@copilot/contracts`; reaches the API over HTTP only |

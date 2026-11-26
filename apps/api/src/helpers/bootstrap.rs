@@ -28,7 +28,6 @@ impl ApiContext {
         let app = create_app(AppDependencies {
             config: config.clone(),
             db: db.clone(),
-            token_verifier: None,
         });
 
         Ok(Self { config, app, db })

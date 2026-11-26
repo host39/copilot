@@ -110,7 +110,7 @@ Pass `--skip-git-init` to keep your own git setup.
 | `apps/web` | `@copilot/web` | Rsbuild + React Router SPA (minimal placeholder) |
 | `packages/core` | `copilot-core` | Domain entities, services, ports, shared errors and types |
 | `packages/database` | `copilot-database` | Postgres pool, env, migrations, seed, sqlx repositories |
-| `packages/middleware` | `copilot-middleware` | CORS, auth, error handler, request id, request logger |
+| `packages/middleware` | `copilot-middleware` | CORS, error handler, request id, request logger |
 | `packages/logger` | `copilot-logger` | tracing subscriber (readable locally, JSON elsewhere) |
 | `packages/contracts` | `copilot-contracts` + `@copilot/contracts` | Shared DTOs: OpenAPI schemas, TypeScript bindings, Zod schemas |
 
