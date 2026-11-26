@@ -124,8 +124,8 @@ importers:
   packages/contracts:
     dependencies:
       '@rustauth/contracts':
-        specifier: github:host39/lib-rustauth#6412ed3f2424d3e586b7d7aab413af85ea70ac63&path:packages/contracts
-        version: https://codeload.github.com/host39/lib-rustauth/tar.gz/6412ed3f2424d3e586b7d7aab413af85ea70ac63#path:packages/contracts(zod@4.6.7)
+        specifier: github:host39/lib-rustauth#02181ccc9ef4362f879f0947d574d6e553f997c2&path:packages/contracts
+        version: https://codeload.github.com/host39/lib-rustauth/tar.gz/02181ccc9ef4362f879f0947d574d6e553f997c2#path:packages/contracts(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -841,8 +841,8 @@ packages:
       jsdom:
         optional: true
 
-  '@rustauth/contracts@https://codeload.github.com/host39/lib-rustauth/tar.gz/6412ed3f2424d3e586b7d7aab413af85ea70ac63#path:packages/contracts':
-    resolution: {path: packages/contracts, tarball: https://codeload.github.com/host39/lib-rustauth/tar.gz/6412ed3f2424d3e586b7d7aab413af85ea70ac63}
+  '@rustauth/contracts@https://codeload.github.com/host39/lib-rustauth/tar.gz/02181ccc9ef4362f879f0947d574d6e553f997c2#path:packages/contracts':
+    resolution: {path: packages/contracts, tarball: https://codeload.github.com/host39/lib-rustauth/tar.gz/02181ccc9ef4362f879f0947d574d6e553f997c2}
     version: 0.1.0
     peerDependencies:
       zod: ^4.0.0
@@ -4154,7 +4154,7 @@ snapshots:
       - '@module-federation/runtime-tools'
       - core-js
 
-  '@rustauth/contracts@https://codeload.github.com/host39/lib-rustauth/tar.gz/6412ed3f2424d3e586b7d7aab413af85ea70ac63#path:packages/contracts(zod@4.6.7)':
+  '@rustauth/contracts@https://codeload.github.com/host39/lib-rustauth/tar.gz/02181ccc9ef4362f879f0947d574d6e553f997c2#path:packages/contracts(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
