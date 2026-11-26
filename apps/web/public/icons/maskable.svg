@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Copilot</title>
+  <rect width="512" height="512" fill="#2457d6"/>
+  <g transform="translate(256 256) scale(0.85) translate(-256 -256)">
+    <path d="M136 152c0-22 18-40 40-40h160c22 0 40 18 40 40v136c0 22-18 40-40 40h-96l-72 64v-64h-8c-13 0-24-11-24-24z" fill="#fff"/>
+    <path d="M256 160l16 44 44 16-44 16-16 44-16-44-44-16 44-16z" fill="#2457d6"/>
+  </g>
+</svg>
