@@ -7,7 +7,7 @@ paths:
 
 # Bruno Tests
 
-Collection: `apps/api/tests/bruno`. The `development` environment points `{{baseUrl}}` at the local API on port **3000** (`apps/api/.env.local`).
+Collection: `apps/api/tests/bruno`. The `development` environment points `{{baseUrl}}` at the local API on port **3000**; `scripts/test-bruno.sh` overrides it with the URL it tests (the `PORT` in `apps/api/.env.local`, which differs per worktree, or `BASE_URL`).
 
 ## Prefer `assert` Over `tests`
 
@@ -54,7 +54,7 @@ Put helpers under `apps/api/tests/bruno/lib/` and require them from the collecti
 make test-bruno
 ```
 
-`scripts/test-bruno.sh` reuses an API already listening on `{{baseUrl}}`, or builds and starts one with `apps/api/.env.local` and stops it afterwards. Readiness checks need Postgres: if the run cannot reach the database, tell the user to run `make setup` (or `pnpm db:start` once set up) instead of treating it as a test failure.
+`scripts/test-bruno.sh` builds and starts this checkout's API with `apps/api/.env.local` and stops it afterwards. It refuses to run when a server already answers on that port (it may be another worktree's or an older build); set `BASE_URL=http://localhost:<port>` to test a server that is already running. Readiness checks need Postgres: if the run cannot reach the database, tell the user to run `make setup` (or `pnpm db:start` once set up) instead of treating it as a test failure.
 
 ## Related
 

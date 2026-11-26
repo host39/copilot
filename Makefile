@@ -21,7 +21,7 @@ help:
 	@echo "  contracts      Regenerate TypeScript bindings from Rust contracts"
 	@echo "  test           Rust and TypeScript unit tests"
 	@echo "  test-db        Tests that need Postgres (ignored by default; one throwaway database each)"
-	@echo "  test-bruno     Bruno API tests (starts the API if needed)"
+	@echo "  test-bruno     Bruno API tests (starts this checkout's API; BASE_URL=<url> tests a running one)"
 	@echo "  lint           rustfmt, clippy, Rust import paths, Biome, markdownlint"
 	@echo "  format         Auto-fix formatting and lint"
 	@echo "  type-check     cargo check + tsc across the workspace"

@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
-# Runs the Bruno collection against the API. Starts the API with `apps/api/.env.local` when it is
-# not already listening, and stops it afterwards.
+# Runs the Bruno collection against the API.
+#
+# Without BASE_URL, it builds and starts the API from this checkout with `apps/api/.env.local`
+# (base URL http://localhost:$PORT, so a worktree with its own PORT tests its own server), runs
+# the collection, and stops the API afterwards. If something already answers on that port it
+# refuses to run, because that server may be another worktree's or an older build.
+#
+# With BASE_URL set explicitly, it tests the server already running there and starts nothing.
+#
+# Usage: bash scripts/test-bruno.sh                                  (or `make test-bruno`)
+#        BASE_URL=http://localhost:3001 bash scripts/test-bruno.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-BASE_URL="${BASE_URL:-http://localhost:3000}"
+ENV_FILE="apps/api/.env.local"
 RUN_DIR="apps/api/tests/bruno/.run"
 mkdir -p "$RUN_DIR"
+
+up() {
+  curl -sf "$1/health" >/dev/null
+}
 
 api_pid=""
 cleanup() {
@@ -19,17 +32,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! curl -sf "$BASE_URL/health" >/dev/null; then
+if [[ -n "${BASE_URL:-}" ]]; then
+  if ! up "$BASE_URL"; then
+    echo "scripts.test-bruno.not-reachable $BASE_URL (start the API there, or unset BASE_URL to start one)" >&2
+    exit 1
+  fi
+else
+  # The port the API will listen on: PORT from the shell or the env file, else the API default.
+  port="$(bash scripts/with-env.sh "$ENV_FILE" bash -c 'printf "%s" "${PORT:-3000}"')"
+  BASE_URL="http://localhost:$port"
+
+  if up "$BASE_URL"; then
+    echo "scripts.test-bruno.server-running $BASE_URL (stop it, or set BASE_URL=$BASE_URL to test it)" >&2
+    exit 1
+  fi
+
   cargo build -q -p copilot-api --bin server
-  bash scripts/with-env.sh apps/api/.env.local target/debug/server >"$RUN_DIR/api.log" 2>&1 &
+  bash scripts/with-env.sh "$ENV_FILE" "${CARGO_TARGET_DIR:-target}/debug/server" >"$RUN_DIR/api.log" 2>&1 &
   api_pid=$!
 
   for _ in $(seq 1 50); do
-    curl -sf "$BASE_URL/health" >/dev/null && break
+    up "$BASE_URL" && break
+    if ! kill -0 "$api_pid" 2>/dev/null; then
+      break
+    fi
     sleep 0.2
   done
 
-  if ! curl -sf "$BASE_URL/health" >/dev/null; then
+  if ! up "$BASE_URL"; then
     echo "scripts.test-bruno.api-not-ready $BASE_URL" >&2
     tail -n 20 "$RUN_DIR/api.log" >&2 || true
     exit 1
@@ -37,4 +67,4 @@ if ! curl -sf "$BASE_URL/health" >/dev/null; then
 fi
 
 cd apps/api/tests/bruno
-"$ROOT/node_modules/.bin/bru" run --env development
+"$ROOT/node_modules/.bin/bru" run --env development --env-var "baseUrl=$BASE_URL"

@@ -67,7 +67,7 @@ make dev-web        # web only on :4000
 | `pnpm db:stop` / `pnpm db:reset` | Stop or reset the Postgres container |
 | `make test` | Rust and TypeScript unit tests |
 | `make test-db` | Tests that need Postgres (one throwaway database per test) |
-| `make test-bruno` | Bruno API tests |
+| `make test-bruno` | Bruno API tests against this checkout's API (`BASE_URL=<url>` tests a server that is already running) |
 | `make lint` | rustfmt, Clippy, Rust import paths, Biome, markdownlint |
 | `make format` | Auto-fix lint and format |
 | `make type-check` | `cargo check` + TypeScript across the workspace |
