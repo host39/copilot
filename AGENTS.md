@@ -43,13 +43,18 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas |
 | `packages/middleware` | CORS, error handler, request id, request logger, `JsonBody` extractor (authentication comes from lib-rustauth's guard) |
 | `packages/logger` | tracing subscriber setup |
+| `packages/providers` | `copilot-providers`: OpenAI-compatible and Anthropic wire protocols over reqwest (implements `LlmGateway`) |
+| `packages/mcp` | `copilot-mcp`: MCP client over Streamable HTTP with rmcp (implements `ToolHost`) |
+| `packages/security` | `copilot-security`: AES-256-GCM sealing (`SecretCipher`) and the hardened outbound reqwest client builder |
+
+The three adapter crates use only core ports and the outbound client the composition root injects. The Tauri shell (`apps/native/src-tauri`, Phase 5) is excluded from the Cargo workspace.
 
 Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency): users, sessions, passwords, roles, user administration, and the `auth` schema. `copilot-core` never depends on it.
 
 ## Non-Negotiables
 
 - Domain logic lives in `copilot-core`; sqlx adapters in `copilot-database`. No domain logic in repositories or handlers.
-- `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, contracts, database, middleware, logger, or apps (`make boundaries`).
+- `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, `tokio`, `reqwest`, `rmcp`, contracts, database, middleware, logger, the adapter crates (providers, mcp, security), rustauth crates, or apps (`make boundaries`). Only `apps/api` and `copilot-database` (`rustauth-postgres`) may depend on lib-rustauth.
 - Services fail with `DomainError` variants carrying human-readable messages; HTTP mapping lives in `copilot-middleware` (`HttpError`). Infrastructure failures use `DomainError::internal("<dotted.key>", error)`.
 - Wire services in the composition root (`ApiContext::create` / `create_app`), store them in `AppState`, and never construct repositories in handlers.
 - Contracts are for the API and the web app; core does not depend on contracts. After changing a contract struct, run `make contracts` and update the Zod schema in `packages/contracts/ts/index.ts` (it must `satisfies` the generated type).

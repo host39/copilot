@@ -27,6 +27,9 @@ flowchart TB
     DB["packages/database - sqlx repositories"]
     MW["packages/middleware"]
     Log["packages/logger"]
+    Prov["packages/providers - LLM adapters"]
+    Mcp["packages/mcp - MCP client"]
+    Sec["packages/security - sealing, outbound client"]
   end
 
   Web -->|HTTP + @copilot/contracts| Contracts
@@ -35,6 +38,12 @@ flowchart TB
   API --> DB
   API --> MW
   API --> Log
+  API --> Prov
+  API --> Mcp
+  API --> Sec
+  Prov --> Core
+  Mcp --> Core
+  Sec --> Core
   MW --> Core
   MW --> Contracts
   DB --> Core
@@ -46,6 +55,7 @@ flowchart TB
 - **`packages/database`**: infrastructure. Implements the repository traits with sqlx, owns migrations, seed, and the readonly role.
 - **`packages/contracts`**: transport DTOs shared by the API (serialization, OpenAPI) and the web app (generated TypeScript types plus Zod schemas). See [ADR-004](./004-contracts-and-type-sharing.md).
 - **`packages/middleware`, `packages/logger`**: cross-cutting adapters that depend on core's ports and types.
+- **`packages/providers`, `packages/mcp`, `packages/security`**: outbound adapters that implement core ports (`LlmGateway`, `ToolHost`, `SecretCipher`). They share the outbound HTTP client that the composition root builds with `copilot-security`, and never depend on each other, the database, contracts, or HTTP server crates.
 - **`apps/api`**: HTTP adapter. The composition root wires dependencies; routes map requests to services; middleware translates domain errors to HTTP responses.
 - **`apps/web`**: UI adapter. Talks to the API over HTTP and reuses the contract schemas.
 

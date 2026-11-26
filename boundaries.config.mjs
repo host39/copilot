@@ -3,7 +3,43 @@
 // rules stop the wrong entries from being added there.
 //
 // `from` is a crate name; `to` lists crates it must not depend on directly (normal or build
-// dependencies; dev-dependencies are only compiled for tests and are not checked).
+// dependencies; dev-dependencies are only compiled for tests and are not checked). A `to` entry
+// may name a crate that is not in the workspace yet (the rustauth crates arrive with the pin).
+//
+// Identity comes from lib-rustauth. Only `apps/api` (the `rustauth` facade) and
+// `copilot-database` (`rustauth-postgres`, for its migrations) may depend on it.
+
+const RUSTAUTH = [
+  "rustauth",
+  "rustauth-axum",
+  "rustauth-contracts",
+  "rustauth-core",
+  "rustauth-crypto",
+  "rustauth-postgres",
+];
+
+const ADAPTERS = ["copilot-mcp", "copilot-providers", "copilot-security"];
+
+/** Outbound adapters implement core ports only: no HTTP server, database, or identity crates. */
+function adapterRule(crate) {
+  return {
+    name: `${crate.replace("copilot-", "")}-adapter-only`,
+    severity: "error",
+    comment: `${crate} implements core ports only: no apps, database, contracts, middleware, other adapters, rustauth, axum, sqlx, or utoipa`,
+    from: crate,
+    to: [
+      "copilot-api",
+      "copilot-contracts",
+      "copilot-database",
+      "copilot-middleware",
+      ...ADAPTERS.filter((adapter) => adapter !== crate),
+      ...RUSTAUTH,
+      "axum",
+      "sqlx",
+      "utoipa",
+    ],
+  };
+}
 
 /** @type {{ forbidden: { name: string, severity: "error" | "warn", comment: string, from: string, to: string[] }[] }} */
 export default {
@@ -12,7 +48,7 @@ export default {
       name: "core-no-infrastructure",
       severity: "error",
       comment:
-        "packages/core must not depend on database, apps, contracts, or HTTP/database/logging implementations",
+        "packages/core must not depend on adapters, apps, contracts, identity, or HTTP/database/crypto/logging implementations",
       from: "copilot-core",
       to: [
         "copilot-api",
@@ -20,28 +56,46 @@ export default {
         "copilot-database",
         "copilot-logger",
         "copilot-middleware",
+        ...ADAPTERS,
+        ...RUSTAUTH,
+        "aes-gcm",
+        "argon2",
         "axum",
         "hyper",
+        "reqwest",
+        "rmcp",
         "sqlx",
+        "sse-stream",
+        "tokio",
         "tower",
         "tower-http",
         "tracing-subscriber",
         "utoipa",
       ],
     },
+    ...ADAPTERS.map(adapterRule),
     {
       name: "database-no-apps",
       severity: "error",
-      comment: "packages/database must not depend on apps or HTTP crates",
+      comment:
+        "packages/database must not depend on apps, adapters, HTTP crates, or rustauth (except rustauth-postgres for the auth migrations)",
       from: "copilot-database",
-      to: ["copilot-api", "copilot-middleware", "axum", "tower-http", "utoipa"],
+      to: [
+        "copilot-api",
+        "copilot-middleware",
+        ...ADAPTERS,
+        ...RUSTAUTH.filter((crate) => crate !== "rustauth-postgres"),
+        "axum",
+        "tower-http",
+        "utoipa",
+      ],
     },
     {
       name: "middleware-no-database",
       severity: "error",
-      comment: "packages/middleware must not depend on packages/database",
+      comment: "packages/middleware must not depend on packages/database, adapters, or rustauth",
       from: "copilot-middleware",
-      to: ["copilot-database", "sqlx"],
+      to: ["copilot-database", ...ADAPTERS, ...RUSTAUTH, "sqlx"],
     },
     {
       name: "logger-no-database",
@@ -53,9 +107,18 @@ export default {
     {
       name: "contracts-no-infrastructure",
       severity: "error",
-      comment: "packages/contracts must stay transport-agnostic (no database, apps, axum, or sqlx)",
+      comment:
+        "packages/contracts must stay transport-agnostic (no core, database, adapters, apps, rustauth, axum, or sqlx)",
       from: "copilot-contracts",
-      to: ["copilot-api", "copilot-database", "axum", "sqlx"],
+      to: [
+        "copilot-api",
+        "copilot-core",
+        "copilot-database",
+        ...ADAPTERS,
+        ...RUSTAUTH,
+        "axum",
+        "sqlx",
+      ],
     },
   ],
 };

@@ -20,13 +20,18 @@ Dependencies point inward: adapters depend on the domain, never the reverse. See
 
 | Crate / package | Contains | Must NOT depend on |
 | --- | --- | --- |
-| `packages/core` (`copilot-core`) | Entities, services, repository traits (ports), `DomainError`, shared types | `axum`, `sqlx`, `utoipa`, `tower*`, `hyper`, database, contracts, middleware, logger, apps |
-| `packages/database` (`copilot-database`) | Postgres pool, env parsing, migrations, seed, sqlx repositories | apps, middleware, `axum`, `utoipa` |
-| `packages/contracts` (`copilot-contracts` + `@copilot/contracts`) | Request/response DTOs, OpenAPI schemas, TS bindings, Zod schemas | database, apps, `axum`, `sqlx` |
-| `packages/middleware` (`copilot-middleware`) | CORS, error handler, request id, request logger, `JsonBody` | database, `sqlx`, rustauth crates |
+| `packages/core` (`copilot-core`) | Entities, services, repository traits (ports), `DomainError`, shared types | `axum`, `sqlx`, `utoipa`, `tower*`, `hyper`, `tokio`, `reqwest`, `rmcp`, `sse-stream`, `aes-gcm`, `argon2`, database, contracts, middleware, logger, adapters, rustauth crates, apps |
+| `packages/database` (`copilot-database`) | Postgres pool, env parsing, migrations, seed, sqlx repositories | apps, middleware, adapters, rustauth crates except `rustauth-postgres`, `axum`, `utoipa` |
+| `packages/providers` (`copilot-providers`) | OpenAI-compatible and Anthropic wire protocols (`LlmGateway`) | apps, database, contracts, middleware, other adapters, rustauth crates, `axum`, `sqlx`, `utoipa` |
+| `packages/mcp` (`copilot-mcp`) | MCP client over Streamable HTTP with rmcp (`ToolHost`) | same as providers |
+| `packages/security` (`copilot-security`) | Secret sealing (`SecretCipher`), hardened outbound reqwest client builder | same as providers |
+| `packages/contracts` (`copilot-contracts` + `@copilot/contracts`) | Request/response DTOs, OpenAPI schemas, TS bindings, Zod schemas | core, database, adapters, rustauth crates, apps, `axum`, `sqlx` |
+| `packages/middleware` (`copilot-middleware`) | CORS, error handler, request id, request logger, `JsonBody` | database, adapters, rustauth crates, `sqlx` |
 | `packages/logger` (`copilot-logger`) | tracing subscriber setup | database, `sqlx` |
 | `apps/api` (`copilot-api`) | Composition root, OpenAPI routes, entrypoints | (may use every crate above) |
 | `apps/web` (`@copilot/web`) | API clients, pages, components | anything but `@copilot/contracts`; reaches the API over HTTP only |
+
+Adapters ("providers", "mcp", "security") implement core ports and use the outbound `reqwest::Client` the composition root builds once with `copilot-security`; they never build their own. Identity comes from lib-rustauth: only `apps/api` (the `rustauth` facade) and `copilot-database` (`rustauth-postgres`, for the `auth` migrations) depend on it.
 
 `boundaries.config.mjs` encodes these rules; `make boundaries` checks them against `cargo metadata`. Read each rule's `comment` when unsure.
 

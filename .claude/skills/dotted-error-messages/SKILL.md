@@ -73,6 +73,9 @@ Use `code`, `field`, and `with_context` for machines, not dotted prose in the me
 | `packages/database/` | `database` |
 | `packages/middleware/` | `middleware` |
 | `packages/logger/` | `logger` |
+| `packages/providers/` | `providers` |
+| `packages/mcp/` | `mcp` |
+| `packages/security/` | `security` |
 | `scripts/` | `scripts` |
 
 ## Additional Resources

@@ -112,6 +112,9 @@ Pass `--skip-git-init` to keep your own git setup.
 | `packages/database` | `copilot-database` | Postgres pool, env, migrations, seed, sqlx repositories |
 | `packages/middleware` | `copilot-middleware` | CORS, error handler, request id, request logger |
 | `packages/logger` | `copilot-logger` | tracing subscriber (readable locally, JSON elsewhere) |
+| `packages/providers` | `copilot-providers` | LLM provider adapters (OpenAI-compatible, Anthropic) |
+| `packages/mcp` | `copilot-mcp` | MCP client over Streamable HTTP (rmcp) |
+| `packages/security` | `copilot-security` | Secret sealing and the hardened outbound HTTP client |
 | `packages/contracts` | `copilot-contracts` + `@copilot/contracts` | Shared DTOs: OpenAPI schemas, TypeScript bindings, Zod schemas |
 
 ---

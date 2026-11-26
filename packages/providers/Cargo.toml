@@ -1,0 +1,28 @@
+[package]
+name = "copilot-providers"
+description = "LLM provider adapters: OpenAI-compatible and Anthropic wire protocols over reqwest, with SSE parsing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+copilot-core = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sse-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
