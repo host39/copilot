@@ -22,7 +22,7 @@ pub use crate::domains::chat::{
     SnapshotFile, SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext,
     TurnContextRepository, TurnInput, Usage, skipped_results,
 };
-pub use crate::domains::conversation::TurnEvent;
+pub use crate::domains::conversation::{ChatEngine, ContextInputs, Draft, TurnEvent, TurnOutcome};
 pub use crate::domains::file::{
     Capacity, CapacityLevel, FileKind, FileLimits, FileOwner, FileRepository, FileService,
     FileUpdate, Measured, MediaType, OCTET_STREAM, StoredFile, StoredFileParts, served_type,
