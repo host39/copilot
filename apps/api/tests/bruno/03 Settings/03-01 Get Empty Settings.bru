@@ -1,0 +1,26 @@
+meta {
+  name: 03-01 Get Empty Settings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.instructions: isEmpty
+}
+
+docs {
+  **Endpoint:** `GET /api/settings`
+
+  **This test verifies:** a user who never saved settings reads empty instructions.
+}

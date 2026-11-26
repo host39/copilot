@@ -1,0 +1,26 @@
+meta {
+  name: 03-04 Other User Settings
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.instructions: isEmpty
+}
+
+docs {
+  **Endpoint:** `GET /api/settings` as user B
+
+  **This test verifies:** user B reads their own (empty) instructions, never user A's.
+}

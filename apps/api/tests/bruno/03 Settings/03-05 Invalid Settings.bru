@@ -1,0 +1,32 @@
+meta {
+  name: 03-05 Invalid Settings
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/api/settings
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "instructions": 42
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+}
+
+docs {
+  **Endpoint:** `PATCH /api/settings`
+
+  **This test verifies:** a body whose `instructions` is not a string is a validation error.
+}

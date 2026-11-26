@@ -1,0 +1,45 @@
+meta {
+  name: 03-00 Register Other User
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/auth/register
+  body: json
+  auth: none
+}
+
+script:pre-request {
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  bru.setVar("otherUsername", `bruno_b_${suffix}`);
+  bru.setVar("otherPassword", `bruno-password-b-${suffix}`);
+}
+
+body:json {
+  {
+    "username": "{{otherUsername}}",
+    "password": "{{otherPassword}}",
+    "displayName": "Bruno B"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("otherToken", res.body.data.token);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.token: isString
+  res.body.data.user.username: eq {{otherUsername}}
+  res.body.data.user.role: eq user
+}
+
+docs {
+  **Endpoint:** `POST /api/auth/register` (public, open registration)
+
+  **This test verifies:** a second run-unique account (user B) registers; its token is stored as
+  `otherToken` for the cross-user checks.
+}

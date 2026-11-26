@@ -169,3 +169,32 @@ pub async fn register(app: &Router, username: &str) -> String {
         .expect("a session token")
         .to_owned()
 }
+
+/// A second account (role `user`), created by the administrator whose token is `admin` through
+/// rustauth's admin route, and its session token.
+pub async fn other_user(app: &Router, admin: &str, username: &str) -> String {
+    let password = "another horse battery staple";
+    let body = json!({
+        "username": username,
+        "displayName": username,
+        "temporaryPassword": password,
+        "role": "user",
+    });
+    let created = send(
+        app.clone(),
+        request(Method::POST, "/api/admin/users", Some(admin), Some(body)),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let body = json!({ "username": username, "password": password });
+    let response = send(
+        app.clone(),
+        request(Method::POST, "/api/auth/login", None, Some(body)),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    response.body["data"]["token"]
+        .as_str()
+        .expect("a session token")
+        .to_owned()
+}

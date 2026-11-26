@@ -1,0 +1,12 @@
+meta {
+  name: 03 Settings
+  seq: 4
+}
+
+docs {
+  `GET` and `PATCH /api/settings`: the caller's personal instructions.
+
+  Registers a second run-unique account (open registration) and stores its session token as
+  `otherToken`; this folder and the later ones use it for the cross-user checks (user B never
+  sees or changes user A's data, and gets `404` for A's ids).
+}

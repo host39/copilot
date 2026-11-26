@@ -15,13 +15,11 @@ auth:bearer {
 }
 
 assert {
-  res.status: neq 401
-  res.status: neq 500
+  res.status: eq 200
 }
 
 docs {
   **Endpoint:** `GET /api/settings`, a Copilot route
 
-  **This test verifies:** the guard lets a signed-in caller through to Copilot's handler (which
-  answers `501` until roadmap step P2.A writes it).
+  **This test verifies:** the guard lets a signed-in caller through to Copilot's handler.
 }
