@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other Phase 2 
 
 ## Status
 
-Part 1 done (P2.A.1 to P2.A.4); part 2 (chats, read state and search, tool servers, schedules) is open. Last green CI: `fe12082` (P2.A.3).
+Part 1 done (P2.A.1 to P2.A.4); part 2 (chats, read state and search, tool servers, schedules) is open. Last green CI: `a3b30cb` (the merge with P2.A.4).
 
 ## Sub-Steps
 
