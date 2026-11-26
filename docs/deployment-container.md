@@ -9,22 +9,23 @@ One image holds everything: the `server` binary (the API, which also serves the 
 | Service | Role |
 | --- | --- |
 | `postgres` | Postgres 18 with one named volume, reachable only on the compose network |
-| `migrate` | The image with `command: migrate`: runs once on every `up` and exits; applies lib-rustauth's `auth` migrations, then Copilot's |
-| `copilot` | The server, started only after `migrate` succeeded; listens on `127.0.0.1:3000` |
+| `migrate` | The image with `command: migrate`: runs once on every `up` and exits; connects as the database owner (`copilot`), applies lib-rustauth's `auth` migrations, then Copilot's, and grants the server's role |
+| `copilot` | The server, started only after `migrate` succeeded; connects as `copilot_server` and listens on `127.0.0.1:3000` |
 
-The operator supplies two secrets and keeps them:
+The operator supplies three secrets and keeps them:
 
 ```bash
 cat >deploy/.env <<EOF
 SECRET_KEY=$(openssl rand -base64 32)
 DB_PASSWORD=$(openssl rand -hex 24)
+DB_SERVER_PASSWORD=$(openssl rand -hex 24)
 EOF
 docker compose -f deploy/compose.yml up -d
 ```
 
-Install and upgrade are the same command; migrations never run inside the server ([ADR-002](./adr/002-database-migrations-and-seed.md)). The file sets `ENVIRONMENT=production` and `DB_SSL=false` (Postgres never leaves the compose network) and leaves `DB_READONLY_*` unset. A new `SECRET_KEY` makes every stored provider key and tool server credential unreadable ("Key must be re-entered").
+Install and upgrade are the same command; migrations never run inside the server ([ADR-002](./adr/002-database-migrations-and-seed.md)). `DB_PASSWORD` belongs to the database owner, which only `migrate` uses. After the migrations, `migrate` creates or updates the role `copilot_server` with `DB_SERVER_PASSWORD`: it may read and write the rows of every table in `public` and `auth`, read but not change the migration histories, and nothing else (no superuser, no `CREATE`, no roles, no `COPY ... TO PROGRAM`). The server connects as that role, so it never holds the owner's password. An install from before this role existed gets it on the next `up` once `DB_SERVER_PASSWORD` is set. The file sets `ENVIRONMENT=production` and `DB_SSL=false` (Postgres never leaves the compose network) and leaves `DB_READONLY_*` unset. A new `SECRET_KEY` makes every stored provider key and tool server credential unreadable ("Key must be re-entered").
 
-Optional settings, read from the shell or `deploy/.env`: `AUTH_SETUP_TOKEN`, `AUTH_REGISTRATION_OPEN` (default `false`), `AUTH_TRUSTED_PROXIES`, `ALLOW_PRIVATE_NETWORK` (default `admins`), `LOG_LEVEL`, and `COPILOT_IMAGE` (a prebuilt image instead of building `copilot:local`). [env.md](./env.md) describes every variable.
+Optional settings, read from the shell or `deploy/.env`: `AUTH_SETUP_TOKEN`, `AUTH_REGISTRATION_OPEN` (default `false`), `AUTH_TRUSTED_PROXIES` (default the compose network's gateway, see below), `COPILOT_SUBNET` and `COPILOT_GATEWAY` (default `172.31.239.0/24` and `172.31.239.1`), `ALLOW_PRIVATE_NETWORK` (default `admins`), `LOG_LEVEL`, and `COPILOT_IMAGE` (a prebuilt image instead of building `copilot:local`). [env.md](./env.md) describes every variable.
 
 ## First Start
 
@@ -36,7 +37,7 @@ docker compose -f deploy/compose.yml logs copilot | grep rustauth.setup.token-is
 
 ## Reverse Proxy
 
-For any access beyond the machine itself, terminate TLS at a reverse proxy in front of `127.0.0.1:3000` and list the proxy's address in `AUTH_TRUSTED_PROXIES`, or every client shares the proxy's address in the per-IP sign-in limits. Streaming responses send `Cache-Control: no-cache` and `X-Accel-Buffering: no`; with nginx, also turn off buffering for the API:
+For any access beyond the machine itself, terminate TLS at a reverse proxy in front of `127.0.0.1:3000` that appends the client's address to `X-Forwarded-For`. The server never sees the proxy's own address: Docker's port proxy connects to it from the compose network's gateway, so that gateway is what `AUTH_TRUSTED_PROXIES` must list, and the compose file pins the network (`COPILOT_SUBNET`, `COPILOT_GATEWAY`) and trusts its gateway by default. Trusting it is safe because the port is published on the host's loopback only, so only processes on this host connect through it. If the subnet overlaps one of the host's networks, choose another and set all three variables to match. With a proxy that runs as a container on the compose network instead, list that container's address. Without a trusted address, every client shares one bucket in the per-IP sign-in limits, so one client's failed sign-ins lock everyone out for 15 minutes. CI checks that the limits key on the forwarded address. Streaming responses send `Cache-Control: no-cache` and `X-Accel-Buffering: no`; with nginx, also turn off buffering for the API:
 
 ```nginx
 location / {

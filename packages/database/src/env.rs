@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use copilot_core::Environment;
 
-use crate::types::{DbConfig, DbSsl, ReadonlyConfig};
+use crate::types::{DbConfig, DbSsl, ReadonlyConfig, ServerRoleConfig};
 
 pub const DB_POOL_MAX: u32 = 4;
 pub const DB_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -205,6 +205,15 @@ impl ReadonlyConfig {
     }
 }
 
+impl ServerRoleConfig {
+    /// Parses `DB_SERVER_PASSWORD`. `None` when unset: `migrate` then leaves the role alone.
+    pub fn parse(env: &Env) -> Option<Self> {
+        env.get("DB_SERVER_PASSWORD").map(|password| Self {
+            password: password.to_owned(),
+        })
+    }
+}
+
 /// SSL is off for `local` and on everywhere else, unless `DB_SSL` says otherwise.
 fn ssl_mode(environment: Environment, ssl: Option<bool>, root_cert: Option<PathBuf>) -> DbSsl {
     let enabled = ssl.unwrap_or(!environment.is_local());
@@ -281,6 +290,19 @@ mod tests {
                 .to_string()
                 .starts_with("database.env.invalid DB_HOST, DB_PORT")
         );
+    }
+
+    #[test]
+    fn the_server_role_is_optional() {
+        assert_eq!(ServerRoleConfig::parse(&Env::default()), None);
+        let config = ServerRoleConfig::parse(&Env::from([("DB_SERVER_PASSWORD", "secret")]));
+        assert_eq!(
+            config,
+            Some(ServerRoleConfig {
+                password: "secret".to_owned()
+            })
+        );
+        assert!(!format!("{config:?}").contains("secret"));
     }
 
     #[test]

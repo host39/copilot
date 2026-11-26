@@ -29,6 +29,7 @@ Invalid or missing variables stop the process with a dotted key and every offend
 | `DB_SSL_ROOT_CERT` | No | bundled Mozilla roots | PEM file with the CA that signed the server certificate (for example a cloud provider bundle) |
 | `DB_READONLY_USER` | No | none | Must be `readonly` when set; used by `make migrate` to create the role |
 | `DB_READONLY_PASSWORD` | No | none | Password for the readonly role; `make migrate` skips the role when both readonly variables are unset |
+| `DB_SERVER_PASSWORD` | No | none | Read by `migrate` only: creates or updates the role `copilot_server` with this password and grants it the rows of every table in `public` and `auth` (no DDL, no superuser), for the server to connect as (`DB_USER=copilot_server`). Unset: the role is left alone, and the server uses `DB_USER` as given |
 | `SECRET_KEY` | Yes | none | 32 random bytes in standard base64 (`openssl rand -base64 32`; surrounding whitespace ignored). Seals provider keys and tool server headers; changing it makes every stored secret unreadable ("Key must be re-entered") |
 | `ALLOW_PRIVATE_NETWORK` | No | `admins` | `none`, `admins`, or `all`: whose connections may reach private and loopback addresses (`admins`: connections owned by an administrator) |
 | `MAX_UPLOAD_MB` | No | `25` | Per-file upload limit, 1 to 1000 (file bytes live in one Postgres value, at most 1 GB) |

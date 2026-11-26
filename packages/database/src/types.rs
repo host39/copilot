@@ -28,6 +28,21 @@ pub enum DbSsl {
     },
 }
 
+/// The password `migrate` gives the `copilot_server` role (`DB_SERVER_PASSWORD`).
+#[derive(Clone, Eq, PartialEq)]
+pub struct ServerRoleConfig {
+    pub password: String,
+}
+
+impl std::fmt::Debug for ServerRoleConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerRoleConfig")
+            .field("password", &"***")
+            .finish()
+    }
+}
+
 /// Credentials for the `readonly` role that `migrate` creates and grants.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadonlyConfig {

@@ -1,4 +1,5 @@
-//! Applies migrations, then creates or updates the `readonly` role and its grants.
+//! Applies migrations, then creates or updates the `readonly` role and the server's role
+//! (`copilot_server`) with their grants, each when its password is set.
 //!
 //! `make migrate` runs this with `apps/api/.env.local` loaded.
 
@@ -6,8 +7,8 @@ use std::process::ExitCode;
 
 use copilot_core::BoxError;
 use copilot_database::config::{connect_options, pool_options};
-use copilot_database::operations::{migrate, readonly, start};
-use copilot_database::{DbConfig, Env, ReadonlyConfig};
+use copilot_database::operations::{migrate, readonly, server, start};
+use copilot_database::{DbConfig, Env, ReadonlyConfig, ServerRoleConfig};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -32,6 +33,7 @@ async fn main() -> ExitCode {
 async fn run(env: &Env) -> Result<(), BoxError> {
     let config = DbConfig::parse(env)?;
     let readonly_config = ReadonlyConfig::parse(env)?;
+    let server_config = ServerRoleConfig::parse(env);
     let pool = pool_options(&config)
         .max_connections(1)
         .connect_with(connect_options(&config))
@@ -47,6 +49,13 @@ async fn run(env: &Env) -> Result<(), BoxError> {
                 tracing::info!(role = readonly::READONLY_ROLE, "database.readonly.granted");
             }
             None => tracing::info!("database.readonly.skipped"),
+        }
+        match server_config {
+            Some(server_config) => {
+                server::grant(&pool, &config.database, &server_config.password).await?;
+                tracing::info!(role = server::SERVER_ROLE, "database.server-role.granted");
+            }
+            None => tracing::info!("database.server-role.skipped"),
         }
         Ok::<(), BoxError>(())
     }

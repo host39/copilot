@@ -3,6 +3,7 @@
 pub mod describe;
 pub mod migrate;
 pub mod readonly;
+pub mod server;
 
 use copilot_core::{BoxError, Environment, LogLevel};
 use copilot_logger::LoggerOptions;

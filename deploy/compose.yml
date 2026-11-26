@@ -1,13 +1,17 @@
 # Self-hosted Copilot: Postgres, a one-off migrate step, and the server, from one image.
 #
-#   export SECRET_KEY="$(openssl rand -base64 32)" DB_PASSWORD="$(openssl rand -hex 24)"
+#   export SECRET_KEY="$(openssl rand -base64 32)" DB_PASSWORD="$(openssl rand -hex 24)" \
+#     DB_SERVER_PASSWORD="$(openssl rand -hex 24)"
 #   docker compose -f deploy/compose.yml up -d
 #
-# Keep SECRET_KEY and DB_PASSWORD (for example in deploy/.env, which compose reads): a new
-# SECRET_KEY makes every stored provider key unreadable. Install and upgrade are the same
-# command: `migrate` applies lib-rustauth's `auth` migrations, then Copilot's, and the server
-# starts only after it succeeds. The server listens on 127.0.0.1:3000; put a TLS reverse proxy
-# in front for other hosts (docs/deployment-container.md). See docs/env.md for every variable.
+# Keep the three secrets (for example in deploy/.env, which compose reads): a new SECRET_KEY
+# makes every stored provider key unreadable. Install and upgrade are the same command:
+# `migrate` connects as the database owner (`copilot`), applies lib-rustauth's `auth`
+# migrations, then Copilot's, and grants the server's role (`copilot_server`, password
+# DB_SERVER_PASSWORD) the rows of every table and nothing more; the server starts only after
+# it succeeds and never holds the owner's password. The server listens on 127.0.0.1:3000; put
+# a TLS reverse proxy in front for other hosts (docs/deployment-container.md). See docs/env.md
+# for every variable.
 name: copilot
 
 x-database: &database
@@ -16,8 +20,6 @@ x-database: &database
   DB_HOST: postgres
   DB_PORT: "5432"
   DB_NAME: copilot
-  DB_USER: copilot
-  DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
   # Postgres is reachable only on the compose network.
   DB_SSL: "false"
 
@@ -45,6 +47,9 @@ services:
     command: ["migrate"]
     environment:
       <<: *database
+      DB_USER: copilot
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      DB_SERVER_PASSWORD: ${DB_SERVER_PASSWORD:?set DB_SERVER_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,19 +59,35 @@ services:
     image: ${COPILOT_IMAGE:-copilot:local}
     environment:
       <<: *database
+      DB_USER: copilot_server
+      DB_PASSWORD: ${DB_SERVER_PASSWORD:?set DB_SERVER_PASSWORD}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (openssl rand -base64 32)}
       ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-admins}
       AUTH_REGISTRATION_OPEN: ${AUTH_REGISTRATION_OPEN:-false}
       # Unset: the server logs a setup token once (`rustauth.setup.token-issued`).
       AUTH_SETUP_TOKEN: ${AUTH_SETUP_TOKEN:-}
-      # Your reverse proxy's address, so per-IP sign-in limits see the real client.
-      AUTH_TRUSTED_PROXIES: ${AUTH_TRUSTED_PROXIES:-}
+      # Whose X-Forwarded-For the per-IP sign-in limits trust. Every connection through the
+      # published port reaches the server from the network's gateway (Docker's port proxy), so
+      # the default trusts it: a reverse proxy on this host then passes each client's address.
+      # Safe because the port is published on the host's loopback only. A proxy inside this
+      # network: list its address instead.
+      AUTH_TRUSTED_PROXIES: ${AUTH_TRUSTED_PROXIES:-172.31.239.1}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+
+# A fixed subnet, so the gateway the server sees is known (AUTH_TRUSTED_PROXIES). If it
+# overlaps a network of this host, set COPILOT_SUBNET and COPILOT_GATEWAY, and
+# AUTH_TRUSTED_PROXIES to the same gateway.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${COPILOT_SUBNET:-172.31.239.0/24}
+          gateway: ${COPILOT_GATEWAY:-172.31.239.1}
 
 volumes:
   postgres:

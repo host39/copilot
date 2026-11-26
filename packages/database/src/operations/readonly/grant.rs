@@ -137,7 +137,7 @@ async fn columns(pool: &DbPool, table: &str) -> Result<Vec<String>, GrantError> 
     Ok(names)
 }
 
-fn quote(identifier: &str) -> Result<String, GrantError> {
+pub(crate) fn quote(identifier: &str) -> Result<String, GrantError> {
     let mut chars = identifier.chars();
     let valid_start = chars
         .next()

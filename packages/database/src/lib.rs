@@ -15,4 +15,4 @@ pub mod types;
 pub use crate::client::{close, create_pool, ping};
 pub use crate::env::{Env, EnvError, EnvParser};
 pub use crate::repositories::PgStore;
-pub use crate::types::{DbConfig, DbPool, DbSsl, ReadonlyConfig};
+pub use crate::types::{DbConfig, DbPool, DbSsl, ReadonlyConfig, ServerRoleConfig};
