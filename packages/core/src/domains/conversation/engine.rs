@@ -12,7 +12,7 @@ mod calls;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -29,14 +29,14 @@ use crate::domains::chat::{
     Approval, FinishReason, Message, MessageParts, MessageRepository, MessageStatus, Part,
     PreparedTurn, Role, SKIPPED, ToolCallPart, ToolResultPart, ToolStatus,
 };
-use crate::domains::conversation::approval::{Policy, Verdict, decide};
+use crate::domains::conversation::approval::{Policy, TOOL_OFF, Verdict, decide};
 use crate::domains::conversation::context::{self, ContextInputs};
 use crate::domains::conversation::engine::answer::Answer;
 use crate::domains::conversation::engine::calls::{builtin, convert, failed, human};
 use crate::domains::conversation::events::TurnEvent;
 use crate::domains::file::{FileService, StoredFile};
 use crate::domains::schedule::{RunOutcome, ScheduleService};
-use crate::domains::tool::ToolService;
+use crate::domains::tool::{ToolServer, ToolService};
 use crate::ports::clock::Clock;
 use crate::ports::llm_gateway::{LlmEvent, LlmGateway, LlmRequest, Refusal};
 use crate::ports::tool_host::{TOOL_TIMEOUT, ToolHost, ToolSession};
@@ -142,6 +142,7 @@ impl ChatEngine {
             history: turn.history.clone(),
             files: turn.references.clone(),
             contents: HashMap::new(),
+            servers: turn.servers.clone(),
             session: Session::Closed,
         };
         let result = run.drive().await;
@@ -185,6 +186,9 @@ struct Run<'a> {
     files: HashMap<FileId, StoredFile>,
     /// File bytes read so far.
     contents: HashMap<FileId, Bytes>,
+    /// The current settings of the snapshot's servers, read again before each round's calls
+    /// are decided.
+    servers: Vec<ToolServer>,
     session: Session,
 }
 
@@ -195,7 +199,7 @@ impl Run<'_> {
         }
         loop {
             if self.cancel.is_cancelled() {
-                return Ok(self.stopped_between_rounds());
+                return self.stopped_between_rounds().await;
             }
             let round = self.rounds() + 1;
             if let Next::End(outcome) = self.round(round).await? {
@@ -204,19 +208,25 @@ impl Run<'_> {
         }
     }
 
-    /// Stopped after a round's results were saved: nothing more to write.
-    fn stopped_between_rounds(&self) -> TurnOutcome {
-        let last = self
-            .history
+    /// Stopped before a round started. The outcome is the turn's last answer; a turn with no
+    /// answer yet (stopped right after `prepare`) gets an empty `cancelled` one, so every exit
+    /// leaves the same trace.
+    async fn stopped_between_rounds(&mut self) -> DomainResult<TurnOutcome> {
+        let start = self.current();
+        let last = self.history[start..]
             .iter()
             .rev()
             .find(|message| message.role() == Role::Assistant);
-        TurnOutcome {
-            message_id: last.map(Message::id),
-            status: MessageStatus::Cancelled,
-            finish_reason: last.and_then(Message::finish_reason),
-            error: None,
+        if let Some(last) = last {
+            return Ok(TurnOutcome {
+                message_id: Some(last.id()),
+                status: MessageStatus::Cancelled,
+                finish_reason: last.finish_reason(),
+                error: None,
+            });
         }
+        let started = self.start().await?;
+        self.stopped(&started, Answer::new(started.id())).await
     }
 
     /// Resolves the round a decision left open (the paused message, now `complete`): approved
@@ -245,9 +255,11 @@ impl Run<'_> {
                             .unwrap_or_else(|| DENIED.to_owned()),
                     ),
                     Approval::Pending => Verdict::Deny(SKIPPED.to_owned()),
+                    // The approval answers an ask, never a failure or a tool turned off since.
                     Approval::Approved => match decide(&call, &policy) {
                         Verdict::Fail(text) => Verdict::Fail(text),
-                        _ => Verdict::Run,
+                        Verdict::Deny(reason) if reason == TOOL_OFF => Verdict::Deny(reason),
+                        Verdict::Run | Verdict::Ask | Verdict::Deny(_) => Verdict::Run,
                     },
                     Approval::Auto => match decide(&call, &policy) {
                         Verdict::Ask => Verdict::Deny(NEEDS_APPROVAL.to_owned()),
@@ -260,8 +272,8 @@ impl Run<'_> {
         self.execute(&last, plan).await
     }
 
-    /// Streams one answer and saves it.
-    async fn round(&mut self, round: u32) -> DomainResult<Next> {
+    /// Saves an empty `streaming` assistant message for the next answer.
+    async fn start(&mut self) -> DomainResult<Message> {
         let turn = self.turn;
         let user = turn.actor.user_id;
         let started = Message::assistant(
@@ -281,6 +293,13 @@ impl Run<'_> {
             role: Role::Assistant,
             window_start_id: turn.context.window_start_id,
         });
+        Ok(started)
+    }
+
+    /// Streams one answer and saves it.
+    async fn round(&mut self, round: u32) -> DomainResult<Next> {
+        let turn = self.turn;
+        let started = self.start().await?;
         let mut answer = Answer::new(started.id());
         let request = match self.request().await {
             Ok(request) => request,
@@ -291,13 +310,13 @@ impl Run<'_> {
             self.engine.gateway.stream(&turn.target, request),
         );
         let mut stream = match opened.await {
-            None => return self.stopped(&started, answer).await,
+            None => return self.stopped(&started, answer).await.map(Next::End),
             Some(Err(error)) => return self.failed(&started, answer, &error).await,
             Some(Ok(stream)) => stream,
         };
         loop {
             match or_cancel(self.cancel, stream.next()).await {
-                None => return self.stopped(&started, answer).await,
+                None => return self.stopped(&started, answer).await.map(Next::End),
                 Some(None) => {
                     let error = DomainError::new(ENDED_EARLY, "PROVIDER_STREAM_ENDED");
                     return self.failed(&started, answer, &error).await;
@@ -383,6 +402,7 @@ impl Run<'_> {
             return Ok(Next::End(outcome(&saved)));
         }
 
+        self.reload().await?;
         let policy = self.policy();
         let verdicts: Vec<Verdict> = calls.iter().map(|call| decide(call, &policy)).collect();
         for part in &mut answer.parts {
@@ -565,7 +585,7 @@ impl Run<'_> {
         let turn = self.turn;
         let mut endpoints = Vec::new();
         let mut unreachable = HashMap::new();
-        for server in turn.servers.iter().filter(|server| server.enabled()) {
+        for server in self.servers.iter().filter(|server| server.enabled()) {
             match self.engine.tools.endpoint(&turn.actor, server) {
                 Ok(endpoint) => endpoints.push(endpoint),
                 Err(error) => {
@@ -660,14 +680,14 @@ impl Run<'_> {
 
     /// The run was stopped while streaming: the partial answer saved as `cancelled`, and
     /// `cancelled` results for its finished calls.
-    async fn stopped(&mut self, started: &Message, answer: Answer) -> DomainResult<Next> {
+    async fn stopped(&mut self, started: &Message, answer: Answer) -> DomainResult<TurnOutcome> {
         let saved = self
             .save(started, &answer, MessageStatus::Cancelled, None, None)
             .await?;
         self.finished(&saved, None);
         self.skip(&answer.calls(), ToolStatus::Cancelled, STOPPED)
             .await?;
-        Ok(Next::End(outcome(&saved)))
+        Ok(outcome(&saved))
     }
 
     /// A `tool` message with a `status` result for each finished call (calls whose arguments
@@ -776,7 +796,7 @@ impl Run<'_> {
     /// A tool's display title from its server's cached list, else its name.
     fn title(&self, call: &ToolCallPart) -> String {
         call.server_id
-            .and_then(|id| self.turn.servers.iter().find(|server| server.id() == id))
+            .and_then(|id| self.servers.iter().find(|server| server.id() == id))
             .and_then(|server| server.cache())
             .and_then(|cache| cache.tool(&call.tool_name))
             .and_then(|tool| tool.title.clone())
@@ -784,10 +804,31 @@ impl Run<'_> {
             .unwrap_or_else(|| call.tool_name.clone())
     }
 
+    /// Reads the snapshot's servers again, so a server turned off or removed, or a tool set to
+    /// `off`, since the turn started counts from the next round's calls on.
+    async fn reload(&mut self) -> DomainResult<()> {
+        let ids: HashSet<ToolServerId> = self
+            .turn
+            .context
+            .tools
+            .iter()
+            .filter_map(|tool| tool.server_id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let servers = self.engine.tools.list(&self.turn.actor).await?;
+        self.servers = servers
+            .into_iter()
+            .filter(|server| ids.contains(&server.id()))
+            .collect();
+        Ok(())
+    }
+
     fn policy(&self) -> Policy<'_> {
         Policy {
             context: &self.turn.context,
-            servers: &self.turn.servers,
+            servers: &self.servers,
             approved: self.turn.chat.approved_tools(),
             mode: self.turn.mode,
         }
@@ -796,16 +837,19 @@ impl Run<'_> {
     /// Assistant messages with tool calls since the last user message, so the round limit
     /// holds across approval pauses.
     fn rounds(&self) -> u32 {
-        let start = self
-            .history
-            .iter()
-            .rposition(|message| message.role() == Role::User)
-            .map_or(0, |index| index + 1);
-        let rounds = self.history[start..]
+        let rounds = self.history[self.current()..]
             .iter()
             .filter(|message| message.role() == Role::Assistant && message.calls().next().is_some())
             .count();
         u32::try_from(rounds).unwrap_or(u32::MAX)
+    }
+
+    /// Where this turn's answers start: just after the last user message.
+    fn current(&self) -> usize {
+        self.history
+            .iter()
+            .rposition(|message| message.role() == Role::User)
+            .map_or(0, |index| index + 1)
     }
 
     fn now(&self) -> DateTime<Utc> {

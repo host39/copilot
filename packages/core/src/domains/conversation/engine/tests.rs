@@ -11,7 +11,9 @@ use crate::domains::chat::{
     CallDecision, Chat, ChatRepositories, ChatService, ChatUpdate, Decision, DecisionScope,
     NewChat, ResultContent, TurnInput,
 };
-use crate::domains::conversation::approval::{CANNOT_ASK, INVALID_ARGUMENTS, UNKNOWN_TOOL};
+use crate::domains::conversation::approval::{
+    CANNOT_ASK, INVALID_ARGUMENTS, SERVER_GONE, UNKNOWN_TOOL,
+};
 use crate::domains::conversation::context::{DATA_NOTE, SCHEDULE_NOTE};
 use crate::domains::conversation::engine::calls::FAILED;
 use crate::domains::file::{FileLimits, FileOwner, FileRepository};
@@ -20,7 +22,9 @@ use crate::domains::provider::{
     ModelQuery, ModelRepository, NewProvider, Preset, ProviderKind, ProviderService,
 };
 use crate::domains::schedule::{CreatedBy, NewSchedule, OnAsk, ScheduleQuery};
-use crate::domains::tool::{ApprovalMode, NewToolServer, ServerOverride, ToolServer};
+use crate::domains::tool::{
+    ApprovalMode, NewToolServer, ServerOverride, ToolMode, ToolServer, ToolServerUpdate,
+};
 use crate::ports::llm_gateway::{LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities};
 use crate::ports::tool_host::{ToolContent, ToolOutput};
 use crate::shared::actor::Actor;
@@ -1236,5 +1240,153 @@ fn outcomes_map_to_schedule_run_records() {
     assert_eq!(
         RunOutcome::from(&with(MessageStatus::Refused, None)),
         RunOutcome::Failed(REFUSED.to_owned())
+    );
+}
+
+#[tokio::test]
+async fn an_approval_never_runs_a_tool_turned_off_since() {
+    let f = fixture();
+    let (chat, server) = f.tool_chat(ApprovalMode::Ask).await;
+    f.gateway
+        .push_events(call_reply(&[("github__delete", r#"{"id":2}"#)]));
+    f.send(&chat, "Delete it").await;
+    let paused = f.history(&chat).await[1].clone();
+    f.tools
+        .update(
+            &f.caller,
+            server.id(),
+            ToolServerUpdate {
+                tool_modes: Some([("delete".to_owned(), ToolMode::Off)].into()),
+                ..ToolServerUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let turn = f.prepare(&chat, approve(&paused)).await;
+    f.gateway.push_events(text_reply("Ok"));
+    let (outcome, _) = f.run(turn).await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+    assert!(f.host.calls().is_empty(), "the stale approval card loses");
+    let call = paused.calls().next().unwrap();
+    assert_eq!(
+        results(&f.history(&chat).await[2]),
+        [ToolResultPart::skipped(
+            call.id,
+            ToolStatus::Denied,
+            TOOL_OFF
+        )]
+    );
+}
+
+#[tokio::test]
+async fn servers_and_tools_turned_off_after_prepare_stop_the_next_calls() {
+    let f = fixture();
+    let (chat, server) = f.tool_chat(ApprovalMode::Auto).await;
+    let turn = f.prepare(&chat, send("Search")).await;
+    f.tools
+        .update(
+            &f.caller,
+            server.id(),
+            ToolServerUpdate {
+                enabled: Some(false),
+                ..ToolServerUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+    assert!(f.host.calls().is_empty(), "a disabled server gets no call");
+    let history = f.history(&chat).await;
+    let call = history[1].calls().next().unwrap();
+    assert_eq!(results(&history[2]), [failed(call, SERVER_GONE)]);
+
+    f.tools
+        .update(
+            &f.caller,
+            server.id(),
+            ToolServerUpdate {
+                enabled: Some(true),
+                ..ToolServerUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    let turn = f.prepare(&chat, send("Search again")).await;
+    f.tools
+        .update(
+            &f.caller,
+            server.id(),
+            ToolServerUpdate {
+                tool_modes: Some([("search".to_owned(), ToolMode::Off)].into()),
+                ..ToolServerUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.gateway.push_events(text_reply("Done"));
+    f.run(turn).await;
+    assert!(f.host.calls().is_empty(), "a tool set to off is denied");
+    let history = f.history(&chat).await;
+    let call = history[5].calls().next().unwrap();
+    assert_eq!(call.approval, Approval::Denied);
+    assert_eq!(
+        results(&history[6]),
+        [ToolResultPart::skipped(
+            call.id,
+            ToolStatus::Denied,
+            TOOL_OFF
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_stop_before_the_first_round_answers_with_an_empty_cancelled_message() {
+    let f = fixture();
+    let chat = f.chat(NewChat::default()).await;
+    f.gateway.push_events(text_reply("Hello"));
+    f.send(&chat, "Hi").await;
+
+    let turn = f.prepare(&chat, send("Again")).await;
+    let sink = Arc::new(RecordingSink::new());
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let outcome = f.engine.run(turn, sink.clone(), cancel).await.unwrap();
+
+    let history = f.history(&chat).await;
+    assert_eq!(
+        roles(&history),
+        [Role::User, Role::Assistant, Role::User, Role::Assistant]
+    );
+    let stopped = &history[3];
+    assert_eq!(stopped.status(), MessageStatus::Cancelled);
+    assert!(stopped.parts().is_empty());
+    assert_eq!(
+        outcome,
+        TurnOutcome {
+            message_id: Some(stopped.id()),
+            status: MessageStatus::Cancelled,
+            finish_reason: None,
+            error: None,
+        },
+        "never the previous turn's answer"
+    );
+    assert_eq!(
+        kinds(&sink.events()),
+        ["message.started", "message.finished", "done"]
+    );
+    assert_eq!(f.gateway.requests().len(), 1, "no request was sent");
+
+    f.gateway.push_events(text_reply("Ok"));
+    f.send(&chat, "Once more").await;
+    assert_eq!(
+        request_roles(&f.gateway.requests()[1]),
+        [Role::User, Role::Assistant, Role::User, Role::User],
+        "the empty answer never goes out"
     );
 }
