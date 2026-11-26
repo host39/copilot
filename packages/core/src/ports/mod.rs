@@ -3,5 +3,6 @@
 //! ports: lib-rustauth owns users, passwords, and sessions.
 
 pub mod clock;
+pub mod llm_gateway;
 pub mod logger;
 pub mod secret_cipher;

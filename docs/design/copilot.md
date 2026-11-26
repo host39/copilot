@@ -362,7 +362,7 @@ trait ProviderRepository {
 trait ModelRepository {
     async fn list(&self, user: UserId, query: ModelQuery) -> DomainResult<Vec<Model>>;
     async fn get(&self, user: UserId, id: ModelId) -> DomainResult<Option<Model>>;
-    async fn sync(&self, user: UserId, provider: ProviderId, remote: Vec<RemoteModel>, auto_enable: bool) -> DomainResult<SyncReport>; // missing -> available = false
+    async fn sync(&self, user: UserId, provider: ProviderId, remote: Vec<DetectedModel>, auto_enable: bool) -> DomainResult<SyncReport>; // RemoteModel + detected Capabilities; missing -> available = false
     async fn update(&self, model: &Model) -> DomainResult<()>;
 }
 trait ProjectRepository {

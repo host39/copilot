@@ -14,18 +14,31 @@ pub mod shared;
 pub mod testing;
 
 // Domains
+pub use crate::domains::provider::{
+    ANTHROPIC_VERSION, Capabilities, Capability, CapabilityOverrides, DetectedModel, Dialect,
+    KeyChange, KeyState, Lock, Locks, Model, ModelParts, ModelQuery, ModelRepository, ModelService,
+    ModelUpdate, ModelView, NewProvider, Preset, Provider, ProviderDetails, ProviderKind,
+    ProviderParts, ProviderRepository, ProviderService, ProviderUpdate, ProviderUsage, SyncReport,
+    reasoning_off_with_tools,
+};
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::clock::{Clock, SystemClock};
+pub use crate::ports::llm_gateway::{
+    LlmGateway, ModelTarget, ProviderTarget, RemoteModel, ReportedCapabilities,
+};
 pub use crate::ports::logger::LogLevel;
 pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher};
 // Shared types
 pub use crate::shared::actor::Actor;
+pub use crate::shared::base_url::BaseUrl;
 pub use crate::shared::constants::{DEFAULT_PAGE_OFFSET, DEFAULT_PAGE_SIZE};
 pub use crate::shared::errors::{BoxError, Context, DomainError, DomainResult};
 pub use crate::shared::ids::{
     ChatId, FileId, MessageId, ModelId, ProjectId, ProviderId, ScheduleId, ToolServerId, UserId,
 };
+pub use crate::shared::net::{AddressClass, NetworkScope, PrivateNetwork, classify, is_allowed};
+pub use crate::shared::reasoning::ReasoningLevel;
 pub use crate::shared::secret::Secret;
 pub use crate::shared::types::{
     Environment, PaginatedResult, PaginationOptions, SortDirection, SortOptions,

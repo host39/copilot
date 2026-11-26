@@ -6,6 +6,8 @@
 
 mod cipher;
 mod clock;
+mod gateway;
+mod provider;
 mod settings;
 mod store;
 
@@ -13,6 +15,7 @@ use uuid::Uuid;
 
 pub use crate::testing::cipher::FakeCipher;
 pub use crate::testing::clock::FixedClock;
+pub use crate::testing::gateway::{ScriptedGateway, remote_model};
 pub use crate::testing::store::MemoryStore;
 
 use crate::shared::actor::Actor;
