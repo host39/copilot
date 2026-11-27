@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other checkout
 
 ## Status
 
-Complete: P2.F.1 to P2.F.5. Last green CI: pending on the commit that adds this file.
+Complete: P2.F.1 to P2.F.5. Last green CI: `8d1e4ec` (Code quality, run 45926018958: Clippy, unit tests, database tests, the bindings and fixtures drift check, Bruno, and the TypeScript tests with the conformance test).
 
 The roadmap's merge order (B, C, then A, with D last) and its green CI after each merge did not apply: every track committed to the shared branch, and each track recorded its own green CI run (`a.md`, `b.md`, `c.md`, `d.md`).
 
