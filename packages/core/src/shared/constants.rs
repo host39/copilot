@@ -41,6 +41,18 @@ pub const TOOL_REFRESH_BACKOFF_SECS: i64 = 300;
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 /// Longest tool list cache lifetime, whatever `ttlMs` the server sends.
 pub const TOOL_CACHE_MAX_TTL_SECS: u64 = 86_400;
+/// How long a tool server sign-in may take: its `state` and PKCE verifier are kept this long
+/// (`docs/design/copilot.md`, Tool Server Sign-In).
+pub const SIGN_IN_FLOW_SECS: i64 = 600;
+/// An access token this close to its expiry counts as expired, so it is refreshed before a
+/// request rather than failing in the middle of a run.
+pub const TOKEN_EXPIRY_SKEW_SECS: i64 = 60;
+/// One OAuth request (metadata, registration, or token), connecting included.
+pub const OAUTH_TIMEOUT_SECS: u64 = 15;
+/// Largest OAuth response (metadata, registration, or token) the client reads.
+pub const OAUTH_RESPONSE_MAX_BYTES: usize = 65_536;
+/// Longest pre-registered OAuth client id or secret a user may enter.
+pub const OAUTH_CLIENT_MAX_CHARS: usize = 512;
 /// Provider rounds per turn before tool calls get `cancelled` results.
 pub const MAX_TOOL_ROUNDS: u32 = 8;
 /// An answer may stream text, reasoning, and tool calls of up to its output token limit times

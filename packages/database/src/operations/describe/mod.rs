@@ -56,6 +56,18 @@ pub const SCHEMA_TABLES: &[TableDoc] = &[
                 name: "tools_cached",
                 reason: "The server's tool list, which may describe private systems.",
             },
+            OmittedColumn {
+                name: "oauth_client_id",
+                reason: "A pre-registered OAuth client the user entered.",
+            },
+            OmittedColumn {
+                name: "oauth_client_secret_sealed",
+                reason: "Sealed OAuth client secret.",
+            },
+            OmittedColumn {
+                name: "oauth_tokens_sealed",
+                reason: "Sealed OAuth access and refresh tokens.",
+            },
         ],
     },
     TableDoc {

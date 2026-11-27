@@ -1,5 +1,7 @@
-//! Tool server use cases: settings, tests (tool listing and change detection), reviews, and the
-//! tools a turn gets.
+//! Tool server use cases: settings, tests (tool listing and change detection), reviews, the
+//! tools a turn gets, and OAuth sign-in (`sign_in`).
+
+mod sign_in;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -9,6 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 
 use crate::domains::provider::KeyState;
+use crate::domains::tool::auth::{AuthMode, ClientConfig, SignInState};
 use crate::domains::tool::entities::ToolServer;
 use crate::domains::tool::headers::ToolHeaders;
 use crate::domains::tool::ports::ToolServerRepository;
@@ -21,11 +24,19 @@ use crate::ports::secret_cipher::SecretCipher;
 use crate::ports::tool_host::{ToolEndpoint, ToolHost, ToolListing};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
-use crate::shared::constants::{MAX_PARALLEL_READS, TOOL_REFRESH_BACKOFF_SECS};
+use crate::shared::constants::{
+    MAX_PARALLEL_READS, OAUTH_CLIENT_MAX_CHARS, TOOL_REFRESH_BACKOFF_SECS,
+};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ToolServerId;
 use crate::shared::net::PrivateNetwork;
 use crate::shared::secret::REDACTED;
+
+use crate::domains::tool::service::sign_in::OAuth;
+pub use crate::domains::tool::service::sign_in::{
+    CLIENT_ID_REQUIRED, CLIENT_NAME, Callback, SIGN_IN_UNAVAILABLE, SignInConfig, SignInOutcome,
+    SignInResult, SignInStart,
+};
 
 /// Input of [`ToolService::create`]. `Debug` prints `***` for the token and header values.
 #[derive(Clone, Default)]
@@ -37,6 +48,10 @@ pub struct NewToolServer {
     /// Blank means none.
     pub bearer: Option<String>,
     pub headers: BTreeMap<String, String>,
+    /// `None` is `Headers` when a bearer token or headers are given, else `None`.
+    pub auth: Option<AuthMode>,
+    /// A pre-registered OAuth client (`OAuth` only).
+    pub client: Option<ClientInput>,
     pub approval: ApprovalMode,
 }
 
@@ -49,9 +64,37 @@ impl fmt::Debug for NewToolServer {
             .field("url", &self.url)
             .field("bearer", &self.bearer.as_ref().map(|_| REDACTED))
             .field("headers", &Redacted(&self.headers))
+            .field("auth", &self.auth)
+            .field("client", &self.client)
             .field("approval", &self.approval)
             .finish()
     }
+}
+
+/// A pre-registered OAuth client as the user enters it. `Debug` hides the secret.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct ClientInput {
+    pub id: String,
+    /// A confidential client's secret. Blank or absent keeps the stored secret while the id
+    /// stays the same, and means none for a new id.
+    pub secret: Option<String>,
+}
+
+impl fmt::Debug for ClientInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientInput")
+            .field("id", &self.id)
+            .field("secret", &self.secret.as_ref().map(|_| REDACTED))
+            .finish()
+    }
+}
+
+/// A change to the pre-registered OAuth client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientChange {
+    Set(ClientInput),
+    Clear,
 }
 
 /// Input of [`ToolService::update`]; `None` keeps a field. The slug never changes.
@@ -60,6 +103,10 @@ pub struct ToolServerUpdate {
     pub name: Option<String>,
     pub url: Option<String>,
     pub credentials: Option<CredentialChange>,
+    /// Switching modes drops the other modes' credentials; `Headers` needs headers (given now or
+    /// stored).
+    pub auth: Option<AuthMode>,
+    pub client: Option<ClientChange>,
     pub approval: Option<ApprovalMode>,
     /// Replaces every per-tool mode. Names must be on the server's tool list.
     pub tool_modes: Option<BTreeMap<String, ToolMode>>,
@@ -107,7 +154,13 @@ impl fmt::Debug for Redacted<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolServerDetails {
     pub server: ToolServer,
+    /// The bearer token and headers.
     pub credentials: KeyState,
+    /// The pre-registered client's secret.
+    pub client_secret: KeyState,
+    /// The OAuth sign-in (`None` outside `OAuth`); a sign-in that no longer opens needs a new
+    /// one.
+    pub sign_in: Option<SignInState>,
 }
 
 /// The result of a test: the server with its new tool list, and what changed since the last one.
@@ -127,6 +180,8 @@ pub struct ToolService {
     /// When a turn last failed to list each server: no turn lists it again before
     /// `TOOL_REFRESH_BACKOFF_SECS` have passed. Kept in memory (one server process).
     failures: Arc<Mutex<HashMap<ToolServerId, DateTime<Utc>>>>,
+    /// OAuth sign-in ([`ToolService::with_sign_in`]).
+    oauth: Option<Arc<OAuth>>,
 }
 
 /// What a turn's refresh of one server came to.
@@ -155,6 +210,7 @@ impl ToolService {
             clock,
             network,
             failures: Arc::default(),
+            oauth: None,
         }
     }
 
@@ -169,16 +225,48 @@ impl ToolService {
             server.headers_sealed(),
             &server.headers_context(),
         )?;
+        let client_secret = KeyState::check(
+            &*self.cipher,
+            server
+                .client()
+                .and_then(|client| client.secret_sealed.as_deref()),
+            &server.client_context(),
+        )?;
+        let readable = KeyState::check(
+            &*self.cipher,
+            server.sign_in().map(|sign_in| sign_in.sealed.as_slice()),
+            &server.sign_in_context(),
+        )?;
+        let sign_in = match self.sign_in_state(&server) {
+            Some(_) if readable == KeyState::Unreadable => Some(SignInState::NeedsSignIn),
+            state => state,
+        };
         Ok(ToolServerDetails {
             server,
             credentials,
+            client_secret,
+            sign_in,
         })
+    }
+
+    /// What the settings show for an `OAuth` server now; `None` in the other modes.
+    pub fn sign_in_state(&self, server: &ToolServer) -> Option<SignInState> {
+        server.sign_in_state(self.clock.now())
     }
 
     /// Registers a server. It has no tools until the first test.
     pub async fn create(&self, actor: &Actor, input: NewToolServer) -> DomainResult<ToolServer> {
         let url = self.url(actor, &input.url)?;
         let headers = ToolHeaders::new(input.bearer.as_deref(), &input.headers)?;
+        let mode = input.auth.unwrap_or(if headers.is_empty() {
+            AuthMode::None
+        } else {
+            AuthMode::Headers
+        });
+        check_mode(mode, &headers)?;
+        if input.client.is_some() && mode != AuthMode::OAuth {
+            return Err(only_oauth());
+        }
         let taken: Vec<Slug> = self
             .servers
             .list(actor.user_id)
@@ -202,15 +290,21 @@ impl ToolService {
         let server = ToolServer::create(actor.user_id, &input.name, slug, url, self.clock.now())?
             .with_approval(input.approval);
         let sealed = self.seal(&server, &headers)?;
-        let server = server.with_headers(sealed);
+        let mut server = server.with_headers(sealed).with_auth(mode);
+        if let Some(input) = &input.client {
+            let client = self.client(&server, input)?;
+            server = server.with_client(Some(client));
+        }
         self.servers.insert(&server).await?;
         Ok(server)
     }
 
     /// Changing the origin (scheme, host, or port) of the URL clears the stored credentials
     /// unless the same update sets new ones, so a token never goes to a host it was not entered
-    /// for. Any new URL is listed again before its tools are offered, and every tool asks until
-    /// [`ToolService::review`].
+    /// for; any new URL ends the OAuth sign-in, whose tokens were issued for the old one. Any new
+    /// URL is listed again before its tools are offered, and every tool asks until
+    /// [`ToolService::review`]. Credentials given without an auth mode switch to `Headers`;
+    /// another mode drops the credentials of the old one.
     pub async fn update(
         &self,
         actor: &Actor,
@@ -229,13 +323,38 @@ impl ToolService {
             }
             server = server.with_url(url);
         }
-        match credentials {
+        let headers = match &credentials {
             Some(CredentialChange::Set { bearer, headers }) => {
-                let headers = ToolHeaders::new(bearer.as_deref(), &headers)?;
-                let sealed = self.seal(&server, &headers)?;
-                server = server.with_headers(sealed);
+                Some(ToolHeaders::new(bearer.as_deref(), headers)?)
             }
-            Some(CredentialChange::Clear) => server = server.with_headers(None),
+            Some(CredentialChange::Clear) => Some(ToolHeaders::default()),
+            None => None,
+        };
+        if let Some(mode) = changes.auth {
+            match &headers {
+                Some(headers) => check_mode(mode, headers)?,
+                None if mode == AuthMode::Headers && server.headers_sealed().is_none() => {
+                    return Err(missing_headers());
+                }
+                None => {}
+            }
+        }
+        if let Some(headers) = headers {
+            let sealed = self.seal(&server, &headers)?;
+            server = server.with_headers(sealed);
+        }
+        if let Some(mode) = changes.auth {
+            server = server.with_auth(mode);
+        }
+        match &changes.client {
+            Some(ClientChange::Set(input)) => {
+                if server.auth() != AuthMode::OAuth {
+                    return Err(only_oauth());
+                }
+                let client = self.client(&server, input)?;
+                server = server.with_client(Some(client));
+            }
+            Some(ClientChange::Clear) => server = server.with_client(None),
             None => {}
         }
         if let Some(approval) = changes.approval {
@@ -404,11 +523,16 @@ impl ToolService {
     /// The adapter's view of a server owned by `actor`: the opened credentials and the network
     /// scope. Fails with `SECRET_UNREADABLE` when the credentials no longer open.
     pub fn endpoint(&self, actor: &Actor, server: &ToolServer) -> DomainResult<ToolEndpoint> {
+        let network = self.network.scope(actor);
+        if server.auth() == AuthMode::OAuth {
+            let tokens = self.tokens(actor, server)?;
+            return Ok(server.endpoint(None, Some(tokens), network));
+        }
         let headers = server
             .headers_sealed()
             .map(|sealed| self.cipher.open(sealed, &server.headers_context()))
             .transpose()?;
-        Ok(server.endpoint(headers, self.network.scope(actor)))
+        Ok(server.endpoint(headers, None, network))
     }
 
     /// Lists the server's tools: names trimmed, unnamed tools dropped, the first of each name
@@ -461,6 +585,56 @@ impl ToolService {
         BaseUrl::parse(text, self.network.scope(actor)).map_err(|error| error.with_field("url"))
     }
 
+    /// The pre-registered client to store: the id trimmed, the secret sealed for `server`'s row.
+    /// A blank secret keeps the stored one while the id stays the same.
+    fn client(&self, server: &ToolServer, input: &ClientInput) -> DomainResult<ClientConfig> {
+        let id = input.id.trim();
+        if id.is_empty() {
+            return Err(
+                DomainError::validation("Enter the OAuth client ID.").with_field("oauthClient")
+            );
+        }
+        if id.chars().count() > OAUTH_CLIENT_MAX_CHARS
+            || id
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(DomainError::validation(format!(
+                "The OAuth client ID must be one word of at most {OAUTH_CLIENT_MAX_CHARS} characters."
+            ))
+            .with_field("oauthClient"));
+        }
+        let secret = input
+            .secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|secret| !secret.is_empty());
+        let secret_sealed = match secret {
+            Some(secret) => {
+                if secret.chars().count() > OAUTH_CLIENT_MAX_CHARS
+                    || secret.chars().any(char::is_control)
+                {
+                    return Err(DomainError::validation(format!(
+                        "The OAuth client secret must be one line of at most {OAUTH_CLIENT_MAX_CHARS} characters."
+                    ))
+                    .with_field("oauthClient"));
+                }
+                Some(
+                    self.cipher
+                        .seal(secret.as_bytes(), &server.client_context())?,
+                )
+            }
+            None => server
+                .client()
+                .filter(|stored| stored.id == id)
+                .and_then(|stored| stored.secret_sealed.clone()),
+        };
+        Ok(ClientConfig {
+            id: id.to_owned(),
+            secret_sealed,
+        })
+    }
+
     /// Seals the credentials for `server`'s row; none means nothing stored.
     fn seal(&self, server: &ToolServer, headers: &ToolHeaders) -> DomainResult<Option<Vec<u8>>> {
         if headers.is_empty() {
@@ -474,6 +648,27 @@ impl ToolService {
 
 fn not_found(id: ToolServerId) -> DomainError {
     DomainError::not_found("Tool server", id.to_string())
+}
+
+/// Headers go with `Headers` only, and `Headers` needs some.
+fn check_mode(mode: AuthMode, headers: &ToolHeaders) -> DomainResult<()> {
+    match mode {
+        AuthMode::Headers if headers.is_empty() => Err(missing_headers()),
+        AuthMode::None | AuthMode::OAuth if !headers.is_empty() => Err(DomainError::validation(
+            "A bearer token or headers need the \"Bearer token or headers\" authentication.",
+        )
+        .with_field("authMode")),
+        _ => Ok(()),
+    }
+}
+
+fn missing_headers() -> DomainError {
+    DomainError::validation("Enter a bearer token or at least one header.").with_field("bearer")
+}
+
+fn only_oauth() -> DomainError {
+    DomainError::validation("A client ID is only used with OAuth sign-in.")
+        .with_field("oauthClient")
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ fn host() -> McpHost {
 
 fn endpoint(url: &str, network: NetworkScope) -> ToolEndpoint {
     ToolEndpoint {
+        tokens: None,
         server_id: ToolServerId::generate(),
         url: BaseUrl::restore(url).expect("a URL"),
         headers: None,
@@ -165,6 +166,7 @@ async fn remembers_the_era_of_a_legacy_server() {
         .unwrap();
     // A new process with the revision core stored from the listing: no probe either.
     let stored = ToolEndpoint {
+        tokens: None,
         protocol_version: Some("2025-11-25".to_owned()),
         ..endpoint.clone()
     };
@@ -183,6 +185,7 @@ async fn remembers_the_era_of_a_legacy_server() {
 async fn probes_again_when_the_remembered_era_is_out_of_date() {
     let server = start(Era::ModernOnly, Options::default()).await;
     let stored = ToolEndpoint {
+        tokens: None,
         protocol_version: Some("2025-11-25".to_owned()),
         ..local(&server)
     };
@@ -210,6 +213,7 @@ async fn sends_the_bearer_token_and_custom_headers_on_every_request() {
         )
         .await;
         let endpoint = ToolEndpoint {
+            tokens: None,
             headers: Some(credentials(Some("tok-1"), &[("X-Team", "core")])),
             ..local(&server)
         };
@@ -249,6 +253,7 @@ async fn reports_rejected_and_missing_credentials() {
     )
     .await;
     let wrong = ToolEndpoint {
+        tokens: None,
         headers: Some(credentials(Some("wrong"), &[])),
         ..local(&server)
     };

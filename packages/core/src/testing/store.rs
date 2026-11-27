@@ -17,7 +17,7 @@ use crate::domains::project::Project;
 use crate::domains::provider::{Model, Provider, ProviderUsage};
 use crate::domains::schedule::Schedule;
 use crate::domains::settings::UserSettings;
-use crate::domains::tool::ToolServer;
+use crate::domains::tool::{SignInFlow, ToolServer};
 use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::errors::DomainError;
@@ -40,6 +40,7 @@ pub(crate) struct Tables {
     pub(crate) projects: BTreeMap<ProjectId, Project>,
     pub(crate) files: BTreeMap<FileId, (StoredFile, Bytes)>,
     pub(crate) tool_servers: BTreeMap<ToolServerId, ToolServer>,
+    pub(crate) sign_in_flows: BTreeMap<uuid::Uuid, SignInFlow>,
     pub(crate) schedules: BTreeMap<ScheduleId, Schedule>,
     pub(crate) chats: BTreeMap<ChatId, Chat>,
     /// Keyed by `seq`, so iteration is message order.

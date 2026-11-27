@@ -1708,6 +1708,18 @@ impl ToolServerRepository for Gauge {
         .await
     }
 
+    async fn save_sign_in(
+        &self,
+        user: UserId,
+        id: ToolServerId,
+        url: &BaseUrl,
+        sign_in: Option<&crate::domains::tool::SignIn>,
+        previous: Option<&[u8]>,
+    ) -> DomainResult<bool> {
+        ToolServerRepository::save_sign_in(self.store.as_ref(), user, id, url, sign_in, previous)
+            .await
+    }
+
     async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
         ToolServerRepository::stale(self.store.as_ref(), user, id).await
     }

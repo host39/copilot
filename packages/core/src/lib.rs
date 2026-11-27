@@ -49,10 +49,13 @@ pub use crate::domains::schedule::{
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{
-    ALIAS_MAX_CHARS, ApprovalMode, CredentialChange, EffectiveTool, EffectiveTools, NewToolServer,
-    SLUG_MAX_CHARS, ServerOverride, Slug, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode,
-    ToolSelection, ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository,
-    ToolServerUpdate, ToolService, ToolSpec, ToolTest, UnavailableServer, offered,
+    ALIAS_MAX_CHARS, ApprovalMode, AuthMode, CLIENT_ID_REQUIRED, CLIENT_NAME, Callback,
+    ClientChange, ClientConfig, ClientInput, CredentialChange, EffectiveTool, EffectiveTools,
+    NewToolServer, Pending, SIGN_IN_UNAVAILABLE, SLUG_MAX_CHARS, ServerOverride, Session, SignIn,
+    SignInConfig, SignInFlow, SignInOutcome, SignInRepository, SignInResult, SignInStart,
+    SignInState, Slug, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode, ToolSelection,
+    ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository, ToolServerUpdate,
+    ToolService, ToolSpec, ToolTest, UnavailableServer, offered,
 };
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::accounts::Accounts;
@@ -63,6 +66,11 @@ pub use crate::ports::llm_gateway::{
 };
 pub use crate::ports::logger::LogLevel;
 pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher, unreadable};
+pub use crate::ports::tool_auth::{
+    AccessTokens, AuthServer, ClientAuth, Discovery, Grant, OAUTH_BLOCKED, OAUTH_DISCOVERY,
+    OAUTH_FAILED, OAUTH_REGISTRATION, OAUTH_REJECTED, OAuthClient, Registration, SIGN_IN_REQUIRED,
+    TokenRequest, TokenSet, TokenSource, ToolAuth,
+};
 pub use crate::ports::tool_host::{
     RemoteTool, TOOL_TIMEOUT, TOOL_UNKNOWN, ToolContent, ToolEndpoint, ToolHost, ToolListing,
     ToolOutput, ToolSession,

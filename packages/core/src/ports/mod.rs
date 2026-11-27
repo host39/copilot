@@ -8,6 +8,7 @@ pub mod clock;
 pub mod llm_gateway;
 pub mod logger;
 pub mod secret_cipher;
+pub mod tool_auth;
 pub mod tool_host;
 pub mod turn_sink;
 pub mod worker;

@@ -8,7 +8,11 @@ use crate::fixtures::{self, TABLES};
 /// Columns added with `ALTER TABLE ... ADD COLUMN`, which always appends at the end and so may
 /// break the alignment order (`postgres-column-alignment`). Add `(table, column)` here when a
 /// migration does that.
-const APPENDED: &[(&str, &str)] = &[];
+const APPENDED: &[(&str, &str)] = &[
+    // add_tool_server_sign_in
+    ("tool_servers", "oauth_expires_at"),
+    ("tool_servers", "oauth_refreshable"),
+];
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run `make test-db`"]

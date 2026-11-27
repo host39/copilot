@@ -14,10 +14,14 @@ testing = []
 
 [dependencies]
 async-trait = { workspace = true }
+# PKCE challenges and sign-in values are base64url.
+base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 croner = { workspace = true }
 futures-util = { workspace = true }
+# The PKCE verifier and the `state` of a tool server sign-in.
+getrandom = { workspace = true }
 jiff = { workspace = true }
 miniz_oxide = { workspace = true }
 serde_json = { workspace = true }

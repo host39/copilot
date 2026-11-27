@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use crate::domains::tool::auth::{AuthMode, ClientConfig, SignIn, SignInState};
 use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::secret_cipher::SealContext;
+use crate::ports::tool_auth::TokenSource;
 use crate::ports::tool_host::{RemoteTool, ToolEndpoint, ToolListing};
 use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::{
@@ -19,7 +21,11 @@ use crate::shared::secret::Secret;
 use crate::shared::text;
 
 /// A user's MCP server (`tool_servers`). Credentials are sealed and bound to this row
-/// ([`ToolServer::headers_context`]).
+/// ([`ToolServer::headers_context`], [`ToolServer::client_context`],
+/// [`ToolServer::sign_in_context`]).
+///
+/// The auth mode says which credentials requests carry. `Headers` holds exactly when headers are
+/// stored; the OAuth client and sign-in exist only in `OAuth` mode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolServer {
     id: ToolServerId,
@@ -28,6 +34,9 @@ pub struct ToolServer {
     slug: Slug,
     url: BaseUrl,
     headers_sealed: Option<Vec<u8>>,
+    auth: AuthMode,
+    client: Option<ClientConfig>,
+    sign_in: Option<SignIn>,
     approval: ApprovalMode,
     tool_modes: BTreeMap<String, ToolMode>,
     enabled: bool,
@@ -47,6 +56,12 @@ pub struct ToolServerParts {
     pub slug: Slug,
     pub url: BaseUrl,
     pub headers_sealed: Option<Vec<u8>>,
+    /// `auth_mode`.
+    pub auth: AuthMode,
+    /// `oauth_client_id` and `oauth_client_secret_sealed`.
+    pub client: Option<ClientConfig>,
+    /// `oauth_tokens_sealed`, `oauth_expires_at`, and `oauth_refreshable`.
+    pub sign_in: Option<SignIn>,
     pub approval: ApprovalMode,
     pub tool_modes: BTreeMap<String, ToolMode>,
     pub enabled: bool,
@@ -103,6 +118,9 @@ impl ToolServer {
             slug,
             url,
             headers_sealed: None,
+            auth: AuthMode::None,
+            client: None,
+            sign_in: None,
             approval: ApprovalMode::Ask,
             tool_modes: BTreeMap::new(),
             enabled: true,
@@ -123,6 +141,9 @@ impl ToolServer {
             slug: parts.slug,
             url: parts.url,
             headers_sealed: parts.headers_sealed,
+            auth: parts.auth,
+            client: parts.client,
+            sign_in: parts.sign_in,
             approval: parts.approval,
             tool_modes: parts.tool_modes,
             enabled: parts.enabled,
@@ -142,21 +163,72 @@ impl ToolServer {
     /// A new URL may be another server: it forgets the negotiated protocol version, so the
     /// cached tool list no longer counts as this URL's ([`ToolServer::listed`]) and the next turn
     /// lists the new URL first, and every tool asks until the user reviews the server again. The
-    /// cached list stays only so the next listing can show what changed.
+    /// cached list stays only so the next listing can show what changed. It also ends the OAuth
+    /// sign-in: its tokens were issued for the old URL (the `resource`).
     #[must_use]
     pub fn with_url(mut self, url: BaseUrl) -> Self {
         if url != self.url {
             self.protocol_version = None;
             self.review_required = true;
+            self.sign_in = None;
         }
         self.url = url;
         self
     }
 
-    /// Sets or clears the sealed credentials. Seal them with [`ToolServer::headers_context`].
+    /// Sets or clears the sealed bearer token and headers. Seal them with
+    /// [`ToolServer::headers_context`]. Stored headers switch the server to `Headers` (ending any
+    /// OAuth sign-in); clearing them leaves `Headers` for `None`.
     #[must_use]
     pub fn with_headers(mut self, sealed: Option<Vec<u8>>) -> Self {
+        let stored = sealed.is_some();
         self.headers_sealed = sealed;
+        if stored {
+            self.with_auth(AuthMode::Headers)
+        } else if self.auth == AuthMode::Headers {
+            self.with_auth(AuthMode::None)
+        } else {
+            self
+        }
+    }
+
+    /// Switches the auth mode, dropping the credentials of the other modes: headers outside
+    /// `Headers`, the OAuth client and sign-in outside `OAuth`. Switching to `Headers` without
+    /// headers leaves `None` (store them with [`ToolServer::with_headers`]).
+    #[must_use]
+    pub fn with_auth(mut self, mode: AuthMode) -> Self {
+        if mode != AuthMode::Headers {
+            self.headers_sealed = None;
+        }
+        if mode != AuthMode::OAuth {
+            self.client = None;
+            self.sign_in = None;
+        }
+        self.auth = if mode == AuthMode::Headers && self.headers_sealed.is_none() {
+            AuthMode::None
+        } else {
+            mode
+        };
+        self
+    }
+
+    /// Sets or clears the pre-registered OAuth client (`OAuth` mode only; see
+    /// [`ToolServer::with_auth`]). Seal its secret with [`ToolServer::client_context`].
+    #[must_use]
+    pub fn with_client(mut self, client: Option<ClientConfig>) -> Self {
+        if self.auth == AuthMode::OAuth {
+            self.client = client;
+        }
+        self
+    }
+
+    /// Sets or clears the sign-in (`OAuth` mode only). Seal it with
+    /// [`ToolServer::sign_in_context`].
+    #[must_use]
+    pub fn with_sign_in(mut self, sign_in: Option<SignIn>) -> Self {
+        if self.auth == AuthMode::OAuth {
+            self.sign_in = sign_in;
+        }
         self
     }
 
@@ -230,6 +302,31 @@ impl ToolServer {
         }
     }
 
+    /// The associated data of the pre-registered client's secret.
+    pub fn client_context(&self) -> SealContext {
+        SealContext {
+            column: "oauth_client_secret_sealed",
+            ..self.headers_context()
+        }
+    }
+
+    /// The associated data of the sealed sign-in.
+    pub fn sign_in_context(&self) -> SealContext {
+        SealContext {
+            column: "oauth_tokens_sealed",
+            ..self.headers_context()
+        }
+    }
+
+    /// What the settings show for an `OAuth` server; `None` in the other modes.
+    pub fn sign_in_state(&self, now: DateTime<Utc>) -> Option<SignInState> {
+        (self.auth == AuthMode::OAuth).then(|| {
+            self.sign_in
+                .as_ref()
+                .map_or(SignInState::NeedsSignIn, |sign_in| sign_in.state(now))
+        })
+    }
+
     /// The mode of tool `name`: its own mode, else the server's approval mode.
     pub fn mode(&self, name: &str) -> ToolMode {
         self.tool_modes
@@ -248,12 +345,18 @@ impl ToolServer {
         }
     }
 
-    /// The adapter's view of this server, with the opened credentials.
-    pub fn endpoint(&self, headers: Option<Secret>, network: NetworkScope) -> ToolEndpoint {
+    /// The adapter's view of this server, with the opened headers or the sign-in's tokens.
+    pub fn endpoint(
+        &self,
+        headers: Option<Secret>,
+        tokens: Option<TokenSource>,
+        network: NetworkScope,
+    ) -> ToolEndpoint {
         ToolEndpoint {
             server_id: self.id,
             url: self.url.clone(),
             headers,
+            tokens,
             protocol_version: self.protocol_version.clone(),
             network,
         }
@@ -292,6 +395,18 @@ impl ToolServer {
 
     pub fn headers_sealed(&self) -> Option<&[u8]> {
         self.headers_sealed.as_deref()
+    }
+
+    pub fn auth(&self) -> AuthMode {
+        self.auth
+    }
+
+    pub fn client(&self) -> Option<&ClientConfig> {
+        self.client.as_ref()
+    }
+
+    pub fn sign_in(&self) -> Option<&SignIn> {
+        self.sign_in.as_ref()
     }
 
     pub fn approval(&self) -> ApprovalMode {
@@ -436,6 +551,88 @@ mod tests {
         assert!(!moved.listed());
         assert!(moved.needs_refresh(now()));
         assert!(moved.review_required(), "every tool asks until a review");
+    }
+
+    fn signed_in() -> ToolServer {
+        server()
+            .with_auth(AuthMode::OAuth)
+            .with_client(Some(ClientConfig {
+                id: "client-1".to_owned(),
+                secret_sealed: None,
+            }))
+            .with_sign_in(Some(SignIn {
+                sealed: vec![1, 2, 3],
+                expires_at: None,
+                refreshable: true,
+            }))
+    }
+
+    #[test]
+    fn headers_and_oauth_exclude_each_other() {
+        let server = server();
+        assert_eq!(server.auth(), AuthMode::None);
+        assert_eq!(server.sign_in_state(now()), None);
+
+        let headers = server.clone().with_headers(Some(vec![9]));
+        assert_eq!(headers.auth(), AuthMode::Headers);
+        let cleared = headers.clone().with_headers(None);
+        assert_eq!(
+            cleared.auth(),
+            AuthMode::None,
+            "no headers, no headers mode"
+        );
+
+        let oauth = signed_in();
+        assert_eq!(oauth.auth(), AuthMode::OAuth);
+        assert_eq!(oauth.headers_sealed(), None);
+        assert_eq!(oauth.sign_in_state(now()), Some(SignInState::SignedIn));
+        let switched = oauth.clone().with_headers(Some(vec![9]));
+        assert_eq!(switched.auth(), AuthMode::Headers);
+        assert!(switched.client().is_none() && switched.sign_in().is_none());
+
+        let back = headers.with_auth(AuthMode::OAuth);
+        assert_eq!(back.headers_sealed(), None, "OAuth drops the headers");
+        assert_eq!(back.sign_in_state(now()), Some(SignInState::NeedsSignIn));
+        assert_eq!(
+            server.clone().with_auth(AuthMode::Headers).auth(),
+            AuthMode::None,
+            "headers mode needs headers"
+        );
+        let none = oauth.with_auth(AuthMode::None);
+        assert!(none.client().is_none() && none.sign_in().is_none());
+        assert!(
+            server
+                .with_sign_in(Some(SignIn {
+                    sealed: vec![1],
+                    expires_at: None,
+                    refreshable: false,
+                }))
+                .sign_in()
+                .is_none(),
+            "only an OAuth server keeps a sign-in"
+        );
+    }
+
+    #[test]
+    fn a_new_url_ends_the_sign_in_but_keeps_the_client() {
+        let server = signed_in();
+        let same = server.clone().with_url(server.url().clone());
+        assert!(same.sign_in().is_some());
+        let other = BaseUrl::parse("https://other.example.com/mcp", NetworkScope::Public).unwrap();
+        let moved = server.with_url(other);
+        assert!(moved.sign_in().is_none());
+        assert!(moved.client().is_some());
+        assert_eq!(moved.sign_in_state(now()), Some(SignInState::NeedsSignIn));
+    }
+
+    #[test]
+    fn binds_each_sealed_column_to_the_row() {
+        let server = server();
+        assert_eq!(server.headers_context().column, "headers_sealed");
+        assert_eq!(server.client_context().column, "oauth_client_secret_sealed");
+        assert_eq!(server.sign_in_context().column, "oauth_tokens_sealed");
+        assert_eq!(server.sign_in_context().row_id, server.id().uuid());
+        assert_eq!(server.sign_in_context().user_id, server.user_id());
     }
 
     #[test]
