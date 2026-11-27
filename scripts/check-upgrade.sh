@@ -248,7 +248,8 @@ pass "every chat reads with its messages"
 
 request GET /providers
 providers="$(jq -r '.items[].id' <<<"$body")"
-[[ "$(wc -l <<<"$providers")" == 3 ]] || fail "the three connections should remain: $body"
+# Three connections from a v0.1 smoke run, four since P7.1 added a Responses connection.
+[[ "$(wc -l <<<"$providers")" -ge 3 ]] || fail "the smoke run's connections should remain: $body"
 for provider in $providers; do
   request GET "/providers/$provider"
   jq -e '.data.key == "set"' >/dev/null <<<"$body" || fail "a stored key no longer opens: $body"
