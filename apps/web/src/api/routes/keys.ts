@@ -30,8 +30,10 @@ export const keys = {
   projectFiles: (projectId: string) => ["projects", projectId, "files"] as const,
 
   chats: ["chats"] as const,
-  /** The pages of one chat list (an infinite query). Chat ids are UUIDs, never `list` or `latest`. */
+  /** The pages of one chat list (an infinite query). Chat ids are UUIDs, never `list`, `runs`, or `latest`. */
   chatList: (filter: ChatFilter) => ["chats", "list", filter] as const,
+  /** The latest schedule runs, for the sidebar's unread count. */
+  runs: ["chats", "runs"] as const,
   /** The most recently updated chat, whose model a new chat starts with. */
   latestChat: ["chats", "latest"] as const,
   chat: (chatId: string) => ["chats", chatId] as const,

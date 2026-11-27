@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
-import { fetchChat, fetchMessages, sendMessage } from "@web/api/routes/chats";
+import { fetchChat, fetchMessages, markRead, sendMessage } from "@web/api/routes/chats";
+import { keys } from "@web/api/routes/keys";
 import { Composer } from "@web/components/Chat/Composer";
 import { MessageList } from "@web/components/Chat/MessageList";
 import { FormAlert } from "@web/components/Form/FormAlert";
@@ -64,6 +65,19 @@ export default function ChatPage() {
     navigate(location.pathname, { replace: true, state: null });
     void send(first);
   }, [first, location.pathname, navigate, send]);
+
+  // Opening the chat, and every answer seen in it, clears its unread dot.
+  const seen = messages.dataUpdatedAt;
+  useEffect(() => {
+    if (!seen) return;
+    markRead(chatId)
+      .then(() => {
+        // Only the lists: refreshing this chat's own queries would mark it read again.
+        void client.invalidateQueries({ queryKey: [...keys.chats, "list"] });
+        void client.invalidateQueries({ queryKey: keys.runs });
+      })
+      .catch(() => undefined);
+  }, [chatId, client, seen]);
 
   const problem = chat.error ?? messages.error;
 

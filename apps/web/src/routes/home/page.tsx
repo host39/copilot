@@ -3,18 +3,11 @@ import { keys } from "@web/api/routes/keys";
 import { fetchProjects } from "@web/api/routes/projects";
 import { StartChat } from "@web/components/Chat/StartChat";
 import { PageTitle } from "@web/components/Layout/PageTitle";
+import { PROJECT_PARAM } from "@web/routes/home/draft";
 import { projectLabel } from "@web/routes/project/forms";
 import type { StartState } from "@web/routes/welcome/setup";
 import { useId } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-
-/** The search parameter that puts the new chat into a project (the sidebar's `+` per project). */
-export const PROJECT_PARAM = "project";
-
-/** The new chat screen for `projectId` (`/?project=<id>`). */
-export function newChatLink(projectId: string): string {
-  return `/?${new URLSearchParams({ [PROJECT_PARAM]: projectId })}`;
-}
 
 /**
  * New chat: the default screen. The draft holds the project, the model, and the reasoning level;
