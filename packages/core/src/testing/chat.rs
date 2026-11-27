@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::domains::chat::{
-    CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepository, ChatSummary, ContextHash,
-    INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus, Page, Role, SearchHit,
-    TurnContext, TurnContextRepository,
+    ApprovedTool, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepository,
+    ChatSummary, ContextHash, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus,
+    Page, Role, SearchHit, TurnContext, TurnContextRepository,
 };
 use crate::domains::file::FileOwner;
 use crate::domains::schedule::{Schedule, ScheduleParts};
@@ -87,6 +87,35 @@ impl ChatRepository for MemoryStore {
         }
         tables.check_chat_references(chat)?;
         tables.chats.insert(chat.id(), chat.clone());
+        Ok(())
+    }
+
+    async fn approve(
+        &self,
+        user: UserId,
+        chat: ChatId,
+        tools: &[ApprovedTool],
+    ) -> DomainResult<()> {
+        let mut tables = self.tables();
+        let tools: Vec<ApprovedTool> = tools
+            .iter()
+            .filter(|tool| {
+                tables
+                    .tool_servers
+                    .get(&tool.server_id)
+                    .is_some_and(|server| server.user_id() == user)
+            })
+            .cloned()
+            .collect();
+        if let Some(stored) = tables
+            .chats
+            .get_mut(&chat)
+            .filter(|stored| stored.user_id() == user)
+        {
+            for tool in tools {
+                *stored = stored.clone().approving(tool);
+            }
+        }
         Ok(())
     }
 

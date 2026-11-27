@@ -18,7 +18,7 @@ Each finding was confirmed against the code before it was fixed.
 
 ## Not Changed
 
-- The decisions path of `ChatService::prepare` writes the whole chat it read (`chats.update`) to add "Approve for this chat" rows, so a concurrent rename or pin could be undone by it. Approvals are safe now (they only grow); a dedicated `ChatRepository::approve` that writes approval rows only would close the rest. Left for P3.1, which wires the decisions route.
+- The decisions path of `ChatService::prepare` writes the whole chat it read (`chats.update`) to add "Approve for this chat" rows, so a concurrent rename or pin could be undone by it. Approvals are safe now (they only grow); a dedicated `ChatRepository::approve` that writes approval rows only would close the rest. Done in P3.1a ([`p3-1.md`](./p3-1.md)).
 
 ## Blockers
 

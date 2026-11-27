@@ -24,7 +24,7 @@ None for the merge. Two checks need real keys and move to the P3.4 owner checkpo
 
 ## Interface-Change Requests
 
-None blocking. Suggestions for a later serial step:
+None blocking. Suggestions for a later serial step (the first, second, and fourth were done in P3.1a, see [`p3-1.md`](./p3-1.md); the third in P2.F):
 
 - `Dialect::stream_usage` is true for the `openai` preset only. Ollama and vLLM also document `stream_options.include_usage` and send no usage without it, so their answers save no token counts. Turning it on for the `ollama` dialect would fix that for Ollama; `custom` servers vary.
 - `LlmRequest::reasoning` is `None` both for a model without the `reasoning` flag and for a reasoning model with no level chosen. Current Claude models think by default with their thinking text omitted, so a Claude chat without a level shows no reasoning. A flag on the request ("the model has `reasoning`") would let the adapter ask for `display: "summarized"` without choosing an effort.

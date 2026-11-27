@@ -483,12 +483,14 @@ impl ChatService {
             })
             .map(|(server_id, name)| ApprovedTool { server_id, name })
             .collect();
+        // Approval rows only: a rename or pin saved since the chat was read stays.
+        self.stores
+            .chats
+            .approve(user, chat.id(), &approved)
+            .await?;
         let mut chat = chat;
-        if !approved.is_empty() {
-            for tool in approved {
-                chat = chat.approving(tool);
-            }
-            self.stores.chats.update(&chat).await?;
+        for tool in approved {
+            chat = chat.approving(tool);
         }
         self.finish(actor, chat, loaded, staged, RunMode::Interactive)
             .await

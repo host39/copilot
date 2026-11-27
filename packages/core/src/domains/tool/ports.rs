@@ -35,4 +35,8 @@ pub trait ToolServerRepository: Send + Sync {
         review_required: bool,
         at: DateTime<Utc>,
     ) -> DomainResult<bool>;
+    /// Marks the stored tool list expired (its `ttlMs` becomes 0; `tools_fetched_at` stays), so
+    /// the next turn lists the server again and keeps the old list only if that fails. Nothing
+    /// happens when the server has no list or the user has no such server.
+    async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()>;
 }

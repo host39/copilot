@@ -59,8 +59,8 @@ pub use crate::ports::llm_gateway::{
 pub use crate::ports::logger::LogLevel;
 pub use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher, unreadable};
 pub use crate::ports::tool_host::{
-    RemoteTool, TOOL_TIMEOUT, ToolContent, ToolEndpoint, ToolHost, ToolListing, ToolOutput,
-    ToolSession,
+    RemoteTool, TOOL_TIMEOUT, TOOL_UNKNOWN, ToolContent, ToolEndpoint, ToolHost, ToolListing,
+    ToolOutput, ToolSession,
 };
 pub use crate::ports::turn_sink::TurnSink;
 // Shared types

@@ -207,4 +207,18 @@ impl ToolServerRepository for PgStore {
         .rows_affected();
         Ok(saved > 0)
     }
+
+    async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
+        // A `ttl_ms` of 0 expires the list now; `tools_fetched_at` keeps telling when it came.
+        sqlx::query(
+            "UPDATE tool_servers SET tools_cached = jsonb_set(tools_cached, '{ttl_ms}', '0') \
+             WHERE id = $1 AND user_id = $2 AND tools_cached IS NOT NULL",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.tool-servers.stale.failed"))?;
+        Ok(())
+    }
 }

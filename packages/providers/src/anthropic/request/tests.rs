@@ -26,6 +26,7 @@ fn request(messages: Vec<LlmMessage>) -> LlmRequest {
         tools: Vec::new(),
         max_output_tokens: 4_096,
         reasoning: None,
+        can_reason: false,
         audio_out: None,
         cache_breakpoints: false,
     }
@@ -112,9 +113,31 @@ fn maps_each_reasoning_level_to_thinking() {
 
     let mut off = low.clone();
     off.reasoning = Some(ReasoningLevel::Off);
+    off.can_reason = true;
     let body_off = body(&off).expect("a body");
     assert_eq!(body_off["thinking"], json!({ "type": "disabled" }));
     assert!(body_off.get("output_config").is_none());
+}
+
+#[test]
+fn a_reasoning_model_without_a_level_shows_its_default_thinking() {
+    let mut default = request(vec![message(Role::User, vec![text("Hi")])]);
+    default.can_reason = true;
+    let body_default = body(&default).expect("a body");
+    assert_eq!(
+        body_default["thinking"],
+        json!({ "type": "adaptive", "display": "summarized" })
+    );
+    assert!(
+        body_default.get("output_config").is_none(),
+        "no effort: the model's default applies"
+    );
+
+    default.can_reason = false;
+    assert!(
+        body(&default).expect("a body").get("thinking").is_none(),
+        "a model without reasoning gets no thinking"
+    );
 }
 
 #[test]

@@ -160,9 +160,10 @@ impl Dialect {
         }
     }
 
-    /// Whether to send `stream_options: {include_usage: true}`.
+    /// Whether to send `stream_options: {include_usage: true}`: OpenAI and Ollama send no usage
+    /// without it. Other servers vary, so `custom` connections do not get it.
     pub fn stream_usage(self) -> bool {
-        self == Self::OpenAi
+        matches!(self, Self::OpenAi | Self::Ollama)
     }
 
     /// Whether `tool_choice` may be sent (Ollama never gets it).
@@ -274,11 +275,17 @@ mod tests {
         ] {
             assert_eq!(dialect.token_field(), "max_tokens");
             assert_eq!(dialect.system_role(), Some("system"));
-            assert!(!dialect.stream_usage());
+        }
+        for dialect in [Dialect::OpenRouter, Dialect::Gemini, Dialect::Compatible] {
+            assert!(!dialect.stream_usage(), "{dialect:?}");
         }
         assert_eq!(Dialect::Anthropic.system_role(), None);
         assert_eq!(Dialect::OpenAi.system_role(), Some("developer"));
         assert!(Dialect::OpenAi.stream_usage());
+        assert!(
+            Dialect::Ollama.stream_usage(),
+            "Ollama reports usage only when asked"
+        );
         assert!(!Dialect::Ollama.sends_tool_choice());
         assert!(Dialect::OpenAi.sends_tool_choice());
         assert!(Dialect::OpenRouter.replays_reasoning_details());

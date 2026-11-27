@@ -52,6 +52,7 @@ fn request(text: &str) -> LlmRequest {
         tools: Vec::new(),
         max_output_tokens: 256,
         reasoning: None,
+        can_reason: false,
         audio_out: None,
         cache_breakpoints: false,
     }

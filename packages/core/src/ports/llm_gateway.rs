@@ -99,6 +99,10 @@ pub struct LlmRequest {
     /// `None` is the model default. `Some(Off)` turns reasoning off (`reasoning_effort: none`
     /// where the dialect needs it, for example on the `openai` preset when tools are sent).
     pub reasoning: Option<ReasoningLevel>,
+    /// The model has the `reasoning` capability, so the adapter may ask to see its reasoning
+    /// without choosing a level (Anthropic `display: "summarized"` with the model's default
+    /// effort when `reasoning` is `None`).
+    pub can_reason: bool,
     /// Spoken replies for `audio_out` models with Speak replies on.
     pub audio_out: Option<AudioOut>,
     /// Mark the end of the file preamble and the last message as cache breakpoints (Anthropic

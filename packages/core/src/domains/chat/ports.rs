@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::domains::chat::context::{ContextHash, TurnContext};
-use crate::domains::chat::entities::Chat;
+use crate::domains::chat::entities::{ApprovedTool, Chat};
 use crate::domains::chat::message::{CallDecision, Message};
 use crate::shared::constants::DEFAULT_PAGE_SIZE;
 use crate::shared::errors::DomainResult;
@@ -25,6 +25,11 @@ pub trait ChatRepository: Send + Sync {
     /// `last_read_at` are not written here: message writes move `updated_at`, and `mark_read`
     /// sets `last_read_at`.
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
+    /// "Approve for this chat": adds `chat_tool_approvals` rows only, skipping rows the chat
+    /// already has and servers the user no longer has. Writes nothing else, so a rename, pin, or
+    /// settings change saved since the chat was read stays.
+    async fn approve(&self, user: UserId, chat: ChatId, tools: &[ApprovedTool])
+    -> DomainResult<()>;
     /// Cascades to its messages, snapshots, attachments, and join rows; schedules created from
     /// it keep existing (`source_chat_id` becomes null). `false` when the user has no such chat.
     async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool>;

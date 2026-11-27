@@ -189,6 +189,113 @@ async fn a_stale_chat_update_keeps_later_approvals_and_skips_deleted_servers(poo
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
+async fn approve_adds_approval_rows_only(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let docs = server(&store, owner, "docs").await;
+    let gone = server(&store, owner, "gone").await;
+    let theirs = server(&store, other, "theirs").await;
+    let created = chat(&store, owner).await;
+    // A rename saved after the decision read the chat stays.
+    ChatRepository::update(&store, &created.clone().titled_by("Renamed"))
+        .await
+        .unwrap();
+    assert!(
+        copilot_core::ToolServerRepository::delete(&store, owner, gone.id())
+            .await
+            .unwrap()
+    );
+    let search = ApprovedTool {
+        server_id: docs.id(),
+        name: "search".to_owned(),
+    };
+    let tools = [
+        search.clone(),
+        ApprovedTool {
+            server_id: gone.id(),
+            name: "fetch".to_owned(),
+        },
+        ApprovedTool {
+            server_id: theirs.id(),
+            name: "read".to_owned(),
+        },
+    ];
+    ChatRepository::approve(&store, owner, created.id(), &tools)
+        .await
+        .unwrap();
+    ChatRepository::approve(&store, owner, created.id(), &tools)
+        .await
+        .unwrap();
+    let stored = ChatRepository::get(&store, owner, created.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.title(), "Renamed", "nothing but approvals written");
+    assert_eq!(
+        stored.approved_tools(),
+        [search],
+        "once each; a deleted or foreign server is skipped"
+    );
+
+    let foreign = chat(&store, other).await;
+    ChatRepository::approve(&store, owner, foreign.id(), &tools)
+        .await
+        .unwrap();
+    let untouched = ChatRepository::get(&store, other, foreign.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        untouched.approved_tools().is_empty(),
+        "another user's chat gets nothing"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn recover_marks_streaming_messages_interrupted(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let model = model(&store, owner).await;
+    let chat = chat(&store, owner).await;
+    let question = Message::user(
+        owner,
+        chat.id(),
+        vec![Part::Text {
+            text: "Hi".to_owned(),
+        }],
+        at(1),
+    );
+    store.append(owner, &question).await.unwrap();
+    let streaming = Message::assistant(owner, chat.id(), model.id(), model.provider_id(), at(2));
+    store.append(owner, &streaming).await.unwrap();
+    let paused = Message::restore(MessageParts {
+        status: MessageStatus::AwaitingApproval,
+        ..Message::assistant(owner, chat.id(), model.id(), model.provider_id(), at(3)).to_parts()
+    });
+    store.append(owner, &paused).await.unwrap();
+
+    assert_eq!(store.recover(at(9)).await.unwrap(), 1);
+    let history = store.history(owner, chat.id()).await.unwrap();
+    assert_eq!(history[1].status(), MessageStatus::Error);
+    assert_eq!(history[1].error(), Some(copilot_core::INTERRUPTED));
+    assert_eq!(history[1].updated_at(), at(9));
+    assert_eq!(
+        history[2].status(),
+        MessageStatus::AwaitingApproval,
+        "a paused answer stays valid"
+    );
+    assert_eq!(
+        updated_at(&store, owner, chat.id()).await,
+        at(3),
+        "the chat does not move or turn unread"
+    );
+    assert_eq!(store.recover(at(10)).await.unwrap(), 0, "nothing left");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
 async fn messages_keep_every_part_and_move_the_chat(pool: DbPool) {
     let store = store(pool).await;
     let owner = user(&store).await;

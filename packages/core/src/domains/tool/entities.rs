@@ -197,6 +197,16 @@ impl ToolServer {
         self
     }
 
+    /// The stored list may be out of date (a call named a tool the server no longer lists): it
+    /// expires now, so the next turn lists the server again, and stays as the fallback.
+    #[must_use]
+    pub fn stale(mut self) -> Self {
+        if let Some(cache) = &mut self.cache {
+            cache.ttl = Some(Duration::ZERO);
+        }
+        self
+    }
+
     /// The user accepted a changed tool list.
     #[must_use]
     pub fn reviewed(mut self) -> Self {
