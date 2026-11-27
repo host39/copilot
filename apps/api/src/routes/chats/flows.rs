@@ -1,6 +1,6 @@
 //! The chat flows of P3.1 end to end (`make test-db`): reattaching after a `seq`, a run that
-//! outlives its client, stop, regenerate, retry, edit and resend, a restart's recovery, the
-//! shutdown drain, and Continue after the tool round limit. rustauth and Copilot run on a
+//! outlives its client, stop, one run per chat and three per user, regenerate, retry, edit and
+//! resend, a restart's recovery, the shutdown drain, and Continue after the tool round limit. rustauth and Copilot run on a
 //! throwaway Postgres database; the provider is wiremock where whole answers do, and the
 //! scripted [`LlmServer`] where a run must stay live while the test acts.
 
@@ -331,6 +331,90 @@ async fn stop_saves_the_partial_answer_and_frees_the_chat(pool: DbPool) {
     llm.reply(&["Again"]);
     let again = say(&app, &token, &chat, "Once more").await;
     assert_eq!(text(&again), "Again", "the chat is free");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run `make test-db`"]
+async fn a_chat_answers_once_and_a_user_runs_at_most_three_chats(pool: DbPool) {
+    let llm = LlmServer::start().await;
+    let (app, token, model) = setup(pool, &llm.url).await;
+    let app = app.router;
+    let mut live = Vec::new();
+    let mut chats = Vec::new();
+    for _ in 0..3 {
+        let chat = new_chat(&app, &token, &model).await;
+        let writer = llm.live();
+        let events = turn(
+            &app,
+            &token,
+            &chat,
+            "messages",
+            Some(json!({ "text": "Hi" })),
+        )
+        .await;
+        live.push((writer, events));
+        chats.push(chat);
+    }
+    for route in ["messages", "regenerate", "retry"] {
+        let busy = send(
+            app.clone(),
+            request(
+                Method::POST,
+                &format!("/api/chats/{}/{route}", chats[0]),
+                Some(&token),
+                Some(json!({ "text": "Again" })),
+            ),
+        )
+        .await;
+        assert_eq!(busy.status, StatusCode::UNPROCESSABLE_ENTITY, "{route}");
+        assert_eq!(busy.body["code"], "CHAT_BUSY", "{route}");
+    }
+    let fourth = new_chat(&app, &token, &model).await;
+    let refused = send(
+        app.clone(),
+        request(
+            Method::POST,
+            &format!("/api/chats/{fourth}/messages"),
+            Some(&token),
+            Some(json!({ "text": "One more" })),
+        ),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.body["code"], "TOO_MANY_RUNS");
+    assert!(
+        messages(&app, &token, &fourth).await.is_empty(),
+        "a refused turn writes nothing"
+    );
+
+    // Another user has their own limit.
+    let bob = other_user(&app, &token, "bob").await;
+    let theirs = call(&app, &bob, Method::POST, "/api/chats", Some(json!({}))).await;
+    let theirs = theirs["data"]["id"].as_str().expect("an id").to_owned();
+    let no_model = send(
+        app.clone(),
+        request(
+            Method::POST,
+            &format!("/api/chats/{theirs}/messages"),
+            Some(&bob),
+            Some(json!({ "text": "Hi" })),
+        ),
+    )
+    .await;
+    assert_eq!(
+        no_model.status,
+        StatusCode::BAD_REQUEST,
+        "reserved and prepared, never TOO_MANY_RUNS: {}",
+        no_model.body
+    );
+
+    let (writer, mut events) = live.remove(0);
+    writer.text("Done");
+    writer.finish("stop");
+    events.rest().await;
+    llm.reply(&["Now"]);
+    let now = say(&app, &token, &fourth, "One more").await;
+    assert_eq!(text(&now), "Now", "a slot is free again");
 }
 
 #[sqlx::test(migrations = false)]
