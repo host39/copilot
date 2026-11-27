@@ -11,6 +11,7 @@ import {
   enterSends,
   mediaType,
   unreadable,
+  uploaded,
 } from "@web/components/Chat/composer";
 import { renderToString } from "react-dom/server";
 
@@ -112,6 +113,17 @@ describe("attached files", () => {
     });
     expect(attachments(failed, { type: "remove", key: "file-2" })).toEqual([]);
     expect(attachments(list, { type: "clear" })).toEqual([]);
+  });
+
+  test("a file whose chip was removed while it uploaded is deleted, not shown", () => {
+    const saved = { id: "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708210", mediaType: "image/png" };
+    expect(uploaded(true, "file-1", saved)).toEqual({
+      type: "ready",
+      key: "file-1",
+      fileId: saved.id,
+      mediaType: "image/png",
+    });
+    expect(uploaded(false, "file-1", saved)).toEqual({ discard: saved.id });
   });
 
   test("adding a file with a key already listed replaces it", () => {

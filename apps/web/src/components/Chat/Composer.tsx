@@ -10,6 +10,7 @@ import {
   finePointer,
   mediaType,
   unreadable,
+  uploaded,
 } from "@web/components/Chat/composer";
 import { size } from "@web/routes/project/files";
 import { type ReactNode, useEffect, useId, useReducer, useRef, useState } from "react";
@@ -139,9 +140,12 @@ export function Composer({
       });
       if (!upload) continue;
       upload(file, file.name, (loaded) => dispatch({ type: "progress", key, loaded }))
-        .then((saved) =>
-          dispatch({ type: "ready", key, fileId: saved.id, mediaType: saved.mediaType })
-        )
+        .then((saved) => {
+          // The chip may have been removed while the file uploaded.
+          const next = uploaded(files.current.has(key), key, saved);
+          if ("discard" in next) discard?.(next.discard);
+          else dispatch(next);
+        })
         .catch((error: unknown) =>
           dispatch({ type: "failed", key, error: describeError(error).message })
         );

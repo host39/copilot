@@ -1,4 +1,5 @@
 import Button from "@web/components/Button/Button";
+import { afterClose, holdWhileBusy } from "@web/components/Dialog/dialog";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { type ReactNode, useEffect, useId, useRef } from "react";
 
@@ -14,7 +15,7 @@ type ConfirmDialogProps = {
   /** Why the last attempt failed. */
   error?: string;
   onConfirm: () => void;
-  /** Called on Cancel, Escape, and a backdrop tap. */
+  /** Called on Cancel, Escape, and a backdrop tap (none of which work while busy). */
   onCancel: () => void;
 };
 
@@ -51,8 +52,11 @@ export function ConfirmDialog({
       ref={dialog}
       aria-labelledby={titleId}
       aria-describedby={bodyId}
+      onCancel={holdWhileBusy(busy)}
       onClose={() => {
-        if (open) onCancel();
+        const next = afterClose(open, busy);
+        if (next === "reopen") dialog.current?.showModal();
+        else if (next === "close") onCancel();
       }}
       onClick={(event) => {
         if (event.target === event.currentTarget && !busy) onCancel();

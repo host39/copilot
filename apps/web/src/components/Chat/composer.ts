@@ -119,6 +119,20 @@ export function attachments(list: Attachment[], action: AttachmentAction): Attac
 }
 
 /**
+ * What becomes of a file whose upload finished: its chip turns ready, or, when the chip was
+ * removed while the file uploaded (`attached` is false), the stored file is deleted (`discard`),
+ * so it never stays on the chat unsent.
+ */
+export function uploaded(
+  attached: boolean,
+  key: string,
+  saved: { id: string; mediaType: string }
+): AttachmentAction | { discard: string } {
+  if (!attached) return { discard: saved.id };
+  return { type: "ready", key, fileId: saved.id, mediaType: saved.mediaType };
+}
+
+/**
  * Whether the message can go: it has text or a ready file, and no file is still uploading (a
  * failed one is left out, and its chip says why).
  */

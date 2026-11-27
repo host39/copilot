@@ -148,6 +148,27 @@ function listActions(turn: ReturnType<typeof useTurn>): ListActions {
   };
 }
 
+/** A query's state as `QueryState` reads it. */
+type Loading = { isPending: boolean; isError: boolean; error: unknown; refetch: () => unknown };
+
+/**
+ * The messages query as the conversation shows it: a spinner while the saved messages load, and
+ * their error with a retry when none could be read. A turn that streams shows itself instead
+ * (the new chat's first answer), and an error after messages were read stays above the composer.
+ */
+export function conversationQuery(
+  messages: Loading & { data?: unknown },
+  streaming: boolean
+): Loading {
+  const empty = messages.data === undefined && !streaming;
+  return {
+    isPending: messages.isPending && empty,
+    isError: messages.isError && empty,
+    error: messages.error,
+    refetch: messages.refetch,
+  };
+}
+
 /** What the line above the composer says about the connection to the run. */
 export function phaseNote(phase: Phase): string | null {
   return phase === "reconnecting" ? "Connection lost. The answer goes on; reconnecting..." : null;
@@ -303,7 +324,9 @@ function ChatView({ chatId }: { chatId: string }) {
   const data = chat.data;
   const model = models.data?.find((item) => item.id === data?.modelId);
   const notice = data ? modelNotice(data, models.data) : null;
-  const problem = messages.error;
+  const conversation = conversationQuery(messages, turn.run !== null);
+  // A failed load the conversation shows (with a retry) is not repeated above the composer.
+  const problem = conversation.isError ? null : messages.error;
 
   return (
     <section className="flex h-full flex-col">
@@ -323,16 +346,18 @@ function ChatView({ chatId }: { chatId: string }) {
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-8">
           <QueryState query={chat} back={{ to: path.home, label: "New chat" }}>
-            <MessageList
-              messages={shown}
-              writing={writingIds(turn.run, running)}
-              running={running}
-              windowStartId={turn.windowStartId}
-              actions={actions}
-              titles={turn.run?.titles}
-              servers={names}
-              schedule={scheduleContext(model, project.data, servers.data)}
-            />
+            <QueryState query={conversation}>
+              <MessageList
+                messages={shown}
+                writing={writingIds(turn.run, running)}
+                running={running}
+                windowStartId={turn.windowStartId}
+                actions={actions}
+                titles={turn.run?.titles}
+                servers={names}
+                schedule={scheduleContext(model, project.data, servers.data)}
+              />
+            </QueryState>
           </QueryState>
         </div>
       </div>

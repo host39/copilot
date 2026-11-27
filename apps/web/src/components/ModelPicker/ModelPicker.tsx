@@ -1,7 +1,7 @@
 import type { Capability, ModelResponse, ReasoningLevel } from "@copilot/contracts";
 import { describeError } from "@web/api/errors";
 import Button from "@web/components/Button/Button";
-import { Modal } from "@web/components/Dialog/Modal";
+import { Modal, useModalBusy } from "@web/components/Dialog/Modal";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import {
   CAPABILITY_LABELS,
@@ -164,6 +164,7 @@ export function Sheet({ models, initial, toolsOn, onCancel, onPick }: SheetProps
   const [error, setError] = useState<string>();
   const id = useId();
   const groups = groupModels(models);
+  useModalBusy(busy);
   const model = models.find((item) => item.id === choice.modelId);
   const levels = model ? reasoningLevels(model) : [];
 

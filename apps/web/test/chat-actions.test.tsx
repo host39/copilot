@@ -19,7 +19,7 @@ import {
   readyDecisions,
 } from "@web/components/Chat/messages";
 import { ApprovalPanel, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
-import { messageFiles, phaseNote, writingIds } from "@web/routes/chat/page";
+import { conversationQuery, messageFiles, phaseNote, writingIds } from "@web/routes/chat/page";
 import {
   apply,
   DRAFT_ID,
@@ -283,6 +283,19 @@ describe("the turn", () => {
     expect(phaseNote("reconnecting")).toContain("reconnecting");
     expect(phaseNote("idle")).toBeNull();
     expect(phaseNote("streaming")).toBeNull();
+  });
+
+  test("the conversation waits for its messages, or shows why they failed, unless a turn streams", () => {
+    const refetch = () => undefined;
+    const pending = { isPending: true, isError: false, error: null, refetch };
+    expect(conversationQuery(pending, false)).toMatchObject({ isPending: true, isError: false });
+    expect(conversationQuery(pending, true)).toMatchObject({ isPending: false, isError: false });
+    const problem = new ApiError(500, { error: "Down", code: "INTERNAL_ERROR" });
+    const failed = { isPending: false, isError: true, error: problem, refetch };
+    expect(conversationQuery(failed, false)).toMatchObject({ isError: true, error: problem });
+    expect(conversationQuery(failed, true).isError).toBe(false);
+    // A refresh that failed after the messages were read keeps showing them.
+    expect(conversationQuery({ ...failed, data: [] }, false).isError).toBe(false);
   });
 });
 

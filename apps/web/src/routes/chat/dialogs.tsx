@@ -7,6 +7,7 @@ import { saveInstructions, updateChat } from "@web/api/routes/chats";
 import { keys } from "@web/api/routes/keys";
 import { fetchProjects } from "@web/api/routes/projects";
 import Button from "@web/components/Button/Button";
+import { useModalBusy } from "@web/components/Dialog/Modal";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { FormNotice } from "@web/components/Form/FormNotice";
 import { TextArea } from "@web/components/Form/TextArea";
@@ -77,6 +78,7 @@ export function InstructionsForm({
   const sources = (projects.data ?? []).filter(
     (item) => item.id !== chat.projectId && item.instructions.trim() !== ""
   );
+  useModalBusy(save.isPending || toProject.isPending);
   const error = save.error ?? toProject.error;
 
   return (
@@ -168,6 +170,7 @@ export function MoveForm({ chat, onDone }: { chat: ChatResponse; onDone: () => v
       onDone();
     },
   });
+  useModalBusy(move.isPending);
   const choices: { id: string; label: string }[] = [
     { id: "", label: "No project" },
     ...(projects.data ?? []).map((item) => ({ id: item.id, label: projectLabel(item) })),
