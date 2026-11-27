@@ -95,6 +95,9 @@ async fn reads_registered_columns_only_and_nothing_in_auth(pool: DbPool) {
             "SELECT headers_sealed FROM tool_servers",
             "SELECT url FROM tool_servers",
             "SELECT tools_cached FROM tool_servers",
+            "SELECT command FROM tool_servers",
+            "SELECT args FROM tool_servers",
+            "SELECT env_sealed FROM tool_servers",
             "SELECT name FROM schedules",
             "SELECT prompt FROM schedules",
             "SELECT instructions FROM schedules",
@@ -123,7 +126,8 @@ async fn reads_registered_columns_only_and_nothing_in_auth(pool: DbPool) {
     for sql in [
         "SELECT * FROM models",
         "SELECT id, user_id, kind, preset, name, enabled FROM providers",
-        "SELECT id, user_id, slug, approval, tool_modes, tools_fetched_at FROM tool_servers",
+        "SELECT id, user_id, slug, approval, tool_modes, tools_fetched_at, transport, cwd \
+         FROM tool_servers",
         "SELECT id, user_id, model_id, cron, timezone, enabled, next_run_at, last_status, \
          consecutive_failures, disabled_reason FROM schedules",
         "SELECT id, user_id, media_type, size_bytes, token_estimate, page_count FROM files",

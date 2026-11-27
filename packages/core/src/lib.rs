@@ -51,11 +51,12 @@ pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSett
 pub use crate::domains::tool::{
     ALIAS_MAX_CHARS, ApprovalMode, AuthMode, CLIENT_ID_REQUIRED, CLIENT_NAME, Callback,
     ClientChange, ClientConfig, ClientInput, CredentialChange, EffectiveTool, EffectiveTools,
-    NewToolServer, Pending, SIGN_IN_UNAVAILABLE, SLUG_MAX_CHARS, ServerOverride, Session, SignIn,
-    SignInConfig, SignInFlow, SignInOutcome, SignInRepository, SignInResult, SignInStart,
-    SignInState, Slug, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode, ToolSelection,
+    Location, NewToolServer, Pending, SIGN_IN_UNAVAILABLE, SLUG_MAX_CHARS, STDIO_DISABLED,
+    ServerOverride, Session, SignIn, SignInConfig, SignInFlow, SignInOutcome, SignInRepository,
+    SignInResult, SignInStart, SignInState, Slug, StdioCommand, StdioEnv, StdioInput, StdioPolicy,
+    StdioUpdate, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode, ToolSelection,
     ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository, ToolServerUpdate,
-    ToolService, ToolSpec, ToolTest, UnavailableServer, offered,
+    ToolService, ToolSpec, ToolTest, Transport, UnavailableServer, offered,
 };
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::accounts::Accounts;
@@ -72,8 +73,8 @@ pub use crate::ports::tool_auth::{
     TokenRequest, TokenSet, TokenSource, ToolAuth,
 };
 pub use crate::ports::tool_host::{
-    RemoteTool, TOOL_TIMEOUT, TOOL_UNKNOWN, ToolContent, ToolEndpoint, ToolHost, ToolListing,
-    ToolOutput, ToolSession,
+    RemoteTool, SpawnCheck, SpawnGate, StdioLaunch, TOOL_TIMEOUT, TOOL_UNKNOWN, Target,
+    ToolContent, ToolEndpoint, ToolHost, ToolListing, ToolOutput, ToolSession,
 };
 pub use crate::ports::turn_sink::TurnSink;
 pub use crate::ports::worker::{InlineWorker, Job, Worker, offload};

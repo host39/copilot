@@ -56,6 +56,11 @@ async fn foreign_keys(pool: &DbPool) -> Vec<ForeignKey> {
     .expect("foreign keys listed")
 }
 
+/// The columns that leave the OAuth mode, which a stdio server needs.
+const NO_SIGN_IN: &str = "auth_mode = 'none', oauth_client_id = NULL, \
+     oauth_client_secret_sealed = NULL, oauth_tokens_sealed = NULL, oauth_expires_at = NULL, \
+     oauth_refreshable = false";
+
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run `make test-db`"]
 async fn owner_scoped_tables_carry_a_user_id(pool: DbPool) {
@@ -278,6 +283,42 @@ async fn checks_reject_values_core_cannot_read(pool: DbPool) {
             g.tool_server
         ),
         format!(
+            "UPDATE tool_servers SET transport = 'ws' WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET url = NULL WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET command = '/bin/server' WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET env_sealed = '\\x01' WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET transport = 'stdio', url = NULL, command = '/bin/server', \
+             args = '{{}}', cwd = 'docs' WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET transport = 'stdio', url = NULL, args = '{{}}', cwd = 'docs', \
+             {NO_SIGN_IN} WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET transport = 'stdio', url = NULL, command = '/bin/server', \
+             cwd = 'docs', {NO_SIGN_IN} WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
+            "UPDATE tool_servers SET transport = 'stdio', command = '/bin/server', \
+             args = '{{}}', cwd = 'docs', {NO_SIGN_IN} WHERE id = '{}'",
+            g.tool_server
+        ),
+        format!(
             "UPDATE projects SET reasoning = 'max' WHERE id = '{}'",
             g.project
         ),
@@ -414,6 +455,13 @@ async fn checks_reject_values_core_cannot_read(pool: DbPool) {
         format!(
             "UPDATE files SET page_count = 3 WHERE id = '{}'",
             g.project_file
+        ),
+        // Last: the graph's server becomes a stdio server.
+        format!(
+            "UPDATE tool_servers SET transport = 'stdio', url = NULL, command = '/bin/server', \
+             args = '{{--flag}}', env_sealed = '\\x05', cwd = 'docs', {NO_SIGN_IN} \
+             WHERE id = '{}'",
+            g.tool_server
         ),
     ];
     for statement in &accepted {

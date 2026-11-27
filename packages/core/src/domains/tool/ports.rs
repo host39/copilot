@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::domains::tool::auth::{SignIn, SignInFlow};
-use crate::domains::tool::entities::ToolServer;
+use crate::domains::tool::entities::{Location, ToolServer};
 use crate::ports::tool_host::ToolListing;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::errors::DomainResult;
@@ -17,24 +17,25 @@ pub trait ToolServerRepository: Send + Sync {
     async fn get(&self, user: UserId, id: ToolServerId) -> DomainResult<Option<ToolServer>>;
     /// `UNIQUE (user_id, slug)`: the service picks a free slug first.
     async fn insert(&self, server: &ToolServer) -> DomainResult<()>;
-    /// Writes the user's settings: name, URL, credentials (headers, auth mode, the OAuth
-    /// client), approval, tool modes, enabled, protocol version, and the review flag. The slug
-    /// never changes. It never stores a sign-in ([`ToolServerRepository::save_sign_in`] does): it
+    /// Writes the user's settings: name, URL or stdio program (the transport never changes),
+    /// credentials (headers, auth mode, the OAuth client), approval, tool modes, enabled,
+    /// protocol version, and the review flag. The slug never changes. It never stores a sign-in ([`ToolServerRepository::save_sign_in`] does): it
     /// clears the stored one when the new auth mode is not `oauth` or the URL changes, and keeps
     /// it otherwise, so a settings save never undoes a sign-in or a refresh that ran meanwhile.
     async fn update(&self, server: &ToolServer) -> DomainResult<()>;
     /// Cascades to the `project_tool_servers` and `chat_tool_servers` rows. `false` when the
     /// user has no such server.
     async fn delete(&self, user: UserId, id: ToolServerId) -> DomainResult<bool>;
-    /// Stores a `tools/list` result of `url`: `tools_cached` (with `ttlMs`),
+    /// Stores a `tools/list` result of the server at `location`: `tools_cached` (with `ttlMs`),
     /// `tools_fetched_at = at`, `protocol_version`, and `tools_review_required`. Stores nothing
-    /// and returns `false` when the server's URL is no longer `url` (the user changed it while
-    /// the list was fetched, so the list belongs to the old URL) or the user has no such server.
+    /// and returns `false` when the server is no longer at `location` (the user changed its URL,
+    /// or its stdio program, arguments, sealed environment, or directory, while the list was
+    /// fetched, so the list belongs to the old one) or the user has no such server.
     async fn save_listing(
         &self,
         user: UserId,
         id: ToolServerId,
-        url: &BaseUrl,
+        location: &Location,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,

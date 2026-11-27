@@ -1,10 +1,13 @@
 //! MCP tool server port.
 //!
-//! `copilot-mcp` implements [`ToolHost`] over Streamable HTTP with rmcp. Core builds every
-//! endpoint, so the adapter never reads the database or the cipher.
+//! `copilot-mcp` implements [`ToolHost`] with rmcp, over Streamable HTTP and, for a stdio server,
+//! over a child process's stdin and stdout. Core builds every endpoint, so the adapter never reads
+//! the database or the cipher.
 //!
 //! The port is frozen from P1.3 on (`docs/design/roadmap.md`, Freeze List).
 
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -88,18 +91,93 @@ pub enum ToolContent {
 /// `ToolHeaders` JSON (read it with `ToolHeaders::entries`); `tokens`, for a server signed in with
 /// OAuth, gives the access token to send as `Authorization: Bearer` and a fresh one after a `401`
 /// (a server has one or the other, never both); `network` picks the outbound client, and a plain
-/// `http` `url` (`!is_https()`) takes the plaintext client, whose resolver admits only
-/// `net::is_allowed_plaintext` addresses.
+/// `http` URL (`!is_https()`) takes the plaintext client, whose resolver admits only
+/// `net::is_allowed_plaintext` addresses. A stdio server has none of these.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolEndpoint {
     pub server_id: ToolServerId,
-    pub url: BaseUrl,
+    pub target: Target,
     pub headers: Option<Secret>,
     pub tokens: Option<TokenSource>,
     /// The MCP revision negotiated last time, so a legacy server skips the modern probe.
     pub protocol_version: Option<String>,
     pub network: NetworkScope,
 }
+
+impl ToolEndpoint {
+    /// The URL of a Streamable HTTP server; `None` for a stdio server.
+    pub fn url(&self) -> Option<&BaseUrl> {
+        match &self.target {
+            Target::Http(url) => Some(url),
+            Target::Stdio(_) => None,
+        }
+    }
+}
+
+/// Where the adapter reaches a server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Target {
+    /// Streamable HTTP at this URL.
+    Http(BaseUrl),
+    /// A process on the API host that speaks MCP over its stdin and stdout.
+    Stdio(StdioLaunch),
+}
+
+/// How to start a stdio server's process. The adapter runs exactly
+/// `Command::new(command).args(args).env_clear().envs(env).current_dir(<MCP_STDIO_DIR>/<cwd>)`,
+/// never through a shell, and asks [`StdioLaunch::gate`] right before every start.
+/// `Debug` never prints the environment's values.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StdioLaunch {
+    /// The program's absolute path.
+    pub command: String,
+    pub args: Vec<String>,
+    /// The opened `StdioEnv` JSON (read it with `StdioEnv::entries`): the process's whole
+    /// environment. `None` starts it with an empty one.
+    pub env: Option<Secret>,
+    /// The working directory, relative to the adapter's base directory (`MCP_STDIO_DIR`).
+    pub cwd: String,
+    pub gate: SpawnGate,
+}
+
+impl fmt::Debug for StdioLaunch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StdioLaunch")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &self.env)
+            .field("cwd", &self.cwd)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Decides, right before the adapter starts a stdio server's process, whether it may: core
+/// checks `MCP_STDIO_ENABLED` and that the server's owner is an administrator at that moment
+/// (a demoted owner's servers stop starting at once, even within a run).
+#[async_trait]
+pub trait SpawnCheck: Send + Sync {
+    /// `Ok` to start the process; otherwise the human-readable refusal the call fails with.
+    async fn allow(&self) -> DomainResult<()>;
+}
+
+/// [`SpawnCheck`] in a [`StdioLaunch`]. Two gates are equal when they are the same object.
+#[derive(Clone)]
+pub struct SpawnGate(pub Arc<dyn SpawnCheck>);
+
+impl fmt::Debug for SpawnGate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SpawnGate")
+    }
+}
+
+impl PartialEq for SpawnGate {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SpawnGate {}
 
 /// A `tools/list` result.
 #[derive(Clone, Debug, PartialEq)]

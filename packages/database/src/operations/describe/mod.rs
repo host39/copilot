@@ -68,6 +68,18 @@ pub const SCHEMA_TABLES: &[TableDoc] = &[
                 name: "oauth_tokens_sealed",
                 reason: "Sealed OAuth access and refresh tokens.",
             },
+            OmittedColumn {
+                name: "command",
+                reason: "A stdio server's program path, which may name private systems.",
+            },
+            OmittedColumn {
+                name: "args",
+                reason: "A stdio server's arguments, which may carry a credential.",
+            },
+            OmittedColumn {
+                name: "env_sealed",
+                reason: "Sealed environment variables of a stdio server.",
+            },
         ],
     },
     TableDoc {

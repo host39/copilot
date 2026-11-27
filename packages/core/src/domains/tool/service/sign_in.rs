@@ -23,6 +23,7 @@ use crate::ports::tool_auth::{
     SIGN_IN_REQUIRED, TokenRequest, TokenSet, TokenSource, ToolAuth,
 };
 use crate::shared::actor::Actor;
+use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::SIGN_IN_FLOW_SECS;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ToolServerId;
@@ -163,7 +164,7 @@ impl ToolService {
             .with_field("authMode"));
         }
         let network = self.network.scope(actor);
-        let discovery = oauth.auth.discover(server.url(), network).await?;
+        let discovery = oauth.auth.discover(http_url(&server)?, network).await?;
         let scope = scope(&discovery);
         let client = self
             .oauth_client(oauth, &server, &discovery, scope.clone(), network)
@@ -180,7 +181,7 @@ impl ToolService {
             client,
             resource: discovery.resource.clone(),
             scope: scope.clone(),
-            url: server.url().as_str().to_owned(),
+            url: http_url(&server)?.as_str().to_owned(),
             private: network == NetworkScope::Private,
         };
         let mut flow = SignInFlow {
@@ -246,7 +247,8 @@ impl ToolService {
         let code = accepted(callback, &pending, flow.server_id)?;
         let server = match self.servers.get(flow.user_id, flow.server_id).await {
             Ok(Some(server))
-                if server.auth() == AuthMode::OAuth && server.url().as_str() == pending.url =>
+                if server.auth() == AuthMode::OAuth
+                    && server.url().is_some_and(|url| url.as_str() == pending.url) =>
             {
                 server
             }
@@ -321,7 +323,7 @@ impl ToolService {
             .save_sign_in(
                 flow.user_id,
                 server.id(),
-                server.url(),
+                http_url(server).map_err(|_| failed(server_id, "server-changed"))?,
                 Some(&sign_in),
                 None,
             )
@@ -337,9 +339,11 @@ impl ToolService {
     /// expires; revoke it there to end it everywhere).
     pub async fn sign_out(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolServer> {
         let server = self.load(actor, id).await?;
-        self.servers
-            .save_sign_in(actor.user_id, id, server.url(), None, None)
-            .await?;
+        if let Some(url) = server.url() {
+            self.servers
+                .save_sign_in(actor.user_id, id, url, None, None)
+                .await?;
+        }
         tracing::info!(server_id = %id, "core.tools.sign-in.signed-out");
         self.load(actor, id).await
     }
@@ -643,7 +647,7 @@ impl ServerTokens {
             .save_sign_in(
                 self.actor.user_id,
                 id,
-                server.url(),
+                http_url(server)?,
                 Some(&next),
                 Some(&sign_in.sealed),
             )
@@ -663,13 +667,19 @@ impl ServerTokens {
             .save_sign_in(
                 self.actor.user_id,
                 server.id(),
-                server.url(),
+                http_url(server)?,
                 None,
                 Some(&sign_in.sealed),
             )
             .await?;
         Ok(())
     }
+}
+
+/// The URL of an `OAuth` server. Only Streamable HTTP servers sign in (a stdio server's program
+/// gets its credentials from its environment), so a stdio server fails as not signed in.
+fn http_url(server: &ToolServer) -> DomainResult<&BaseUrl> {
+    server.url().ok_or_else(|| sign_in_required(server))
 }
 
 #[cfg(test)]

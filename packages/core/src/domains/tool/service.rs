@@ -1,5 +1,6 @@
 //! Tool server use cases: settings, tests (tool listing and change detection), reviews, the
-//! tools a turn gets, and OAuth sign-in (`sign_in`).
+//! tools a turn gets, OAuth sign-in (`sign_in`), and the rules of stdio servers (`stdio`):
+//! administrators only, while `MCP_STDIO_ENABLED` is on, checked on save and before every start.
 
 mod sign_in;
 
@@ -12,16 +13,21 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 
 use crate::domains::provider::KeyState;
 use crate::domains::tool::auth::{AuthMode, ClientConfig, SignInState};
-use crate::domains::tool::entities::ToolServer;
+use crate::domains::tool::entities::{Location, ToolServer};
 use crate::domains::tool::headers::ToolHeaders;
 use crate::domains::tool::ports::ToolServerRepository;
 use crate::domains::tool::selection::{
     EffectiveTools, ToolChanges, ToolSelection, UnavailableServer, offered,
 };
+use crate::domains::tool::stdio::{
+    self, StdioCommand, StdioEnv, StdioGate, StdioInput, StdioPolicy, StdioUpdate, Transport,
+};
 use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::clock::Clock;
 use crate::ports::secret_cipher::SecretCipher;
-use crate::ports::tool_host::{ToolEndpoint, ToolHost, ToolListing};
+use crate::ports::tool_host::{
+    SpawnGate, StdioLaunch, Target, ToolEndpoint, ToolHost, ToolListing,
+};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::{
@@ -38,13 +44,19 @@ pub use crate::domains::tool::service::sign_in::{
     SignInResult, SignInStart,
 };
 
-/// Input of [`ToolService::create`]. `Debug` prints `***` for the token and header values.
+/// Input of [`ToolService::create`]. `Debug` prints `***` for the token, header, and
+/// environment values.
 #[derive(Clone, Default)]
 pub struct NewToolServer {
     pub name: String,
     /// `None` derives a free slug from the name.
     pub slug: Option<String>,
+    /// `Stdio` needs `stdio` and no URL or credentials.
+    pub transport: Transport,
+    /// Blank for a stdio server.
     pub url: String,
+    /// The program of a stdio server.
+    pub stdio: Option<StdioInput>,
     /// Blank means none.
     pub bearer: Option<String>,
     pub headers: BTreeMap<String, String>,
@@ -61,7 +73,9 @@ impl fmt::Debug for NewToolServer {
             .debug_struct("NewToolServer")
             .field("name", &self.name)
             .field("slug", &self.slug)
+            .field("transport", &self.transport)
             .field("url", &self.url)
+            .field("stdio", &self.stdio)
             .field("bearer", &self.bearer.as_ref().map(|_| REDACTED))
             .field("headers", &Redacted(&self.headers))
             .field("auth", &self.auth)
@@ -97,11 +111,15 @@ pub enum ClientChange {
     Clear,
 }
 
-/// Input of [`ToolService::update`]; `None` keeps a field. The slug never changes.
+/// Input of [`ToolService::update`]; `None` keeps a field. The slug and the transport never
+/// change.
 #[derive(Clone, Debug, Default)]
 pub struct ToolServerUpdate {
     pub name: Option<String>,
+    /// Streamable HTTP servers only.
     pub url: Option<String>,
+    /// stdio servers only; administrators only.
+    pub stdio: Option<StdioUpdate>,
     pub credentials: Option<CredentialChange>,
     /// Switching modes drops the other modes' credentials; `Headers` needs headers (given now or
     /// stored).
@@ -161,6 +179,8 @@ pub struct ToolServerDetails {
     /// The OAuth sign-in (`None` outside `OAuth`); a sign-in that no longer opens needs a new
     /// one.
     pub sign_in: Option<SignInState>,
+    /// A stdio server's environment.
+    pub env: KeyState,
 }
 
 /// The result of a test: the server with its new tool list, and what changed since the last one.
@@ -182,6 +202,8 @@ pub struct ToolService {
     failures: Arc<Mutex<HashMap<ToolServerId, DateTime<Utc>>>>,
     /// OAuth sign-in ([`ToolService::with_sign_in`]).
     oauth: Option<Arc<OAuth>>,
+    /// stdio servers ([`ToolService::with_stdio`]); `None` is `MCP_STDIO_ENABLED` off.
+    stdio: Option<StdioPolicy>,
 }
 
 /// What a turn's refresh of one server came to.
@@ -211,7 +233,32 @@ impl ToolService {
             network,
             failures: Arc::default(),
             oauth: None,
+            stdio: None,
         }
+    }
+
+    /// Lets administrators add and run stdio servers when `policy.enabled`
+    /// (`MCP_STDIO_ENABLED`); `policy.accounts` tells, before every start, whether the owner is
+    /// still an administrator.
+    #[must_use]
+    pub fn with_stdio(mut self, policy: StdioPolicy) -> Self {
+        self.stdio = Some(policy);
+        self
+    }
+
+    /// Whether `actor` may add and run stdio servers: the setting is on and the session's
+    /// account is an administrator.
+    pub fn stdio_available(&self, actor: &Actor) -> bool {
+        self.stdio
+            .as_ref()
+            .is_some_and(|policy| policy.allows(actor))
+    }
+
+    /// Fails unless [`ToolService::stdio_available`], with the reason.
+    fn stdio_check(&self, actor: &Actor) -> DomainResult<&StdioPolicy> {
+        let policy = self.stdio.as_ref().ok_or_else(stdio::disabled)?;
+        policy.check(actor)?;
+        Ok(policy)
     }
 
     pub async fn list(&self, actor: &Actor) -> DomainResult<Vec<ToolServer>> {
@@ -241,12 +288,31 @@ impl ToolService {
             Some(_) if readable == KeyState::Unreadable => Some(SignInState::NeedsSignIn),
             state => state,
         };
+        let env = KeyState::check(
+            &*self.cipher,
+            server
+                .stdio()
+                .and_then(|command| command.env_sealed.as_deref()),
+            &server.env_context(),
+        )?;
         Ok(ToolServerDetails {
             server,
             credentials,
             client_secret,
             sign_in,
+            env,
         })
+    }
+
+    /// The names of a stdio server's environment variables (never their values); empty when it
+    /// has none or they no longer open.
+    pub fn env_names(&self, server: &ToolServer) -> Vec<String> {
+        server
+            .stdio()
+            .and_then(|command| command.env_sealed.as_deref())
+            .and_then(|sealed| self.cipher.open(sealed, &server.env_context()).ok())
+            .and_then(|secret| StdioEnv::names(&secret).ok())
+            .unwrap_or_default()
     }
 
     /// What the settings show for an `OAuth` server now; `None` in the other modes.
@@ -254,8 +320,15 @@ impl ToolService {
         server.sign_in_state(self.clock.now())
     }
 
-    /// Registers a server. It has no tools until the first test.
+    /// Registers a server. It has no tools until the first test. A stdio server needs an
+    /// administrator and `MCP_STDIO_ENABLED`.
     pub async fn create(&self, actor: &Actor, input: NewToolServer) -> DomainResult<ToolServer> {
+        if input.transport == Transport::Stdio {
+            return self.create_stdio(actor, input).await;
+        }
+        if input.stdio.is_some() {
+            return Err(only_stdio());
+        }
         let url = self.url(actor, &input.url)?;
         let headers = ToolHeaders::new(input.bearer.as_deref(), &input.headers)?;
         let mode = input.auth.unwrap_or(if headers.is_empty() {
@@ -267,26 +340,7 @@ impl ToolService {
         if input.client.is_some() && mode != AuthMode::OAuth {
             return Err(only_oauth());
         }
-        let taken: Vec<Slug> = self
-            .servers
-            .list(actor.user_id)
-            .await?
-            .iter()
-            .map(|server| server.slug().clone())
-            .collect();
-        let slug = match input.slug.as_deref() {
-            Some(text) => {
-                let slug = Slug::parse(text)?;
-                if taken.contains(&slug) {
-                    return Err(DomainError::validation(
-                        "Another tool server already uses this slug.",
-                    )
-                    .with_field("slug"));
-                }
-                slug
-            }
-            None => Slug::derive(&input.name, &taken),
-        };
+        let slug = self.slug(actor, &input).await?;
         let server = ToolServer::create(actor.user_id, &input.name, slug, url, self.clock.now())?
             .with_approval(input.approval);
         let sealed = self.seal(&server, &headers)?;
@@ -299,12 +353,81 @@ impl ToolService {
         Ok(server)
     }
 
+    /// A stdio server: its program, arguments, environment (sealed), and directory, without a
+    /// URL or credentials.
+    async fn create_stdio(&self, actor: &Actor, input: NewToolServer) -> DomainResult<ToolServer> {
+        self.stdio_check(actor)?;
+        if !input.url.trim().is_empty() {
+            return Err(
+                DomainError::validation("A stdio server runs a program and has no URL.")
+                    .with_field("url"),
+            );
+        }
+        let has_credentials = input
+            .bearer
+            .as_deref()
+            .is_some_and(|bearer| !bearer.trim().is_empty())
+            || !input.headers.is_empty()
+            || input.auth.is_some_and(|mode| mode != AuthMode::None)
+            || input.client.is_some();
+        if has_credentials {
+            return Err(no_credentials());
+        }
+        let Some(program) = &input.stdio else {
+            return Err(
+                DomainError::validation("Enter the program's path.").with_field("stdio.command")
+            );
+        };
+        let command = StdioCommand {
+            command: stdio::command(&program.command)?,
+            args: stdio::args(&program.args)?,
+            env_sealed: None,
+            cwd: stdio::cwd(program.cwd.as_deref(), "")?,
+        };
+        let env = StdioEnv::new(&program.env)?;
+        let slug = self.slug(actor, &input).await?;
+        let server =
+            ToolServer::create_stdio(actor.user_id, &input.name, slug, command, self.clock.now())?
+                .with_approval(input.approval);
+        let sealed = self.seal_env(&server, &env)?;
+        let server = server.with_env(sealed);
+        self.servers.insert(&server).await?;
+        tracing::info!(server_id = %server.id(), user_id = %actor.user_id, "core.tools.stdio.created");
+        Ok(server)
+    }
+
+    /// The slug the input asks for, or a free one derived from the name.
+    async fn slug(&self, actor: &Actor, input: &NewToolServer) -> DomainResult<Slug> {
+        let taken: Vec<Slug> = self
+            .servers
+            .list(actor.user_id)
+            .await?
+            .iter()
+            .map(|server| server.slug().clone())
+            .collect();
+        match input.slug.as_deref() {
+            Some(text) => {
+                let slug = Slug::parse(text)?;
+                if taken.contains(&slug) {
+                    return Err(DomainError::validation(
+                        "Another tool server already uses this slug.",
+                    )
+                    .with_field("slug"));
+                }
+                Ok(slug)
+            }
+            None => Ok(Slug::derive(&input.name, &taken)),
+        }
+    }
+
     /// Changing the origin (scheme, host, or port) of the URL clears the stored credentials
     /// unless the same update sets new ones, so a token never goes to a host it was not entered
     /// for; any new URL ends the OAuth sign-in, whose tokens were issued for the old one. Any new
     /// URL is listed again before its tools are offered, and every tool asks until
     /// [`ToolService::review`]. Credentials given without an auth mode switch to `Headers`;
-    /// another mode drops the credentials of the old one.
+    /// another mode drops the credentials of the old one. A stdio server's program changes only
+    /// for an administrator while `MCP_STDIO_ENABLED` is on, and like a new URL it is listed and
+    /// reviewed again; it never takes a URL or credentials.
     pub async fn update(
         &self,
         actor: &Actor,
@@ -315,10 +438,30 @@ impl ToolService {
         if let Some(name) = &changes.name {
             server = server.with_name(name)?;
         }
+        let program = changes.stdio.as_ref().filter(|update| !update.is_empty());
+        match server.transport() {
+            Transport::Http if program.is_some() => return Err(only_stdio()),
+            Transport::Http => {}
+            Transport::Stdio => {
+                if changes.url.is_some() {
+                    return Err(DomainError::validation(
+                        "A stdio server runs a program and has no URL.",
+                    )
+                    .with_field("url"));
+                }
+                if changes.auth.is_some_and(|mode| mode != AuthMode::None) {
+                    return Err(no_credentials());
+                }
+                if let Some(update) = program {
+                    server = self.reprogram(actor, server, update)?;
+                }
+            }
+        }
         let mut credentials = changes.credentials;
         if let Some(text) = &changes.url {
             let url = self.url(actor, text)?;
-            if !url.same_origin(server.url()) && credentials.is_none() {
+            if server.url().is_none_or(|current| !url.same_origin(current)) && credentials.is_none()
+            {
                 credentials = Some(CredentialChange::Clear);
             }
             server = server.with_url(url);
@@ -340,6 +483,9 @@ impl ToolService {
             }
         }
         if let Some(headers) = headers {
+            if server.transport() == Transport::Stdio && !headers.is_empty() {
+                return Err(no_credentials());
+            }
             let sealed = self.seal(&server, &headers)?;
             server = server.with_headers(sealed);
         }
@@ -384,6 +530,59 @@ impl ToolService {
         Ok(server)
     }
 
+    /// A stdio server with `update` applied: the policy first, then each field checked. An
+    /// environment equal to the stored one keeps its sealed bytes, so saving the form unchanged
+    /// does not count as a new program.
+    fn reprogram(
+        &self,
+        actor: &Actor,
+        server: ToolServer,
+        update: &StdioUpdate,
+    ) -> DomainResult<ToolServer> {
+        self.stdio_check(actor)?;
+        let Some(current) = server.stdio().cloned() else {
+            return Err(only_stdio());
+        };
+        let command = match &update.command {
+            Some(text) => stdio::command(text)?,
+            None => current.command.clone(),
+        };
+        let args = match &update.args {
+            Some(list) => stdio::args(list)?,
+            None => current.args.clone(),
+        };
+        let cwd = match &update.cwd {
+            Some(text) => stdio::cwd(Some(text), &server.id().to_string())?,
+            None => current.cwd.clone(),
+        };
+        let env_sealed = match &update.env {
+            Some(variables) => {
+                let env = StdioEnv::new(variables)?;
+                let stored = current
+                    .env_sealed
+                    .as_deref()
+                    .and_then(|sealed| self.cipher.open(sealed, &server.env_context()).ok());
+                let same = match &stored {
+                    Some(secret) => secret.expose() == env.to_json().as_slice(),
+                    None => env.is_empty(),
+                };
+                if same {
+                    current.env_sealed.clone()
+                } else {
+                    self.seal_env(&server, &env)?
+                }
+            }
+            None => current.env_sealed.clone(),
+        };
+        tracing::info!(server_id = %server.id(), user_id = %actor.user_id, "core.tools.stdio.changed");
+        Ok(server.with_stdio(StdioCommand {
+            command,
+            args,
+            env_sealed,
+            cwd,
+        }))
+    }
+
     /// Deletes the server; projects and chats lose it.
     pub async fn delete(&self, actor: &Actor, id: ToolServerId) -> DomainResult<()> {
         if self.servers.delete(actor.user_id, id).await? {
@@ -399,15 +598,17 @@ impl ToolService {
     /// with `TOOL_SERVER_CHANGED`.
     pub async fn test(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolTest> {
         let server = self.load(actor, id).await?;
+        let transport = server.transport();
         let listing = self.fetch(actor, &server).await?;
         self.failures().remove(&id);
         let Some((server, changes)) = self.store(actor, server, listing).await? else {
             // Deleted meanwhile (`404`), or its URL changed.
             self.load(actor, id).await?;
-            return Err(DomainError::business_rule(
-                "The server's URL changed during the test. Test it again.",
-                "TOOL_SERVER_CHANGED",
-            ));
+            let changed = match transport {
+                Transport::Http => "The server's URL changed during the test. Test it again.",
+                Transport::Stdio => "The server's program changed during the test. Test it again.",
+            };
+            return Err(DomainError::business_rule(changed, "TOOL_SERVER_CHANGED"));
         };
         Ok(ToolTest { server, changes })
     }
@@ -447,12 +648,22 @@ impl ToolService {
         }
         let servers = self.servers.list(actor.user_id).await?;
         let now = self.clock.now();
-        let chosen: Vec<ToolServer> = ids
+        let (chosen, blocked): (Vec<ToolServer>, Vec<ToolServer>) = ids
             .iter()
             .filter_map(|id| servers.iter().find(|server| server.id() == *id))
             .filter(|server| server.enabled())
             .cloned()
-            .collect();
+            .partition(|server| {
+                server.transport() == Transport::Http || self.stdio_available(actor)
+            });
+        // A stdio server runs only for an administrator while stdio is on: never listed or
+        // offered otherwise.
+        effective
+            .unavailable
+            .extend(blocked.iter().map(|server| UnavailableServer {
+                id: server.id(),
+                name: server.name().to_owned(),
+            }));
         let refreshed: Vec<(ToolServer, Refresh)> = stream::iter(chosen)
             .map(|server| self.refresh(actor, server, now))
             .buffered(MAX_PARALLEL_READS)
@@ -522,17 +733,45 @@ impl ToolService {
 
     /// The adapter's view of a server owned by `actor`: the opened credentials and the network
     /// scope. Fails with `SECRET_UNREADABLE` when the credentials no longer open.
+    ///
+    /// A stdio server needs an administrator and `MCP_STDIO_ENABLED` now, and its launch carries
+    /// a gate that checks both again, with the owner's account as stored, right before every
+    /// start of its process.
     pub fn endpoint(&self, actor: &Actor, server: &ToolServer) -> DomainResult<ToolEndpoint> {
         let network = self.network.scope(actor);
+        let url = match server.location() {
+            Location::Http(url) => url.clone(),
+            Location::Stdio(command) => {
+                let policy = self.stdio_check(actor)?;
+                let env = command
+                    .env_sealed
+                    .as_deref()
+                    .map(|sealed| self.cipher.open(sealed, &server.env_context()))
+                    .transpose()?;
+                let gate = StdioGate {
+                    policy: policy.clone(),
+                    user: server.user_id(),
+                    server: server.id(),
+                };
+                let launch = StdioLaunch {
+                    command: command.command.clone(),
+                    args: command.args.clone(),
+                    env,
+                    cwd: command.cwd.clone(),
+                    gate: SpawnGate(Arc::new(gate)),
+                };
+                return Ok(server.endpoint(Target::Stdio(launch), None, None, network));
+            }
+        };
         if server.auth() == AuthMode::OAuth {
             let tokens = self.tokens(actor, server)?;
-            return Ok(server.endpoint(None, Some(tokens), network));
+            return Ok(server.endpoint(Target::Http(url), None, Some(tokens), network));
         }
         let headers = server
             .headers_sealed()
             .map(|sealed| self.cipher.open(sealed, &server.headers_context()))
             .transpose()?;
-        Ok(server.endpoint(headers, None, network))
+        Ok(server.endpoint(Target::Http(url), headers, None, network))
     }
 
     /// Lists the server's tools: names trimmed, unnamed tools dropped, the first of each name
@@ -565,7 +804,7 @@ impl ToolService {
             .save_listing(
                 actor.user_id,
                 server.id(),
-                server.url(),
+                server.location(),
                 &listing,
                 review_required,
                 now,
@@ -635,6 +874,16 @@ impl ToolService {
         })
     }
 
+    /// Seals a stdio server's environment for its row; none means nothing stored.
+    fn seal_env(&self, server: &ToolServer, env: &StdioEnv) -> DomainResult<Option<Vec<u8>>> {
+        if env.is_empty() {
+            return Ok(None);
+        }
+        self.cipher
+            .seal(&env.to_json(), &server.env_context())
+            .map(Some)
+    }
+
     /// Seals the credentials for `server`'s row; none means nothing stored.
     fn seal(&self, server: &ToolServer, headers: &ToolHeaders) -> DomainResult<Option<Vec<u8>>> {
         if headers.is_empty() {
@@ -644,6 +893,18 @@ impl ToolService {
             .seal(&headers.to_json(), &server.headers_context())
             .map(Some)
     }
+}
+
+fn only_stdio() -> DomainError {
+    DomainError::validation("A program, arguments, and environment are only for stdio servers.")
+        .with_field("stdio")
+}
+
+fn no_credentials() -> DomainError {
+    DomainError::validation(
+        "A stdio server takes no bearer token, headers, or sign-in: give its program the credentials it needs as environment variables.",
+    )
+    .with_field("authMode")
 }
 
 fn not_found(id: ToolServerId) -> DomainError {
@@ -677,6 +938,7 @@ mod tests {
 
     use super::*;
     use crate::domains::tool::selection::ServerOverride;
+    use crate::domains::tool::stdio::STDIO_DISABLED;
     use crate::ports::tool_host::{RemoteTool, ToolSession};
     use crate::shared::ids::UserId;
     use crate::shared::net::NetworkScope;
@@ -1372,7 +1634,7 @@ mod tests {
             .unwrap();
         let endpoints = f.host.endpoints();
         assert_eq!(
-            endpoints.last().unwrap().url.as_str(),
+            endpoints.last().unwrap().url().unwrap().as_str(),
             "https://other-host.example.net/mcp"
         );
         assert_eq!(aliases(&effective), ["github__search"]);
@@ -1443,7 +1705,10 @@ mod tests {
         let error = service.test(&caller, server.id()).await.unwrap_err();
         assert_eq!(error.code(), "TOOL_SERVER_CHANGED");
         let stored = service.get(&caller, server.id()).await.unwrap().server;
-        assert_eq!(stored.url().as_str(), "https://moved-1.example.net/mcp");
+        assert_eq!(
+            stored.url().unwrap().as_str(),
+            "https://moved-1.example.net/mcp"
+        );
         assert!(stored.cache().is_none(), "the old URL's list is not stored");
         assert!(!stored.listed());
 
@@ -1455,7 +1720,434 @@ mod tests {
         assert!(effective.tools.is_empty(), "nothing from the old URL");
         assert_eq!(unreachable(&effective), [server.id()]);
         let stored = service.get(&caller, server.id()).await.unwrap().server;
-        assert_eq!(stored.url().as_str(), "https://moved-2.example.net/mcp");
+        assert_eq!(
+            stored.url().unwrap().as_str(),
+            "https://moved-2.example.net/mcp"
+        );
         assert!(stored.cache().is_none());
+    }
+
+    struct Stdio {
+        service: ToolService,
+        store: Arc<MemoryStore>,
+        host: Arc<ScriptedToolHost>,
+        cipher: Arc<FakeCipher>,
+    }
+
+    /// A service with stdio on (`enabled`), on a store whose accounts the gate reads.
+    fn stdio_fixture(enabled: bool) -> Stdio {
+        let clock = Arc::new(FixedClock::default());
+        let store = Arc::new(MemoryStore::new(clock.clone()));
+        let host = Arc::new(ScriptedToolHost::new());
+        let cipher = Arc::new(FakeCipher::new());
+        let service = ToolService::new(
+            store.clone(),
+            host.clone(),
+            cipher.clone(),
+            clock,
+            PrivateNetwork::Admins,
+        )
+        .with_stdio(StdioPolicy {
+            enabled,
+            accounts: store.clone(),
+        });
+        Stdio {
+            service,
+            store,
+            host,
+            cipher,
+        }
+    }
+
+    fn program(name: &str) -> NewToolServer {
+        NewToolServer {
+            name: name.to_owned(),
+            transport: Transport::Stdio,
+            stdio: Some(StdioInput {
+                command: "/usr/local/bin/files-mcp".to_owned(),
+                args: vec!["--root".to_owned(), "/srv/data dir".to_owned()],
+                env: headers(&[("API_KEY", "sk-TOPSECRET"), ("MODE", "read")]),
+                cwd: None,
+            }),
+            ..NewToolServer::default()
+        }
+    }
+
+    /// An administrator the store knows, so the gate lets their servers start.
+    fn administrator(f: &Stdio) -> Actor {
+        let caller = admin();
+        f.store.add_user(&caller);
+        caller
+    }
+
+    fn launch(endpoint: &ToolEndpoint) -> &StdioLaunch {
+        match &endpoint.target {
+            Target::Stdio(launch) => launch,
+            Target::Http(url) => panic!("an HTTP endpoint: {url:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_administrator_adds_a_stdio_server_with_a_sealed_environment() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let server = f.service.create(&caller, program("Files")).await.unwrap();
+        assert_eq!(server.transport(), Transport::Stdio);
+        assert_eq!(server.url(), None);
+        assert_eq!(server.auth(), AuthMode::None);
+        assert!(!server.review_required(), "nothing to review yet");
+        let stored = server.stdio().unwrap();
+        assert_eq!(stored.command, "/usr/local/bin/files-mcp");
+        assert_eq!(stored.args, ["--root", "/srv/data dir"], "kept as entered");
+        assert_eq!(stored.cwd, server.id().to_string(), "its own directory");
+        let sealed = stored.env_sealed.as_deref().unwrap();
+        let opened = f.cipher.open(sealed, &server.env_context()).unwrap();
+        assert_eq!(
+            StdioEnv::entries(&opened).unwrap(),
+            [
+                ("API_KEY".to_owned(), "sk-TOPSECRET".to_owned()),
+                ("MODE".to_owned(), "read".to_owned()),
+            ]
+        );
+        assert_eq!(f.service.env_names(&server), ["API_KEY", "MODE"]);
+        let details = f.service.get(&caller, server.id()).await.unwrap();
+        assert_eq!(details.env, KeyState::Set);
+        assert_eq!(details.credentials, KeyState::Missing);
+        assert_eq!(details.sign_in, None);
+
+        let named = NewToolServer {
+            stdio: Some(StdioInput {
+                cwd: Some("shared/files".to_owned()),
+                env: BTreeMap::new(),
+                ..program("Other").stdio.unwrap()
+            }),
+            ..program("Other")
+        };
+        let other = f.service.create(&caller, named).await.unwrap();
+        assert_eq!(other.stdio().unwrap().cwd, "shared/files");
+        assert_eq!(other.stdio().unwrap().env_sealed, None);
+        let details = f.service.get(&caller, other.id()).await.unwrap();
+        assert_eq!(details.env, KeyState::Missing);
+    }
+
+    #[tokio::test]
+    async fn only_administrators_add_stdio_servers_and_only_while_it_is_on() {
+        let f = stdio_fixture(true);
+        let user = actor();
+        let error = f.service.create(&user, program("Files")).await.unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+
+        let off = stdio_fixture(false);
+        let caller = administrator(&off);
+        let error = off
+            .service
+            .create(&caller, program("Files"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), STDIO_DISABLED);
+
+        // Without `with_stdio` (the composition root's default) it is off too.
+        let plain = fixture();
+        let error = plain
+            .service
+            .create(&admin(), program("Files"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), STDIO_DISABLED);
+        assert!(!plain.service.stdio_available(&admin()));
+        assert!(f.service.stdio_available(&caller));
+        assert!(!f.service.stdio_available(&user));
+        assert!(!off.service.stdio_available(&caller));
+        assert!(f.store.list(user.user_id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stdio_server_takes_a_program_and_nothing_else() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let field = |error: DomainError| match error {
+            DomainError::Validation { field, .. } => field.unwrap_or_default(),
+            other => panic!("not a validation error: {other:?}"),
+        };
+        let cases = [
+            (
+                NewToolServer {
+                    url: "https://mcp.example.com/mcp".to_owned(),
+                    ..program("A")
+                },
+                "url",
+            ),
+            (
+                NewToolServer {
+                    bearer: Some("tok".to_owned()),
+                    ..program("A")
+                },
+                "authMode",
+            ),
+            (
+                NewToolServer {
+                    headers: headers(&[("X-Key", "v")]),
+                    ..program("A")
+                },
+                "authMode",
+            ),
+            (
+                NewToolServer {
+                    auth: Some(AuthMode::OAuth),
+                    ..program("A")
+                },
+                "authMode",
+            ),
+            (
+                NewToolServer {
+                    stdio: None,
+                    ..program("A")
+                },
+                "stdio.command",
+            ),
+            (
+                NewToolServer {
+                    stdio: Some(StdioInput {
+                        command: "npx".to_owned(),
+                        ..StdioInput::default()
+                    }),
+                    ..program("A")
+                },
+                "stdio.command",
+            ),
+            (
+                NewToolServer {
+                    stdio: Some(StdioInput {
+                        cwd: Some("../etc".to_owned()),
+                        ..program("A").stdio.unwrap()
+                    }),
+                    ..program("A")
+                },
+                "stdio.cwd",
+            ),
+            (
+                NewToolServer {
+                    stdio: Some(StdioInput {
+                        env: headers(&[("BAD NAME", "v")]),
+                        ..program("A").stdio.unwrap()
+                    }),
+                    ..program("A")
+                },
+                "stdio.env",
+            ),
+        ];
+        for (input, expected) in cases {
+            let error = f.service.create(&caller, input).await.unwrap_err();
+            assert_eq!(field(error), expected);
+        }
+        // An HTTP server takes no program.
+        let http = NewToolServer {
+            stdio: program("A").stdio,
+            ..named("A")
+        };
+        assert_eq!(
+            field(f.service.create(&caller, http).await.unwrap_err()),
+            "stdio"
+        );
+        assert!(f.service.list(&caller).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn changing_the_program_needs_an_administrator_and_a_new_review() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let server = f.service.create(&caller, program("Files")).await.unwrap();
+        f.host.push_tools(vec![remote_tool("read")]);
+        let tested = f.service.test(&caller, server.id()).await.unwrap().server;
+        assert!(tested.listed());
+        let sealed = tested.stdio().unwrap().env_sealed.clone();
+
+        // The same environment again is no change.
+        let same = ToolServerUpdate {
+            stdio: Some(StdioUpdate {
+                env: Some(headers(&[("API_KEY", "sk-TOPSECRET"), ("MODE", "read")])),
+                ..StdioUpdate::default()
+            }),
+            ..ToolServerUpdate::default()
+        };
+        let kept = f.service.update(&caller, server.id(), same).await.unwrap();
+        assert_eq!(kept.stdio().unwrap().env_sealed, sealed);
+        assert!(!kept.review_required());
+        assert!(kept.listed());
+
+        // A plain account (even the owner after a demotion) changes the name, never the program.
+        let demoted = Actor::user(caller.user_id);
+        let rename = ToolServerUpdate {
+            name: Some("Files 2".to_owned()),
+            ..ToolServerUpdate::default()
+        };
+        f.service
+            .update(&demoted, server.id(), rename)
+            .await
+            .unwrap();
+        let change = ToolServerUpdate {
+            stdio: Some(StdioUpdate {
+                args: Some(vec!["--write".to_owned()]),
+                ..StdioUpdate::default()
+            }),
+            ..ToolServerUpdate::default()
+        };
+        let error = f
+            .service
+            .update(&demoted, server.id(), change.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+
+        let changed = f
+            .service
+            .update(&caller, server.id(), change)
+            .await
+            .unwrap();
+        let command = changed.stdio().unwrap();
+        assert_eq!(command.args, ["--write"]);
+        assert_eq!(command.command, "/usr/local/bin/files-mcp", "kept");
+        assert_eq!(command.env_sealed, sealed, "kept");
+        assert!(changed.review_required(), "maybe another server now");
+        assert!(
+            !changed.listed(),
+            "listed again before its tools are offered"
+        );
+
+        // A blank directory goes back to the server's own.
+        let reset = ToolServerUpdate {
+            stdio: Some(StdioUpdate {
+                cwd: Some(" ".to_owned()),
+                env: Some(BTreeMap::new()),
+                ..StdioUpdate::default()
+            }),
+            ..ToolServerUpdate::default()
+        };
+        let reset = f.service.update(&caller, server.id(), reset).await.unwrap();
+        assert_eq!(reset.stdio().unwrap().cwd, server.id().to_string());
+        assert_eq!(reset.stdio().unwrap().env_sealed, None, "all removed");
+    }
+
+    #[tokio::test]
+    async fn a_stdio_server_never_takes_a_url_or_credentials() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let server = f.service.create(&caller, program("Files")).await.unwrap();
+        let updates = [
+            ToolServerUpdate {
+                url: Some("https://mcp.example.com/mcp".to_owned()),
+                ..ToolServerUpdate::default()
+            },
+            ToolServerUpdate {
+                credentials: Some(CredentialChange::Set {
+                    bearer: Some("tok".to_owned()),
+                    headers: BTreeMap::new(),
+                }),
+                ..ToolServerUpdate::default()
+            },
+            ToolServerUpdate {
+                auth: Some(AuthMode::OAuth),
+                ..ToolServerUpdate::default()
+            },
+            ToolServerUpdate {
+                client: Some(ClientChange::Set(ClientInput {
+                    id: "client".to_owned(),
+                    secret: None,
+                })),
+                ..ToolServerUpdate::default()
+            },
+        ];
+        for update in updates {
+            let error = f
+                .service
+                .update(&caller, server.id(), update)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), "VALIDATION_ERROR");
+        }
+        let stored = f.service.get(&caller, server.id()).await.unwrap().server;
+        assert_eq!(stored, server, "nothing changed");
+
+        let http = f.service.create(&caller, named("Web")).await.unwrap();
+        let program = ToolServerUpdate {
+            stdio: Some(StdioUpdate {
+                command: Some("/bin/server".to_owned()),
+                ..StdioUpdate::default()
+            }),
+            ..ToolServerUpdate::default()
+        };
+        let error = f
+            .service
+            .update(&caller, http.id(), program)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "VALIDATION_ERROR");
+    }
+
+    #[tokio::test]
+    async fn the_endpoint_carries_the_program_and_a_gate_that_checks_again() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let server = f.service.create(&caller, program("Files")).await.unwrap();
+        let endpoint = f.service.endpoint(&caller, &server).unwrap();
+        assert_eq!(endpoint.url(), None);
+        assert_eq!(endpoint.headers, None);
+        assert_eq!(endpoint.tokens, None);
+        let launch = launch(&endpoint);
+        assert_eq!(launch.command, "/usr/local/bin/files-mcp");
+        assert_eq!(launch.args, ["--root", "/srv/data dir"]);
+        assert_eq!(launch.cwd, server.id().to_string());
+        let env = StdioEnv::entries(launch.env.as_ref().unwrap()).unwrap();
+        assert_eq!(env[0], ("API_KEY".to_owned(), "sk-TOPSECRET".to_owned()));
+        assert!(!format!("{endpoint:?}").contains("TOPSECRET"));
+        launch.gate.0.allow().await.expect("an administrator");
+
+        // Demoted after the run started: the next start is refused.
+        f.store.add_user(&Actor::user(caller.user_id));
+        let error = launch.gate.0.allow().await.unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+        f.store.add_user(&caller);
+        f.store.disable_user(caller.user_id);
+        assert_eq!(launch.gate.0.allow().await.unwrap_err().code(), "FORBIDDEN");
+
+        // The session's actor counts too, before any start.
+        let error = f
+            .service
+            .endpoint(&Actor::user(caller.user_id), &server)
+            .unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+        let off = stdio_fixture(false);
+        let error = off.service.endpoint(&caller, &server).unwrap_err();
+        assert_eq!(error.code(), STDIO_DISABLED);
+    }
+
+    #[tokio::test]
+    async fn turns_list_and_offer_stdio_servers_only_to_administrators() {
+        let f = stdio_fixture(true);
+        let caller = administrator(&f);
+        let server = f.service.create(&caller, program("Files")).await.unwrap();
+        f.host.push_tools(vec![remote_tool("read")]);
+        let effective = f
+            .service
+            .effective_tools(&caller, &selection(vec![server.id()], vec![]))
+            .await
+            .unwrap();
+        assert_eq!(aliases(&effective), ["files__read"]);
+        let listed = f.host.endpoints();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(launch(&listed[0]).command, "/usr/local/bin/files-mcp");
+
+        let demoted = Actor::user(caller.user_id);
+        let effective = f
+            .service
+            .effective_tools(&demoted, &selection(vec![server.id()], vec![]))
+            .await
+            .unwrap();
+        assert!(effective.tools.is_empty(), "the cached list is not offered");
+        assert_eq!(unreachable(&effective), [server.id()]);
+        assert_eq!(f.host.endpoints().len(), 1, "never listed for them");
+        let error = f.service.test(&demoted, server.id()).await.unwrap_err();
+        assert_eq!(error.code(), "FORBIDDEN");
+        assert_eq!(f.host.endpoints().len(), 1);
     }
 }

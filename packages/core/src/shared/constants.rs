@@ -53,6 +53,26 @@ pub const OAUTH_TIMEOUT_SECS: u64 = 15;
 pub const OAUTH_RESPONSE_MAX_BYTES: usize = 65_536;
 /// Longest pre-registered OAuth client id or secret a user may enter.
 pub const OAUTH_CLIENT_MAX_CHARS: usize = 512;
+/// How long a stdio tool server's process may take from its start to the end of the MCP
+/// handshake; past it the process is killed. Longer than `MCP_CONNECT_TIMEOUT_SECS` because a
+/// program may load a runtime first.
+pub const MCP_STDIO_START_TIMEOUT_SECS: u64 = 30;
+/// Longest stdio server program path an administrator may enter.
+pub const STDIO_COMMAND_MAX_CHARS: usize = 1_024;
+/// Arguments of a stdio server, and the longest one.
+pub const STDIO_ARGS_MAX: usize = 64;
+pub const STDIO_ARG_MAX_CHARS: usize = 4_096;
+/// Environment variables of a stdio server, the longest name, and the longest value.
+pub const STDIO_ENV_MAX: usize = 64;
+pub const STDIO_ENV_NAME_MAX_CHARS: usize = 128;
+pub const STDIO_ENV_VALUE_MAX_CHARS: usize = 8_192;
+/// Longest working directory of a stdio server, relative to `MCP_STDIO_DIR`.
+pub const STDIO_CWD_MAX_CHARS: usize = 255;
+/// A stdio server's stderr goes to the log (`mcp.stdio.stderr`) one line at a time, each cut to
+/// this many bytes, and at most `STDIO_STDERR_MAX_LINES` lines per process; the rest is read and
+/// dropped, so a chatty process cannot fill the log or block on a full pipe.
+pub const STDIO_STDERR_LINE_MAX_BYTES: usize = 1_024;
+pub const STDIO_STDERR_MAX_LINES: usize = 200;
 /// Provider rounds per turn before tool calls get `cancelled` results.
 pub const MAX_TOOL_ROUNDS: u32 = 8;
 /// An answer may stream text, reasoning, and tool calls of up to its output token limit times

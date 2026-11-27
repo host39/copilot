@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::tool::{
-    AuthMode, SignIn, SignInFlow, SignInRepository, ToolServer, ToolServerParts,
+    AuthMode, Location, SignIn, SignInFlow, SignInRepository, ToolServer, ToolServerParts,
     ToolServerRepository,
 };
 use crate::ports::tool_host::ToolListing;
@@ -93,7 +93,7 @@ impl ToolServerRepository for MemoryStore {
         &self,
         user: UserId,
         id: ToolServerId,
-        url: &BaseUrl,
+        location: &Location,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,
@@ -102,7 +102,7 @@ impl ToolServerRepository for MemoryStore {
         let Some(stored) = tables
             .tool_servers
             .get_mut(&id)
-            .filter(|stored| stored.user_id() == user && stored.url() == url)
+            .filter(|stored| stored.user_id() == user && stored.location() == location)
         else {
             return Ok(false);
         };
@@ -122,7 +122,9 @@ impl ToolServerRepository for MemoryStore {
     ) -> DomainResult<bool> {
         let mut tables = self.tables();
         let Some(stored) = tables.tool_servers.get_mut(&id).filter(|stored| {
-            stored.user_id() == user && stored.url() == url && stored.auth() == AuthMode::OAuth
+            stored.user_id() == user
+                && stored.url() == Some(url)
+                && stored.auth() == AuthMode::OAuth
         }) else {
             return Ok(false);
         };
@@ -225,7 +227,7 @@ fn parts(server: &ToolServer) -> ToolServerParts {
         user_id: server.user_id(),
         name: server.name().to_owned(),
         slug: server.slug().clone(),
-        url: server.url().clone(),
+        location: server.location().clone(),
         headers_sealed: server.headers_sealed().map(<[u8]>::to_vec),
         auth: server.auth(),
         client: server.client().cloned(),

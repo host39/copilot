@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use copilot_core::{
-    ApprovalMode, ApprovedTool, AuthMode, BaseUrl, Chat, ChatRepository, ClientConfig,
+    ApprovalMode, ApprovedTool, AuthMode, BaseUrl, Chat, ChatRepository, ClientConfig, Location,
     NetworkScope, Project, ProjectRepository, RemoteTool, ServerOverride, SignIn, SignInFlow,
-    SignInRepository, Slug, ToolListing, ToolMode, ToolServer, ToolServerRepository,
+    SignInRepository, Slug, StdioCommand, ToolListing, ToolMode, ToolServer, ToolServerRepository,
+    Transport,
 };
 use copilot_database::DbPool;
 use serde_json::json;
@@ -100,7 +101,7 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
             .save_listing(
                 other,
                 server.id(),
-                server.url(),
+                server.location(),
                 &listing("search", "v1"),
                 true,
                 at(5)
@@ -120,7 +121,7 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
             .save_listing(
                 owner,
                 server.id(),
-                server.url(),
+                server.location(),
                 &listing("search", "v1"),
                 false,
                 at(5)
@@ -167,7 +168,7 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
         user_id: other,
         name: "Taken".to_owned(),
         slug: changed.slug().clone(),
-        url: changed.url().clone(),
+        location: changed.location().clone(),
         headers_sealed: None,
         auth: copilot_core::AuthMode::None,
         client: None,
@@ -226,7 +227,7 @@ async fn a_stale_list_expires_and_keeps_its_tools_and_fetch_time(pool: DbPool) {
     listed.ttl = Some(Duration::from_secs(600));
     assert!(
         store
-            .save_listing(owner, server.id(), server.url(), &listed, false, at(1))
+            .save_listing(owner, server.id(), server.location(), &listed, false, at(1))
             .await
             .unwrap()
     );
@@ -264,7 +265,7 @@ async fn a_listing_of_a_url_changed_meanwhile_is_not_stored(pool: DbPool) {
             .save_listing(
                 owner,
                 server.id(),
-                server.url(),
+                server.location(),
                 &listing("search", "v1"),
                 false,
                 at(1)
@@ -287,7 +288,7 @@ async fn a_listing_of_a_url_changed_meanwhile_is_not_stored(pool: DbPool) {
             .save_listing(
                 owner,
                 server.id(),
-                read.url(),
+                read.location(),
                 &listing("delete", "v2"),
                 false,
                 at(3)
@@ -320,7 +321,7 @@ async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool
         .save_listing(
             owner,
             server.id(),
-            server.url(),
+            server.location(),
             &listing("search", "v1"),
             false,
             at(1),
@@ -337,7 +338,7 @@ async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool
         .save_listing(
             owner,
             server.id(),
-            server.url(),
+            server.location(),
             &listing("delete", "v2"),
             true,
             at(2),
@@ -372,7 +373,7 @@ async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool
         .save_listing(
             owner,
             server.id(),
-            server.url(),
+            server.location(),
             &listing("delete", "v2"),
             false,
             at(5),
@@ -506,7 +507,7 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
             &store,
             owner,
             server.id(),
-            server.url(),
+            server.url().unwrap(),
             Some(&first),
             None
         )
@@ -520,7 +521,7 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
         &store,
         owner,
         server.id(),
-        server.url(),
+        server.url().unwrap(),
         Some(&second),
         Some(&[9, 9, 9, 9]),
     )
@@ -532,7 +533,7 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
             &store,
             owner,
             server.id(),
-            server.url(),
+            server.url().unwrap(),
             Some(&second),
             Some(&first.sealed),
         )
@@ -541,10 +542,16 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
     );
     assert_eq!(stored(&store, &server).await.sign_in(), Some(&second));
 
-    let foreign =
-        ToolServerRepository::save_sign_in(&store, other, server.id(), server.url(), None, None)
-            .await
-            .unwrap();
+    let foreign = ToolServerRepository::save_sign_in(
+        &store,
+        other,
+        server.id(),
+        server.url().unwrap(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(!foreign, "another user's write changes nothing");
     let elsewhere = BaseUrl::parse("https://other.example.com/mcp", NetworkScope::Public).unwrap();
     assert!(
@@ -554,9 +561,16 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
         "only for the URL the sign-in was for"
     );
     assert!(
-        ToolServerRepository::save_sign_in(&store, owner, server.id(), server.url(), None, None)
-            .await
-            .unwrap()
+        ToolServerRepository::save_sign_in(
+            &store,
+            owner,
+            server.id(),
+            server.url().unwrap(),
+            None,
+            None
+        )
+        .await
+        .unwrap()
     );
     assert_eq!(stored(&store, &server).await.sign_in(), None, "signed out");
 
@@ -574,7 +588,7 @@ async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
             &store,
             owner,
             plain.id(),
-            plain.url(),
+            plain.url().unwrap(),
             Some(&first),
             None
         )
@@ -595,7 +609,7 @@ async fn settings_writes_keep_a_sign_in_until_the_mode_or_url_changes(pool: DbPo
         &store,
         owner,
         server.id(),
-        server.url(),
+        server.url().unwrap(),
         Some(&first),
         None,
     )
@@ -618,9 +632,16 @@ async fn settings_writes_keep_a_sign_in_until_the_mode_or_url_changes(pool: DbPo
     assert_eq!(stored(&store, &server).await.sign_in(), None, "a new URL");
 
     let moved = stored(&store, &server).await;
-    ToolServerRepository::save_sign_in(&store, owner, server.id(), moved.url(), Some(&first), None)
-        .await
-        .unwrap();
+    ToolServerRepository::save_sign_in(
+        &store,
+        owner,
+        server.id(),
+        moved.url().unwrap(),
+        Some(&first),
+        None,
+    )
+    .await
+    .unwrap();
     let headers = moved.with_headers(Some(vec![5]));
     ToolServerRepository::update(&store, &headers)
         .await
@@ -748,4 +769,138 @@ async fn a_flow_needs_a_server_of_its_user(pool: DbPool) {
         ..flow(&server, 1, 10)
     };
     assert!(SignInRepository::insert(&store, &foreign).await.is_err());
+}
+
+fn program(args: &[&str], env: Option<Vec<u8>>) -> StdioCommand {
+    StdioCommand {
+        command: "/usr/local/bin/files-mcp".to_owned(),
+        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        env_sealed: env,
+        cwd: String::new(),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn stdio_servers_store_their_program_and_list_only_where_they_run(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let server = ToolServer::create_stdio(
+        owner,
+        "Files",
+        Slug::parse("files").unwrap(),
+        program(&["--root", "/srv/data dir", "", "it's \"quoted\""], None),
+        at(0),
+    )
+    .unwrap()
+    .with_env(Some(vec![7, 7, 7]));
+    ToolServerRepository::insert(&store, &server).await.unwrap();
+    let stored = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored, server, "the program round-trips exactly");
+    assert_eq!(stored.transport(), Transport::Stdio);
+    assert_eq!(stored.url(), None);
+    assert_eq!(stored.stdio().unwrap().cwd, server.id().to_string());
+
+    // A listing of the program as it was is stored; one of an old program is not.
+    assert!(
+        store
+            .save_listing(
+                owner,
+                server.id(),
+                server.location(),
+                &listing("read", "2025-11-25"),
+                false,
+                at(1)
+            )
+            .await
+            .unwrap()
+    );
+    let listed = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(listed.listed());
+    let next = StdioCommand {
+        cwd: "files".to_owned(),
+        ..program(&["--write"], Some(vec![7, 7, 7]))
+    };
+    let changed = listed.clone().with_stdio(next.clone());
+    ToolServerRepository::update(&store, &changed)
+        .await
+        .unwrap();
+    let stored = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.stdio(), Some(&next));
+    assert_eq!(stored.protocol_version(), None);
+    assert!(stored.review_required());
+    for old in [
+        server.location().clone(),
+        Location::Stdio(StdioCommand {
+            env_sealed: Some(vec![8]),
+            ..next.clone()
+        }),
+        Location::Stdio(StdioCommand {
+            cwd: "other".to_owned(),
+            ..next.clone()
+        }),
+        Location::Http(BaseUrl::parse("https://mcp.example.com", NetworkScope::Public).unwrap()),
+    ] {
+        assert!(
+            !store
+                .save_listing(
+                    owner,
+                    server.id(),
+                    &old,
+                    &listing("write", "2025-11-25"),
+                    false,
+                    at(2)
+                )
+                .await
+                .unwrap(),
+            "{old:?}"
+        );
+    }
+    assert!(
+        store
+            .save_listing(
+                owner,
+                server.id(),
+                stored.location(),
+                &listing("write", "2025-11-25"),
+                false,
+                at(2)
+            )
+            .await
+            .unwrap()
+    );
+
+    // A settings write made from an older read keeps a listing of the same program.
+    let renamed = stored.clone().with_name("Files 2").unwrap();
+    ToolServerRepository::update(&store, &renamed)
+        .await
+        .unwrap();
+    let after = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.name(), "Files 2");
+    assert_eq!(after.protocol_version(), Some("2025-11-25"));
+    assert_eq!(after.cache().unwrap().tools[0].name, "write");
+
+    // An HTTP server never takes a program, whatever the entity says (the transport is fixed).
+    let http = crate::server(&store, owner, "web").await;
+    ToolServerRepository::update(&store, &http.clone().with_stdio(program(&[], None)))
+        .await
+        .unwrap();
+    assert_eq!(
+        ToolServerRepository::get(&store, owner, http.id())
+            .await
+            .unwrap(),
+        Some(http)
+    );
 }

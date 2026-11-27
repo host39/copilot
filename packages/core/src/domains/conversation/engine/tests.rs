@@ -27,8 +27,8 @@ use crate::domains::provider::{
 };
 use crate::domains::schedule::{CreatedBy, NewSchedule, OnAsk, ScheduleQuery};
 use crate::domains::tool::{
-    ApprovalMode, NewToolServer, ServerOverride, ToolMode, ToolServer, ToolServerRepository,
-    ToolServerUpdate,
+    ApprovalMode, Location, NewToolServer, ServerOverride, ToolMode, ToolServer,
+    ToolServerRepository, ToolServerUpdate,
 };
 use crate::ports::llm_gateway::{
     AudioOut, LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities,
@@ -1691,7 +1691,7 @@ impl ToolServerRepository for Gauge {
         &self,
         user: UserId,
         id: ToolServerId,
-        url: &BaseUrl,
+        location: &Location,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,
@@ -1700,7 +1700,7 @@ impl ToolServerRepository for Gauge {
             self.store.as_ref(),
             user,
             id,
-            url,
+            location,
             listing,
             review_required,
             at,

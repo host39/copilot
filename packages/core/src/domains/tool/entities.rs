@@ -1,4 +1,5 @@
-//! Tool servers: registered remote MCP servers and their cached tool lists.
+//! Tool servers: registered MCP servers (remote over Streamable HTTP, or a program on the API
+//! host over stdio) and their cached tool lists.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -6,10 +7,11 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::domains::tool::auth::{AuthMode, ClientConfig, SignIn, SignInState};
+use crate::domains::tool::stdio::{StdioCommand, Transport};
 use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::secret_cipher::SealContext;
 use crate::ports::tool_auth::TokenSource;
-use crate::ports::tool_host::{RemoteTool, ToolEndpoint, ToolListing};
+use crate::ports::tool_host::{RemoteTool, Target, ToolEndpoint, ToolListing};
 use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::{
     NAME_MAX_CHARS, TOOL_CACHE_DEFAULT_TTL_SECS, TOOL_CACHE_MAX_TTL_SECS,
@@ -22,17 +24,18 @@ use crate::shared::text;
 
 /// A user's MCP server (`tool_servers`). Credentials are sealed and bound to this row
 /// ([`ToolServer::headers_context`], [`ToolServer::client_context`],
-/// [`ToolServer::sign_in_context`]).
+/// [`ToolServer::sign_in_context`], [`ToolServer::env_context`]).
 ///
 /// The auth mode says which credentials requests carry. `Headers` holds exactly when headers are
-/// stored; the OAuth client and sign-in exist only in `OAuth` mode.
+/// stored; the OAuth client and sign-in exist only in `OAuth` mode. A stdio server has no
+/// credentials (its program gets them from its environment) and stays in `None`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolServer {
     id: ToolServerId,
     user_id: UserId,
     name: String,
     slug: Slug,
-    url: BaseUrl,
+    location: Location,
     headers_sealed: Option<Vec<u8>>,
     auth: AuthMode,
     client: Option<ClientConfig>,
@@ -54,7 +57,8 @@ pub struct ToolServerParts {
     pub user_id: UserId,
     pub name: String,
     pub slug: Slug,
-    pub url: BaseUrl,
+    /// `transport` with `url`, or with `command`, `args`, `env_sealed`, and `cwd`.
+    pub location: Location,
     pub headers_sealed: Option<Vec<u8>>,
     /// `auth_mode`.
     pub auth: AuthMode,
@@ -72,6 +76,23 @@ pub struct ToolServerParts {
     pub review_required: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Where a server is: its URL, or the program that runs it. Set when the server is added; the
+/// transport never changes after that.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Location {
+    Http(BaseUrl),
+    Stdio(StdioCommand),
+}
+
+impl Location {
+    pub fn transport(&self) -> Transport {
+        match self {
+            Self::Http(_) => Transport::Http,
+            Self::Stdio(_) => Transport::Stdio,
+        }
+    }
 }
 
 /// The last `tools/list` result of a server, so building a request does not connect to every
@@ -103,7 +124,8 @@ impl ToolCache {
 }
 
 impl ToolServer {
-    /// A new, enabled server without credentials or a tool list. Default approval: `ask`.
+    /// A new, enabled Streamable HTTP server without credentials or a tool list. Default
+    /// approval: `ask`.
     pub fn create(
         user_id: UserId,
         name: &str,
@@ -111,12 +133,41 @@ impl ToolServer {
         url: BaseUrl,
         now: DateTime<Utc>,
     ) -> DomainResult<Self> {
+        Self::new(user_id, name, slug, Location::Http(url), now)
+    }
+
+    /// A new, enabled stdio server without a tool list. A blank `cwd` becomes the server's id, so
+    /// every server gets its own directory. Seal the environment with
+    /// [`ToolServer::env_context`] once the id exists.
+    pub fn create_stdio(
+        user_id: UserId,
+        name: &str,
+        slug: Slug,
+        mut command: StdioCommand,
+        now: DateTime<Utc>,
+    ) -> DomainResult<Self> {
+        let blank = command.cwd.is_empty();
+        let mut server = Self::new(user_id, name, slug, Location::Stdio(command.clone()), now)?;
+        if blank {
+            command.cwd = server.id.to_string();
+            server.location = Location::Stdio(command);
+        }
+        Ok(server)
+    }
+
+    fn new(
+        user_id: UserId,
+        name: &str,
+        slug: Slug,
+        location: Location,
+        now: DateTime<Utc>,
+    ) -> DomainResult<Self> {
         Ok(Self {
             id: ToolServerId::generate(),
             user_id,
             name: server_name(name)?,
             slug,
-            url,
+            location,
             headers_sealed: None,
             auth: AuthMode::None,
             client: None,
@@ -139,7 +190,7 @@ impl ToolServer {
             user_id: parts.user_id,
             name: parts.name,
             slug: parts.slug,
-            url: parts.url,
+            location: parts.location,
             headers_sealed: parts.headers_sealed,
             auth: parts.auth,
             client: parts.client,
@@ -164,16 +215,49 @@ impl ToolServer {
     /// cached tool list no longer counts as this URL's ([`ToolServer::listed`]) and the next turn
     /// lists the new URL first, and every tool asks until the user reviews the server again. The
     /// cached list stays only so the next listing can show what changed. It also ends the OAuth
-    /// sign-in: its tokens were issued for the old URL (the `resource`).
+    /// sign-in: its tokens were issued for the old URL (the `resource`). A stdio server keeps
+    /// its program (the service refuses a URL for it).
     #[must_use]
     pub fn with_url(mut self, url: BaseUrl) -> Self {
-        if url != self.url {
-            self.protocol_version = None;
-            self.review_required = true;
-            self.sign_in = None;
+        if let Location::Http(current) = &self.location {
+            if url != *current {
+                self.moved();
+                self.sign_in = None;
+            }
+            self.location = Location::Http(url);
         }
-        self.url = url;
         self
+    }
+
+    /// A changed program, argument, environment, or directory may be another server, as a new
+    /// URL may: the same rules as [`ToolServer::with_url`]. A Streamable HTTP server keeps its
+    /// URL (the service refuses a program for it).
+    #[must_use]
+    pub fn with_stdio(mut self, command: StdioCommand) -> Self {
+        if let Location::Stdio(current) = &self.location {
+            if command != *current {
+                self.moved();
+            }
+            self.location = Location::Stdio(command);
+        }
+        self
+    }
+
+    /// Sets the sealed environment of a stdio server that is not stored yet (it needs the row's
+    /// id to be sealed, see [`ToolServer::env_context`]). Changes go through
+    /// [`ToolServer::with_stdio`].
+    #[must_use]
+    pub fn with_env(mut self, sealed: Option<Vec<u8>>) -> Self {
+        if let Location::Stdio(command) = &mut self.location {
+            command.env_sealed = sealed;
+        }
+        self
+    }
+
+    /// The server may be another one now.
+    fn moved(&mut self) {
+        self.protocol_version = None;
+        self.review_required = true;
     }
 
     /// Sets or clears the sealed bearer token and headers. Seal them with
@@ -318,6 +402,14 @@ impl ToolServer {
         }
     }
 
+    /// The associated data of a stdio server's sealed environment.
+    pub fn env_context(&self) -> SealContext {
+        SealContext {
+            column: "env_sealed",
+            ..self.headers_context()
+        }
+    }
+
     /// What the settings show for an `OAuth` server; `None` in the other modes.
     pub fn sign_in_state(&self, now: DateTime<Utc>) -> Option<SignInState> {
         (self.auth == AuthMode::OAuth).then(|| {
@@ -345,16 +437,18 @@ impl ToolServer {
         }
     }
 
-    /// The adapter's view of this server, with the opened headers or the sign-in's tokens.
+    /// The adapter's view of this server at `target`, with the opened headers or the sign-in's
+    /// tokens.
     pub fn endpoint(
         &self,
+        target: Target,
         headers: Option<Secret>,
         tokens: Option<TokenSource>,
         network: NetworkScope,
     ) -> ToolEndpoint {
         ToolEndpoint {
             server_id: self.id,
-            url: self.url.clone(),
+            target,
             headers,
             tokens,
             protocol_version: self.protocol_version.clone(),
@@ -389,8 +483,29 @@ impl ToolServer {
         &self.slug
     }
 
-    pub fn url(&self) -> &BaseUrl {
-        &self.url
+    /// Where the server is.
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+
+    pub fn transport(&self) -> Transport {
+        self.location.transport()
+    }
+
+    /// The URL of a Streamable HTTP server; `None` for a stdio server.
+    pub fn url(&self) -> Option<&BaseUrl> {
+        match &self.location {
+            Location::Http(url) => Some(url),
+            Location::Stdio(_) => None,
+        }
+    }
+
+    /// The program of a stdio server; `None` for a Streamable HTTP server.
+    pub fn stdio(&self) -> Option<&StdioCommand> {
+        match &self.location {
+            Location::Http(_) => None,
+            Location::Stdio(command) => Some(command),
+        }
     }
 
     pub fn headers_sealed(&self) -> Option<&[u8]> {
@@ -540,7 +655,7 @@ mod tests {
     #[test]
     fn a_new_url_needs_a_new_listing_and_a_review() {
         let server = server().with_listing(&listing(None), false, now());
-        let same = server.clone().with_url(server.url().clone());
+        let same = server.clone().with_url(server.url().unwrap().clone());
         assert_eq!(same.protocol_version(), Some("2026-07-28"));
         assert!(!same.review_required());
         assert!(!same.needs_refresh(now()));
@@ -616,7 +731,7 @@ mod tests {
     #[test]
     fn a_new_url_ends_the_sign_in_but_keeps_the_client() {
         let server = signed_in();
-        let same = server.clone().with_url(server.url().clone());
+        let same = server.clone().with_url(server.url().unwrap().clone());
         assert!(same.sign_in().is_some());
         let other = BaseUrl::parse("https://other.example.com/mcp", NetworkScope::Public).unwrap();
         let moved = server.with_url(other);
@@ -631,6 +746,7 @@ mod tests {
         assert_eq!(server.headers_context().column, "headers_sealed");
         assert_eq!(server.client_context().column, "oauth_client_secret_sealed");
         assert_eq!(server.sign_in_context().column, "oauth_tokens_sealed");
+        assert_eq!(server.env_context().column, "env_sealed");
         assert_eq!(server.sign_in_context().row_id, server.id().uuid());
         assert_eq!(server.sign_in_context().user_id, server.user_id());
     }
@@ -640,5 +756,105 @@ mod tests {
         let server = server().with_listing(&listing(None), true, now());
         assert!(server.review_required());
         assert!(!server.reviewed().review_required());
+    }
+
+    fn program() -> StdioCommand {
+        StdioCommand {
+            command: "/usr/local/bin/files-mcp".to_owned(),
+            args: vec!["--root".to_owned(), "/srv".to_owned()],
+            env_sealed: None,
+            cwd: String::new(),
+        }
+    }
+
+    fn stdio_server() -> ToolServer {
+        ToolServer::create_stdio(
+            UserId::new(Uuid::now_v7()),
+            "Files",
+            Slug::parse("files").unwrap(),
+            program(),
+            now(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_stdio_server_gets_its_own_directory_and_no_url() {
+        let server = stdio_server();
+        assert_eq!(server.transport(), Transport::Stdio);
+        assert_eq!(server.url(), None);
+        assert_eq!(server.stdio().unwrap().cwd, server.id().to_string());
+        assert_eq!(server.auth(), AuthMode::None);
+        let named = ToolServer::create_stdio(
+            server.user_id(),
+            "Files",
+            Slug::parse("files").unwrap(),
+            StdioCommand {
+                cwd: "files".to_owned(),
+                ..program()
+            },
+            now(),
+        )
+        .unwrap();
+        assert_eq!(named.stdio().unwrap().cwd, "files");
+        let with_env = server.clone().with_env(Some(vec![1, 2, 3]));
+        assert_eq!(with_env.stdio().unwrap().env_sealed, Some(vec![1, 2, 3]));
+        assert!(
+            !with_env.review_required(),
+            "a new server has nothing to review"
+        );
+        let url = BaseUrl::parse("https://mcp.example.com/mcp", NetworkScope::Public).unwrap();
+        assert_eq!(
+            server.clone().with_url(url),
+            server,
+            "no URL for a stdio server"
+        );
+        let http = ToolServer::create(
+            server.user_id(),
+            "Web",
+            Slug::parse("web").unwrap(),
+            BaseUrl::parse("https://mcp.example.com/mcp", NetworkScope::Public).unwrap(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            http.with_stdio(program()).stdio(),
+            None,
+            "no program for HTTP"
+        );
+    }
+
+    #[test]
+    fn a_new_program_needs_a_new_listing_and_a_review() {
+        let server = stdio_server().with_listing(&listing(None), false, now());
+        assert!(server.listed());
+        let same = server.clone().with_stdio(server.stdio().unwrap().clone());
+        assert!(same.listed());
+        assert!(!same.review_required());
+        let changes = [
+            StdioCommand {
+                command: "/usr/bin/other".to_owned(),
+                ..server.stdio().unwrap().clone()
+            },
+            StdioCommand {
+                args: vec![],
+                ..server.stdio().unwrap().clone()
+            },
+            StdioCommand {
+                env_sealed: Some(vec![9]),
+                ..server.stdio().unwrap().clone()
+            },
+            StdioCommand {
+                cwd: "elsewhere".to_owned(),
+                ..server.stdio().unwrap().clone()
+            },
+        ];
+        for command in changes {
+            let moved = server.clone().with_stdio(command.clone());
+            assert!(!moved.listed(), "{command:?}");
+            assert!(moved.review_required());
+            assert_eq!(moved.stdio(), Some(&command));
+            assert!(moved.cache().is_some(), "kept to show what changed");
+        }
     }
 }
