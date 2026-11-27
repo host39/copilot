@@ -214,7 +214,7 @@ pub async fn list(
     request_body(content = UploadFileForm, content_type = "multipart/form-data"),
     responses(
         (status = CREATED, description = "The stored attachment", body = DetailsResponse<FileResponse>),
-        (status = BAD_REQUEST, description = "Not one file part, too large, or a type that is not supported", body = ErrorResponse),
+        (status = BAD_REQUEST, description = "Not one file part, too large, a type that is not supported, or audio that plays longer than 5 minutes", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
         (status = UNPROCESSABLE_ENTITY, description = "The caller's file storage is full (`STORAGE_FULL`)", body = ErrorResponse)
     )

@@ -22,6 +22,8 @@ pub mod serializer;
 mod tests;
 #[cfg(test)]
 pub(crate) mod tools;
+#[cfg(test)]
+mod voice;
 
 use std::convert::Infallible;
 use std::sync::Arc;
