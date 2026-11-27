@@ -1,6 +1,8 @@
 //! `/api/providers`: provider connections, their models, and refreshes (`ProviderService`,
 //! `ModelService`).
 
+use std::time::Duration;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use copilot_contracts::{
@@ -8,6 +10,7 @@ use copilot_contracts::{
     ProviderDetailsResponse, ProviderResponse, ProviderUsage, RefreshResponse,
     UpdateProviderRequest,
 };
+use copilot_core::shared::constants::SHUTDOWN_DRAIN_SECS;
 use copilot_core::{
     KeyChange, KeyState, ModelQuery, NewProvider, Provider, ProviderId, ProviderUpdate,
 };
@@ -188,7 +191,7 @@ pub async fn update(
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The connection's id")),
     responses(
-        (status = NO_CONTENT, description = "Deleted with its models; schedules that ran one are turned off"),
+        (status = NO_CONTENT, description = "Deleted with its models, after the caller's answers on them stop; schedules that ran one are turned off"),
         (status = NOT_FOUND, description = "The caller has no such connection", body = ErrorResponse)
     )
 )]
@@ -197,7 +200,19 @@ pub async fn delete(
     Caller(caller): Caller,
     Id(id): Id,
 ) -> Result<StatusCode, HttpError> {
-    state.providers.delete(&caller, ProviderId::new(id)).await?;
+    let id = ProviderId::new(id);
+    state.providers.get(&caller, id).await?;
+    // Answers stop before their model goes, so each saves as `cancelled`, never half-written.
+    for chat in state.runs.chats_on(caller.user_id, id) {
+        if !state
+            .runs
+            .stop(chat, Duration::from_secs(SHUTDOWN_DRAIN_SECS))
+            .await
+        {
+            tracing::warn!(chat_id = %chat, provider_id = %id, "api.providers.delete.run-live");
+        }
+    }
+    state.providers.delete(&caller, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -259,13 +274,17 @@ pub async fn models(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use axum::Router;
     use axum::http::{Method, StatusCode};
     use copilot_database::DbPool;
     use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
 
     use crate::helpers::testing::{
-        TestResponse, live_app, other_user, provider, register, request, send,
+        TestResponse, live_app, model, other_user, provider, read, register, request, send,
     };
 
     async fn call(
@@ -514,5 +533,90 @@ mod tests {
         .await;
         assert_eq!(kept.status, StatusCode::OK, "the chat stays");
         assert_eq!(kept.body["data"]["modelId"], Value::Null);
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn deleting_a_connection_stops_its_live_answers_first(pool: DbPool) {
+        let server = provider().await;
+        // A provider that takes long to answer keeps the run live.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        let app = live_app(pool).await;
+        let alice = register(&app, "alice").await;
+        let chosen = model(&app, &alice, &server).await;
+        let connection = call(&app, &alice, Method::GET, "/api/providers", None).await;
+        let connection = connection.body["items"][0]["id"]
+            .as_str()
+            .expect("an id")
+            .to_owned();
+        let chat = call(
+            &app,
+            &alice,
+            Method::POST,
+            "/api/chats",
+            Some(json!({ "modelId": chosen })),
+        )
+        .await;
+        let chat = chat.body["data"]["id"].as_str().expect("an id").to_owned();
+
+        let turn = tokio::spawn(read(
+            app.clone(),
+            request(
+                Method::POST,
+                &format!("/api/chats/{chat}/messages"),
+                Some(&alice),
+                Some(json!({ "text": "Hello" })),
+            ),
+        ));
+        let started = Instant::now();
+        loop {
+            let requests = server.received_requests().await.unwrap_or_default();
+            if requests
+                .iter()
+                .any(|request| request.url.path() == "/v1/chat/completions")
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the run starts"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let deleted = call(
+            &app,
+            &alice,
+            Method::DELETE,
+            &format!("/api/providers/{connection}"),
+            None,
+        )
+        .await;
+        assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+        let (status, _, body) = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the run ended with the delete, long before the provider answered")
+            .expect("the turn task");
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"cancelled\""), "{body}");
+        let messages = call(
+            &app,
+            &alice,
+            Method::GET,
+            &format!("/api/chats/{chat}/messages"),
+            None,
+        )
+        .await;
+        let answer = &messages.body["items"][1];
+        assert_eq!(answer["status"], "cancelled", "saved, never left streaming");
+        assert_eq!(
+            answer["modelId"],
+            Value::Null,
+            "its model went with the connection"
+        );
     }
 }

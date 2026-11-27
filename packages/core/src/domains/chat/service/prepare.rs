@@ -322,7 +322,11 @@ impl ChatService {
             }
         }
         if titled {
-            self.stores.chats.update(&chat).await?;
+            // The title alone: settings saved while the turn was prepared stay.
+            self.stores
+                .chats
+                .set_title(user, chat.id(), chat.title())
+                .await?;
         }
         self.finish(actor, chat, loaded, staged, RunMode::Interactive)
             .await

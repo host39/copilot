@@ -119,6 +119,40 @@ impl ChatRepository for MemoryStore {
         Ok(())
     }
 
+    async fn set_title(&self, user: UserId, id: ChatId, title: &str) -> DomainResult<bool> {
+        let mut tables = self.tables();
+        let Some(stored) = tables
+            .chats
+            .get_mut(&id)
+            .filter(|stored| stored.user_id() == user && stored.title().is_empty())
+        else {
+            return Ok(false);
+        };
+        *stored = Chat::restore(ChatParts {
+            title: title.to_owned(),
+            ..stored.to_parts()
+        });
+        Ok(true)
+    }
+
+    async fn clear_instructions(
+        &self,
+        user: UserId,
+        id: ChatId,
+        saved: &str,
+    ) -> DomainResult<bool> {
+        let mut tables = self.tables();
+        let Some(stored) = tables
+            .chats
+            .get_mut(&id)
+            .filter(|stored| stored.user_id() == user && stored.instructions() == saved)
+        else {
+            return Ok(false);
+        };
+        *stored = stored.clone().with_instructions("");
+        Ok(true)
+    }
+
     async fn update(&self, chat: &Chat) -> DomainResult<()> {
         let mut tables = self.tables();
         // Approvals only grow, and rows naming a server the user no longer has are skipped.
@@ -313,9 +347,17 @@ impl MessageRepository for MemoryStore {
 
     async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64> {
         let mut tables = self.tables();
+        let mut last = std::collections::HashMap::new();
+        for (seq, message) in &tables.messages {
+            last.insert(message.chat_id(), *seq);
+        }
         let mut count = 0;
-        for message in tables.messages.values_mut() {
-            if message.status() == MessageStatus::Streaming {
+        for (seq, message) in tables.messages.iter_mut() {
+            let stopped_round = message.status() == MessageStatus::Complete
+                && message.role() == Role::Assistant
+                && message.calls().next().is_some()
+                && last.get(&message.chat_id()) == Some(seq);
+            if message.status() == MessageStatus::Streaming || stopped_round {
                 *message = Message::restore(MessageParts {
                     status: MessageStatus::Error,
                     error: Some(INTERRUPTED.to_owned()),

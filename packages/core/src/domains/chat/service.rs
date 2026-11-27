@@ -358,9 +358,10 @@ impl ChatService {
             .with_instructions(&combined)
             .touched(self.clock.now());
         self.stores.projects.update(&project).await?;
+        // The instructions alone, and only those saved: other settings stay.
         self.stores
             .chats
-            .update(&chat.with_instructions(""))
+            .clear_instructions(actor.user_id, id, chat.instructions())
             .await?;
         Ok(project)
     }

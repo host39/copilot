@@ -381,6 +381,51 @@ async fn recover_marks_streaming_messages_interrupted(pool: DbPool) {
         "the chat does not move or turn unread"
     );
     assert_eq!(store.recover(at(10)).await.unwrap(), 0, "nothing left");
+
+    // An answer saved `complete` whose calls were running when the process stopped.
+    let calling = |chat: ChatId, seconds| {
+        Message::restore(MessageParts {
+            status: MessageStatus::Complete,
+            finish_reason: Some(FinishReason::ToolCalls),
+            parts: vec![Part::ToolCall(ToolCallPart {
+                id: CallId::generate(),
+                provider_call_id: Some("call_1".to_owned()),
+                server_id: None,
+                tool_name: "list_schedules".to_owned(),
+                alias: ToolAlias::restore("list_schedules".to_owned()),
+                arguments_raw: "{}".to_owned(),
+                arguments: Some(json!({})),
+                complete: true,
+                approval: Approval::Auto,
+                deny_reason: None,
+            })],
+            ..Message::assistant(owner, chat, model.id(), model.provider_id(), at(seconds))
+                .to_parts()
+        })
+    };
+    let stopped = self::chat(&store, owner).await;
+    let mid_round = calling(stopped.id(), 4);
+    store.append(owner, &mid_round).await.unwrap();
+    let finished = self::chat(&store, owner).await;
+    let answered = calling(finished.id(), 5);
+    store.append(owner, &answered).await.unwrap();
+    let results = Message::tool(owner, finished.id(), Vec::new(), at(6));
+    store.append(owner, &results).await.unwrap();
+
+    assert_eq!(store.recover(at(11)).await.unwrap(), 1);
+    let history = store.history(owner, stopped.id()).await.unwrap();
+    assert_eq!(
+        history[0].status(),
+        MessageStatus::Error,
+        "Retry answers it"
+    );
+    assert_eq!(history[0].error(), Some(copilot_core::INTERRUPTED));
+    let history = store.history(owner, finished.id()).await.unwrap();
+    assert_eq!(
+        history[0].status(),
+        MessageStatus::Complete,
+        "its calls have their results"
+    );
 }
 
 #[sqlx::test(migrations = false)]
@@ -992,4 +1037,61 @@ async fn search_finds_title_and_message_words_by_prefix(pool: DbPool) {
             .unwrap()
             .is_empty()
     );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn titles_and_saved_instructions_change_alone(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let chat = chat(&store, owner).await;
+    // Settings saved by another request after the turn read the chat.
+    let saved = ChatRepository::get(&store, owner, chat.id())
+        .await
+        .unwrap()
+        .expect("the chat")
+        .with_pinned(true)
+        .with_instructions("Answer in French.");
+    ChatRepository::update(&store, &saved).await.unwrap();
+
+    assert!(!store.set_title(other, chat.id(), "Theirs").await.unwrap());
+    assert!(
+        store
+            .set_title(owner, chat.id(), "hello race")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store.set_title(owner, chat.id(), "Later").await.unwrap(),
+        "only an untitled chat"
+    );
+    let read = ChatRepository::get(&store, owner, chat.id())
+        .await
+        .unwrap()
+        .expect("the chat");
+    assert_eq!(read.title(), "hello race");
+    assert!(read.pinned(), "the settings saved meanwhile stay");
+    assert_eq!(read.instructions(), "Answer in French.");
+
+    assert!(
+        !store
+            .clear_instructions(owner, chat.id(), "Answer in German.")
+            .await
+            .unwrap(),
+        "changed since they were saved"
+    );
+    assert!(
+        store
+            .clear_instructions(owner, chat.id(), "Answer in French.")
+            .await
+            .unwrap()
+    );
+    let read = ChatRepository::get(&store, owner, chat.id())
+        .await
+        .unwrap()
+        .expect("the chat");
+    assert_eq!(read.instructions(), "");
+    assert!(read.pinned());
+    assert_eq!(read.title(), "hello race");
 }

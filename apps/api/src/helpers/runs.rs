@@ -56,7 +56,8 @@ use copilot_core::shared::constants::{
     RUN_BUFFER_MAX_BYTES,
 };
 use copilot_core::{
-    ChatId, DomainError, DomainResult, MessageStatus, TurnEvent, TurnOutcome, TurnSink, UserId,
+    ChatId, DomainError, DomainResult, MessageStatus, ProviderId, TurnEvent, TurnOutcome, TurnSink,
+    UserId,
 };
 use futures_util::stream::{self, Stream};
 use tokio::sync::broadcast::error::RecvError;
@@ -124,6 +125,8 @@ struct Entry {
     released: CancellationToken,
     /// The run's events, for streams that attach later.
     state: Arc<Mutex<Buffer>>,
+    /// The connection the run's model belongs to, once the turn is prepared.
+    provider: Option<ProviderId>,
 }
 
 impl RunRegistry {
@@ -253,6 +256,7 @@ impl RunRegistry {
                 cancel: cancel.clone(),
                 released: CancellationToken::new(),
                 state: Arc::clone(&sink.state),
+                provider: None,
             },
         );
         self.live.send_replace(runs.entries.len());
@@ -295,6 +299,16 @@ impl RunRegistry {
             .entries
             .iter()
             .filter(|(_, entry)| entry.owner == owner)
+            .map(|(chat, _)| *chat)
+            .collect()
+    }
+
+    /// The chats of `owner` whose runs answer with a model of `provider`.
+    pub fn chats_on(&self, owner: UserId, provider: ProviderId) -> Vec<ChatId> {
+        self.lock()
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.owner == owner && entry.provider == Some(provider))
             .map(|(chat, _)| *chat)
             .collect()
     }
@@ -521,6 +535,17 @@ impl Reservation {
     /// `run.started`. Call it when the prepared turn is launched; the first event also does.
     pub fn start(&self) {
         self.sink.start();
+    }
+
+    /// Records the connection the run answers with, so deleting it stops the run first
+    /// ([`RunRegistry::chats_on`]).
+    pub fn serve(&self, provider: ProviderId) {
+        let mut runs = self.registry.lock();
+        if let Some(entry) = runs.entries.get_mut(&self.chat)
+            && entry.run == self.sink.run
+        {
+            entry.provider = Some(provider);
+        }
     }
 }
 
