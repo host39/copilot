@@ -146,7 +146,7 @@ When generated contract files conflict, rerun `make contracts`; never merge them
 
 - [ ] P6.4 Close the small and medium gaps of the completeness check (release readiness): [`tracks/p6-4.md`](./tracks/p6-4.md). Agent parts, each with tests or a CI run that proves it:
   - [x] Gemini: the `gemini` preset's model refresh reads Google's native model list (`inputTokenLimit`, `outputTokenLimit`) for the context window and output limit, with wiremock tests.
-  - [ ] Releases: `main` and `v*` tags trigger Code quality and Image; on tags, Image pushes the tested image to `ghcr.io/host39/copilot` and Native apps attaches the `.deb`, the AppImage, and the APK with `SHA256SUMS` to a GitHub Release; the install docs use the published image and a tag.
+  - [x] Releases: `main` and `v*` tags trigger Code quality and Image; on tags, Image pushes the tested image to `ghcr.io/host39/copilot` and Native apps attaches the `.deb`, the AppImage, and the APK with `SHA256SUMS` to a GitHub Release; the install docs use the published image and a tag.
   - [ ] Upgrades and backups: `CHANGELOG.md` with an Unreleased section and upgrade notes; `scripts/check-upgrade.sh` (`make test-upgrade`) and a CI step that upgrades a database written by the previous release tag; the Image job runs `up` a second time (migrate is idempotent) and the documented backup and restore, with a backup script for cron or a systemd timer.
   - [x] MCP: a self-hosting section that runs a stdio MCP server behind a stdio-to-Streamable-HTTP bridge container.
   - [ ] Mobile: a headless Chromium (Playwright) test at a 390x844 phone viewport against the server and the fake model server: sign in, the drawer, a streamed answer, an approved tool card, and closing a dialog the way Android's back does.

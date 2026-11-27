@@ -17,6 +17,9 @@ backups/
 # Bruno
 .run/
 
+# Playwright output when run without scripts/e2e.sh
+apps/e2e/test-results/
+
 # Claude Code personal overrides
 CLAUDE.local.md
 .claude/settings.local.json

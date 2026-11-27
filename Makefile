@@ -1,4 +1,4 @@
-.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke test-upgrade lint format type-check boundaries check ci build native-dev native-lint native-test native-build android-dev android-build clean
+.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke test-upgrade e2e lint format type-check boundaries check ci build native-dev native-lint native-test native-build android-dev android-build clean
 
 .DEFAULT_GOAL := help
 
@@ -26,6 +26,7 @@ help:
 	@echo "  test-bruno     Bruno API tests (starts this checkout's API; BASE_URL=<url> tests a running one)"
 	@echo "  smoke          The API against fake-llm over HTTP, on a throwaway database (needs Postgres)"
 	@echo "  test-upgrade   A database written by the previous release tag, upgraded and used by this commit (needs Postgres)"
+	@echo "  e2e            Phone-size browser test (Playwright, Google Chrome) against the server and fake-llm (needs Postgres)"
 	@echo "  lint           rustfmt, clippy, Rust import paths, Biome, markdownlint"
 	@echo "  format         Auto-fix formatting and lint"
 	@echo "  type-check     cargo check + tsc across the workspace"
@@ -105,6 +106,9 @@ smoke:
 
 test-upgrade:
 	bash scripts/check-upgrade.sh
+
+e2e:
+	bash scripts/e2e.sh
 
 lint:
 	cargo fmt --all --check

@@ -154,11 +154,12 @@ Open <http://localhost:4000>. The OpenAPI document is at <http://localhost:3000/
 | `make test-bruno` | Bruno API tests against this checkout's API |
 | `make smoke` | The API against the fake model server over HTTP, on a throwaway database |
 | `make test-upgrade` | A database written by the previous release tag, upgraded and used by this checkout |
+| `make e2e` | The phone-size browser test (Playwright in Google Chrome) against the server and the fake model server |
 | `make build` | Release binaries and the production web bundle |
 | `make native-dev` / `make android-dev` | The Linux or Android app on the web dev server |
 | `make update` / `make clean` | Update dependencies; remove build output, dependencies, and the database volume |
 
-Run `make check` before pushing; CI runs it plus the database tests, Bruno, the smoke test, the upgrade check, the footprint budgets, and (when their inputs change) the image and the native apps. Every environment variable is in [docs/env.md](./docs/env.md); contributor and assistant rules are in [AGENTS.md](./AGENTS.md).
+Run `make check` before pushing; CI runs it plus the database tests, Bruno, the smoke test, the upgrade check, the phone-size browser test, the footprint budgets, and (when their inputs change) the image and the native apps. Every environment variable is in [docs/env.md](./docs/env.md); contributor and assistant rules are in [AGENTS.md](./AGENTS.md).
 
 ## Architecture
 
@@ -178,6 +179,7 @@ One process per install holds the runs in flight, the approvals, the scheduler, 
 | --- | --- | --- |
 | `apps/api` | `copilot-api` | axum HTTP adapter: composition root, routes under `/api`, run registry, scheduler loop, the web bundle, the `server` binary |
 | `apps/web` | `@copilot/web` | Rsbuild + React Router SPA: chats, projects, schedules, settings |
+| `apps/e2e` | `@copilot/e2e` | Playwright browser tests at phone size (`make e2e`) |
 | `apps/native` | `@copilot/native` + `copilot-native` | Tauri 2 shell for Linux and Android around the web build (outside the Cargo workspace) |
 | `packages/core` | `copilot-core` | Domain entities, services, ports, the conversation engine, `DomainError` |
 | `packages/database` | `copilot-database` | Postgres pool, migrations, repositories, the `migrate` and `seed` binaries |

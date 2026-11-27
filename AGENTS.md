@@ -17,6 +17,7 @@ Run these yourself from the repo root to verify work:
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
 | `make test-upgrade` | The previous release tag's smoke test writes a database, this checkout's `migrate` upgrades it, and its server must read the data and answer a new turn (`scripts/check-upgrade.sh`; before the first tag both sides are this checkout). Needs Postgres, `jq`, `psql`, and the tags |
+| `make e2e` | The phone-size browser test (`apps/e2e`, Playwright in the system's Google Chrome at 390x844 with touch) against the server serving the production bundle and `tools/fake-llm`, on a throwaway database (`scripts/e2e.sh`; needs Postgres, `jq`, `psql`, Chrome) |
 | `make smoke` | The API against `tools/fake-llm` over HTTP (`scripts/smoke.sh`): providers of both kinds, streamed replies, a provider error, an approved MCP tool call. Creates and drops its own throwaway database (needs Postgres, `jq`, `psql`) |
 | `make fake-llm` | Runs the fake model and MCP server on port 4010 (key `fake-key`) for trying the app by hand; keywords in `tools/fake-llm/README.md` |
 | `make migrations name=<name>` | Scaffolds a migration pair |
@@ -41,6 +42,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | --- | --- |
 | `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), turn launches shared by the routes and the scheduler (`helpers/turns.rs`), per-user stream limits (`helpers/streams.rs`), core to wire mapping (`wire/convert.rs`, `wire/serializer.rs`), OpenAPI routes under `/api` (server-sent events through `routes/sse.rs`), the web bundle (`WEB_DIR`), the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
+| `apps/e2e` | Playwright browser tests at phone size (`tests/`), run by `scripts/e2e.sh`; no Copilot code imports it |
 | `apps/native` | Tauri 2 shell for Linux and Android around the web build: `src-tauri` (the `copilot-native` crate, the capability, the committed Android project), configuration tests in `test/`; see `apps/native/README.md` |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
