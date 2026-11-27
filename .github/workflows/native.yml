@@ -1,0 +1,234 @@
+name: Native apps
+
+# Builds the Tauri shell (apps/native) around the production web build and uploads each bundle as a
+# workflow artifact: the .deb and the AppImage built on Ubuntu 24.04 (glibc 2.39 floor), and the
+# debug-signed arm64 APK. Runs on version tags, on demand, and when the shell or the web app it
+# bundles changes. The workflow-level path filter skips the run entirely otherwise, so no
+# path-filter job is needed; tag pushes ignore path filters and always build.
+on:
+  push:
+    branches: ["main", "claude/**"]
+    tags: ["v*"]
+    paths:
+      - apps/native/**
+      - apps/web/**
+      - .github/workflows/native.yml
+  pull_request:
+    paths:
+      - apps/native/**
+      - apps/web/**
+      - .github/workflows/native.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer push replaces a branch's run; a tag's run always finishes.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Tag builds are kept like releases; branch and pull request builds are for trying a change.
+  RETENTION_DAYS: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 14 }}
+
+jobs:
+  # Pinned, not ubuntu-latest: the .deb and the AppImage need the build system's glibc or newer.
+  native-linux:
+    name: Linux bundles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # WebKitGTK and the libraries Tauri links; patchelf, file, and xdg-utils for the AppImage.
+      - name: Install WebKitGTK and bundler packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev patchelf file xdg-utils
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/native/src-tauri -> target
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The shell's crate is outside the root workspace, so the Rust job never lints it.
+      - name: Lint the shell
+        run: make native-lint
+
+      # beforeBuildCommand builds apps/web first.
+      - name: Build the .deb and the AppImage
+        run: pnpm --filter @copilot/native tauri build --bundles deb,appimage
+
+      - name: Check the bundles
+        id: bundles
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version apps/native/package.json)"
+          dir=apps/native/src-tauri/target/release/bundle
+          deb="$dir/deb/Copilot_${version}_amd64.deb"
+          appimage="$dir/appimage/Copilot_${version}_amd64.AppImage"
+          ls -l "$deb" "$appimage"
+          dpkg-deb --field "$deb" Package Version Architecture Depends
+          test "$(dpkg-deb --field "$deb" Version)" = "$version"
+          depends="$(dpkg-deb --field "$deb" Depends)"
+          [[ "$depends" == *libwebkit2gtk-4.1-0* ]]
+          # The binary must not need a glibc newer than Ubuntu 24.04's 2.39.
+          root="$RUNNER_TEMP/deb"
+          dpkg-deb -x "$deb" "$root"
+          glibc="$(objdump -T "$root"/usr/bin/* | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
+          echo "Newest glibc symbol: $glibc"
+          test "$(printf '%s\n' "$glibc" 2.39 | sort -V | tail -n 1)" = 2.39
+          kind="$(file -b "$appimage")"
+          echo "AppImage: $kind"
+          [[ "$kind" == "ELF 64-bit LSB executable, x86-64"* ]]
+          {
+            echo "| Artifact | Bytes |"
+            echo "| --- | --- |"
+            for bundle in "$deb" "$appimage"; do
+              echo "| \`$(basename "$bundle")\` | $(stat -c %s "$bundle") |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "deb=$deb" >>"$GITHUB_OUTPUT"
+          echo "appimage=$appimage" >>"$GITHUB_OUTPUT"
+
+      # One file per artifact, not zipped: the artifact is named after the file and downloads as it.
+      - name: Upload the .deb
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.bundles.outputs.deb }}
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.bundles.outputs.appimage }}
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  # The image's Android SDK and NDKs make the standard runner the smallest that works; glibc does
+  # not matter for Android.
+  native-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Java
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            apps/native/src-tauri/gen/android/**/*.gradle*
+            apps/native/src-tauri/gen/android/**/gradle-wrapper.properties
+
+      # The image ships NDK 27, 29, and 30; Tauri 2.12's CLI installs 29 and 30 is untested with it.
+      - name: Use the preinstalled NDK 29
+        run: |
+          set -euo pipefail
+          ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -name '29.*' | sort -V | tail -n 1)"
+          if [ -z "$ndk" ]; then
+            echo "::error::No NDK 29 under $ANDROID_HOME/ndk"
+            ls -1 "$ANDROID_HOME/ndk"
+            exit 1
+          fi
+          echo "NDK_HOME=$ndk" | tee -a "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/native/src-tauri -> target
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The release build type is signed with the runner's SDK debug key (apps/native/README.md).
+      - name: Build the arm64 APK
+        run: make android-build
+
+      - name: Check the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version apps/native/package.json)"
+          mapfile -t apks < <(find apps/native/src-tauri/gen/android/app/build/outputs/apk -name '*.apk')
+          printf '%s\n' "${apks[@]}"
+          test "${#apks[@]}" = 1
+          apk="${apks[0]}"
+          tools="$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          # Signed with an SDK debug key, so it installs by sideloading.
+          "$tools/apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"
+          # Native code for arm64 phones only.
+          unzip -Z1 "$apk" 'lib/*' >"$RUNNER_TEMP/libs.txt"
+          cat "$RUNNER_TEMP/libs.txt"
+          test "$(cut -d/ -f2 "$RUNNER_TEMP/libs.txt" | sort -u)" = arm64-v8a
+          grep -qx 'lib/arm64-v8a/libcopilot_native_lib.so' "$RUNNER_TEMP/libs.txt"
+          "$tools/aapt2" dump badging "$apk" >"$RUNNER_TEMP/badging.txt"
+          package="$(head -n 1 "$RUNNER_TEMP/badging.txt")"
+          echo "$package"
+          [[ "$package" == "package: name='com.host39.copilot' "* ]]
+          [[ "$package" == *" versionName='$version'"* ]]
+          out="$RUNNER_TEMP/Copilot_${version}_arm64.apk"
+          cp "$apk" "$out"
+          {
+            echo "| Artifact | Bytes |"
+            echo "| --- | --- |"
+            echo "| \`$(basename "$out")\` | $(stat -c %s "$out") |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "apk=$out" >>"$GITHUB_OUTPUT"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.apk.outputs.apk }}
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
