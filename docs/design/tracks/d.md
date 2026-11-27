@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other track ch
 
 ## Status
 
-Part 1 done (P2.D.1 to P2.D.5): Settings and the first-run setup. Part 2 (projects and files, sidebar and chat list, search, the non-streaming chat view) is open. Last green CI: `b917908` (Code quality, run 45918865624), which holds every part 1 commit.
+Part 1 done (P2.D.1 to P2.D.5): Settings and the first-run setup. Part 2 (projects and files, sidebar and chat list, search, the non-streaming chat view) is open. Last green CI: `072e344` (Code quality, run 45919820166), which holds every part 1 commit.
 
 ## Sub-Steps
 
@@ -27,7 +27,7 @@ Part 2:
 
 - Settings screens load with TanStack Query (keys in `api/routes/keys.ts`, prefixes of each other so one invalidation refreshes a connection's details and models together) and submit forms through `useSubmit`, so the request schemas from `@copilot/contracts` check input before sending and a rejected field shows next to its input.
 - Each Settings entity has one page module for both its `new` and `:id` paths (the frozen route table maps both to it): `page.tsx` picks `add.tsx` or `details.tsx` by the path parameter.
-- Adding a provider or a tool server saves it and tests it in one action; a failed test keeps it, and its page shows why (location state carries the outcome, never a secret). The tool server test answers `502 ADAPTER_UNAVAILABLE` until P2.F wires the MCP adapter; the screens show that message.
+- Adding a provider or a tool server saves it and tests it in one action; a failed test keeps it, and its page shows why (location state carries the outcome, never a secret). Tool server tests reach the MCP adapter that track C wired in `072e344`; before that they answered `502 ADAPTER_UNAVAILABLE`, which the screens show like any other failure.
 - Later users see the first-run setup on sign-in while they have no provider connection, and again on later sign-ins until they connect one (Skip for now goes to the new chat screen). The decision lives in `routes/welcome/setup.ts` (`landing`), which the sign-in screen calls; a failed check signs in as before.
 - A new account's temporary password is shown once on the add screen after creating it, not passed through history state.
 - Outside the owned paths: `apps/web/src/assets/styles/main.css` gained `.button-link`, `.list-panel`, `.list-row`, and `.form-warning` (shared-css rule), and `apps/web/test/chat.test.tsx` changed its one test of the new chat screen without models (it now links to the setup too). The new chat screen (`routes/home/page.tsx`) reads the setup's model from location state.
