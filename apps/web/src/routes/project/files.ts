@@ -25,6 +25,31 @@ export function capacityAfter(capacity: Capacity, tokens: number): Capacity {
   return { used, window: capacity.window, level: capacityLevel(used, capacity.window) };
 }
 
+/**
+ * Included tokens the page knows of: the server's last capacity (`from`) plus the uploads that
+ * finished since, so uploads that run at once each warn against the total before them.
+ */
+export type Tally = { from: Capacity; used: number };
+
+/** The tally for the server's `capacity`: kept while it is the same answer, else started over. */
+export function tally(current: Tally | null, capacity: Capacity): Tally {
+  return current?.from === capacity ? current : { from: capacity, used: capacity.used };
+}
+
+/** The tally's capacity, and what an upload of `tokens` adds to it: the warning and the tally after. */
+export function addUpload(current: Tally, tokens: number): { warning: string | null; next: Tally } {
+  const window = current.from.window;
+  const before: Capacity = {
+    used: current.used,
+    window,
+    level: capacityLevel(current.used, window),
+  };
+  return {
+    warning: uploadWarning(before, tokens),
+    next: { from: current.from, used: current.used + tokens },
+  };
+}
+
 /** The share of the window in use, as a whole percent; `null` without a window. */
 export function percent(capacity: Capacity): number | null {
   if (capacity.window === null || capacity.window <= 0) return null;

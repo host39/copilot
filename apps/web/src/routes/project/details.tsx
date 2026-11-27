@@ -224,10 +224,7 @@ export function ProjectDetails({ id }: { id: string }) {
   return (
     <section className="screen max-w-6xl">
       <PageTitle page={data ? data.name : "Project"} />
-      <Link
-        to={path.projects}
-        className="mb-3 inline-flex min-h-10 items-center gap-1.5 rounded-lg text-sm text-muted hover:text-fg"
-      >
+      <Link to={path.projects} className="back-link">
         <LuArrowLeft aria-hidden />
         Projects
       </Link>

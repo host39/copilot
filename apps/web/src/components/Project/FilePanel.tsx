@@ -15,19 +15,22 @@ import { fetchProjects } from "@web/api/routes/projects";
 import Button from "@web/components/Button/Button";
 import { ConfirmDialog } from "@web/components/Dialog/ConfirmDialog";
 import { Modal } from "@web/components/Dialog/Modal";
+import { saveBlob } from "@web/components/Files/save";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { Switch } from "@web/components/Form/Switch";
 import { PageLoading } from "@web/components/Suspense/PageLoading";
 import { log } from "@web/logging";
 import {
+  addUpload,
   capacityNote,
   capacityText,
   fileDetails,
   percent,
+  type Tally,
+  tally,
   type Upload,
   uploadPercent,
   uploads,
-  uploadWarning,
 } from "@web/routes/project/files";
 import { projectLabel } from "@web/routes/project/forms";
 import { useId, useReducer, useRef, useState } from "react";
@@ -92,17 +95,6 @@ export function CapacityBar({
       ) : null}
     </div>
   );
-}
-
-/** Saves `blob` as a download named `name`, through a short-lived `blob:` URL. */
-function save(blob: Blob, name: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.rel = "noopener";
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function UploadRow({ upload, onDismiss }: { upload: Upload; onDismiss: () => void }) {
@@ -241,7 +233,7 @@ function FileRow({
   });
   const download = useMutation({
     mutationFn: () => fetchFileContent(file.id),
-    onSuccess: (blob) => save(blob, file.name),
+    onSuccess: (blob) => saveBlob(blob, file.name),
     onError: (failure) => setError(describeError(failure).message),
   });
   const included = include.isPending ? (include.variables ?? file.included) : file.included;
@@ -273,7 +265,7 @@ function FileRow({
             disabled={download.isPending}
             aria-label={`Download ${file.name}`}
             title="Download"
-            className="flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg disabled:opacity-60"
+            className="icon-button"
           >
             <LuDownload aria-hidden />
           </button>
@@ -282,7 +274,7 @@ function FileRow({
             onClick={onMove}
             aria-label={`Move ${file.name}`}
             title="Move to another project"
-            className="flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg"
+            className="icon-button"
           >
             <LuFolderInput aria-hidden />
           </button>
@@ -291,7 +283,7 @@ function FileRow({
             onClick={onDelete}
             aria-label={`Delete ${file.name}`}
             title="Delete"
-            className="flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-danger"
+            className="icon-button hover:text-danger"
           >
             <LuTrash2 aria-hidden />
           </button>
@@ -324,8 +316,9 @@ export function FilePanel({ project }: { project: ProjectDetailsResponse }) {
   const [removing, setRemoving] = useState<FileResponse | null>(null);
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const capacity = useRef(project.capacity);
-  capacity.current = project.capacity;
+  // The server's capacity plus uploads finished since it was read.
+  const counted = useRef<Tally | null>(null);
+  counted.current = tally(counted.current, project.capacity);
 
   const refresh = () => client.invalidateQueries({ queryKey: keys.project(project.id) });
 
@@ -345,11 +338,12 @@ export function FilePanel({ project }: { project: ProjectDetailsResponse }) {
       const saved = await uploadFile({ projectId: project.id }, file, file.name, {
         onProgress: ({ loaded, total }) => dispatch({ type: "progress", key, loaded, total }),
       });
-      const warning = saved.included ? uploadWarning(capacity.current, saved.tokenEstimate) : null;
-      capacity.current = {
-        ...capacity.current,
-        used: capacity.current.used + (saved.included ? saved.tokenEstimate : 0),
-      };
+      let warning: string | null = null;
+      if (saved.included && counted.current) {
+        const added = addUpload(counted.current, saved.tokenEstimate);
+        counted.current = added.next;
+        warning = added.warning;
+      }
       dispatch({ type: "done", key, warning: warning ?? undefined });
     } catch (error) {
       if (isAbort(error)) {

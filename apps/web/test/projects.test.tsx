@@ -43,6 +43,7 @@ import {
 import { fieldErrors } from "@web/forms";
 import path from "@web/routes/path";
 import {
+  addUpload,
   capacityAfter,
   capacityLevel,
   capacityNote,
@@ -50,6 +51,7 @@ import {
   fileDetails,
   largest,
   size,
+  tally,
   type Upload,
   uploadPercent,
   uploads,
@@ -493,6 +495,21 @@ describe("the capacity bar", () => {
     expect(capacityNote(at(5, null), [], true)).toContain("context window is unknown");
     expect(capacityNote(at(900), [], true)).toContain("more than 80%");
     expect(capacityNote(at(100), [], true)).toBeNull();
+  });
+
+  test("uploads that run at once warn against the total before each", () => {
+    const server = at(500);
+    let counted = tally(null, server);
+    const first = addUpload(counted, 200);
+    expect(first.warning).toBeNull();
+    counted = tally(first.next, server);
+    expect(counted.used).toBe(700);
+    const second = addUpload(counted, 200);
+    expect(second.warning).toBe(
+      "The included files now fill 90% of the default model's context window."
+    );
+    // A new answer from the server starts the count over from its total.
+    expect(tally(second.next, at(900)).used).toBe(900);
   });
 
   test("an upload warns when it crosses 80% or 100%, once", () => {

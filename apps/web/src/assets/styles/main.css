@@ -101,9 +101,50 @@ body {
     @apply mx-auto w-full px-4 py-6 sm:px-8;
   }
 
+  /* The link back to a screen's list ("Projects"), above its heading. */
+  .back-link {
+    @apply mb-3 inline-flex min-h-10 items-center gap-1.5 rounded-lg text-sm text-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-accent;
+  }
+
   /* A square icon button in a toolbar or a row (menus, row actions). */
   .icon-button {
     @apply flex size-10 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60;
+  }
+
+  /* Model output rendered from Markdown (components/Chat/Markdown.tsx). */
+  .markdown {
+    @apply space-y-3 text-sm leading-relaxed break-words;
+
+    & :where(h1, h2, h3, h4, h5, h6) {
+      @apply font-semibold;
+    }
+    & :where(h1) {
+      @apply text-lg;
+    }
+    & :where(h2) {
+      @apply text-base;
+    }
+    & :where(ul) {
+      @apply list-disc space-y-1 pl-5;
+    }
+    & :where(ol) {
+      @apply list-decimal space-y-1 pl-5;
+    }
+    & :where(blockquote) {
+      @apply border-l-2 border-line pl-3 text-muted;
+    }
+    & :where(:not(pre) > code) {
+      @apply rounded bg-raised px-1 py-0.5 text-[0.9em];
+    }
+    & :where(table) {
+      @apply block overflow-x-auto border-collapse;
+    }
+    & :where(th, td) {
+      @apply border border-line px-2 py-1 text-left;
+    }
+    & :where(hr) {
+      @apply border-line;
+    }
   }
 
   .nav-item {

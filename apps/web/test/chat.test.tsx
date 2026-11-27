@@ -337,7 +337,26 @@ describe("the chat screens", () => {
 
   test("a chat shows its title, saved messages, and errors", () => {
     const html = render(`/chats/${CHAT}`, [
-      [["chats", CHAT], { title: "Say hello" }],
+      [
+        ["chats", CHAT],
+        {
+          id: CHAT,
+          projectId: null,
+          modelId: MODEL,
+          scheduleId: null,
+          title: "Say hello",
+          instructions: "",
+          reasoning: null,
+          builtinTools: null,
+          toolOverrides: [],
+          approvedTools: [],
+          pinned: false,
+          voiceReplies: false,
+          lastReadAt: AT,
+          createdAt: AT,
+          updatedAt: AT,
+        },
+      ],
       [
         ["chats", CHAT, "messages"],
         [
