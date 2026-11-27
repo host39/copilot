@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::http::{pieces, stream, with_id};
-use crate::reply::{Block, Ending, Plan, Reply, Turn, chunks, plan, signature};
+use crate::reply::{Block, Ending, Plan, Reply, Turn, chunks, newest, plan, signature};
 use crate::{AppState, CONTEXT_WINDOW, MAX_OUTPUT_TOKENS, MODELS, model};
 
 /// The header that carries the key.
@@ -46,6 +46,7 @@ pub(crate) fn models(state: &AppState, headers: &HeaderMap) -> Response {
     if let Some(response) = refusal(state, headers) {
         return with_id(response, REQUEST_ID, &id);
     }
+    tracing::info!("fake-llm.anthropic.models-listed");
     let supported = |flag: bool| json!({ "supported": flag });
     let data: Vec<Value> = MODELS
         .iter()
@@ -119,7 +120,10 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
     }
     let turn = match turn(&request) {
         Ok(turn) => turn,
-        Err(message) => return error(StatusCode::BAD_REQUEST, "invalid_request_error", &message),
+        Err(message) => {
+            tracing::warn!(model = name, reason = %message, "fake-llm.anthropic.invalid");
+            return error(StatusCode::BAD_REQUEST, "invalid_request_error", &message);
+        }
     };
     let streamed = request.get("stream").and_then(Value::as_bool) == Some(true);
     match plan(&turn, sequence) {
@@ -144,6 +148,7 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
 fn refusal(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     let key = headers.get(API_KEY).and_then(|value| value.to_str().ok());
     if key != Some(state.config.key.as_str()) {
+        tracing::warn!("fake-llm.anthropic.key-rejected");
         return Some(error(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
@@ -151,6 +156,7 @@ fn refusal(state: &AppState, headers: &HeaderMap) -> Option<Response> {
         ));
     }
     (!headers.contains_key(VERSION)).then(|| {
+        tracing::warn!("fake-llm.anthropic.version-missing");
         error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -242,16 +248,11 @@ fn turn(request: &Value) -> Result<Turn, String> {
                 .collect(),
         );
     } else {
-        let rest = &blocks[after..];
-        turn.text = rest
+        let texts: Vec<Option<String>> = blocks[after..]
             .iter()
-            .filter(|block| kind(block) == "text")
-            .map(block_text)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim()
-            .to_owned();
-        turn.attachments = rest.iter().filter(|block| kind(block) != "text").count();
+            .map(|block| (kind(block) == "text").then(|| block_text(block)))
+            .collect();
+        (turn.text, turn.attachments) = newest(texts.iter().map(Option::as_deref));
     }
     turn.tools = request
         .get("tools")

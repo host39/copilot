@@ -16,10 +16,12 @@ Run these yourself from the repo root to verify work:
 | `make check` | format + lint + type-check + test + boundaries |
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
+| `make smoke` | The API against `tools/fake-llm` over HTTP (`scripts/smoke.sh`): providers of both kinds, streamed replies, a provider error, an approved MCP tool call. Creates and drops its own throwaway database (needs Postgres, `jq`, `psql`) |
+| `make fake-llm` | Runs the fake model and MCP server on port 4010 (key `fake-key`) for trying the app by hand; keywords in `tools/fake-llm/README.md` |
 | `make migrations name=<name>` | Scaffolds a migration pair |
 | `make migrate` | Applies migrations + readonly role grants, and the server role's when `DB_SERVER_PASSWORD` is set (needs Postgres) |
 
-Run `make check` before considering work done. If a check needs infrastructure that is not running (Postgres for `test-db` / `test-bruno`), say so instead of skipping it silently.
+Run `make check` before considering work done. If a check needs infrastructure that is not running (Postgres for `test-db`, `test-bruno`, and `smoke`), say so instead of skipping it silently.
 
 **User-only** (these start Docker, change the database, or delete data): give the user the command instead of running it.
 
@@ -46,6 +48,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/providers` | `copilot-providers`: OpenAI-compatible and Anthropic wire protocols over reqwest (implements `LlmGateway`) |
 | `packages/mcp` | `copilot-mcp`: MCP client over Streamable HTTP with rmcp (implements `ToolHost`) |
 | `packages/security` | `copilot-security`: AES-256-GCM sealing (`SecretCipher`) and the hardened outbound reqwest client builder |
+| `tools/fake-llm` | Dev only: a scriptable fake model server (OpenAI-compatible and Anthropic) with an MCP server at `/mcp`; no Copilot crate depends on it and it depends on none (`make boundaries`), so it never reaches the image |
 
 The three adapter crates use only core ports and the outbound client the composition root injects. The Tauri shell (`apps/native/src-tauri`, Phase 5) is excluded from the Cargo workspace.
 

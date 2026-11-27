@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# Smoke test: Copilot's API against the fake model server (tools/fake-llm), over HTTP only.
+#
+# It creates a throwaway database (copilot_smoke_<random>) on the DB_* server, migrates it,
+# starts fake-llm and the API on ports of their own, and drives the API the way a person would:
+#
+#   1. register the first account with the setup token;
+#   2. add an OpenAI-compatible connection to the fake server, refresh its models, enable
+#      fake-chat, chat "hello" (streamed "You said: hello"), then "failed 403" (a PROVIDER_AUTH
+#      error), and read the saved messages back;
+#   3. add the fake MCP server as a tool server, Test it, ask for `tool echo {...}`, approve the
+#      call, and check the result and "Tool said: ...";
+#   4. the same text flow over an Anthropic connection to the fake server.
+#
+# Both servers stop and the database is dropped when the script exits (SMOKE_KEEP=1 keeps the
+# database and prints its name). The dev database (DB_NAME in apps/api/.env.local) is never used.
+#
+# Settings: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD (the shell, then apps/api/.env.local, then
+# localhost:5432 and postgres/postgres); SMOKE_API_PORT (3091) and SMOKE_FAKE_PORT (4091);
+# SMOKE_BIN_DIR, a folder with prebuilt `server`, `migrate`, and `fake-llm` binaries (CI),
+# otherwise this checkout's debug builds. Needs curl, jq, and psql.
+#
+# Usage: bash scripts/smoke.sh   (or `make smoke`)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+ENV_FILE="apps/api/.env.local"
+if [[ -z "${SMOKE_ENV_LOADED:-}" && -f "$ENV_FILE" ]]; then
+  export SMOKE_ENV_LOADED=1
+  exec bash scripts/with-env.sh "$ENV_FILE" bash "$0" "$@"
+fi
+
+RUN_DIR="$ROOT/target/smoke"
+mkdir -p "$RUN_DIR"
+
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-5432}"
+DB_USER="${DB_USER:-postgres}"
+DB_PASSWORD="${DB_PASSWORD:-postgres}"
+API_PORT="${SMOKE_API_PORT:-3091}"
+FAKE_PORT="${SMOKE_FAKE_PORT:-4091}"
+API="http://127.0.0.1:$API_PORT"
+FAKE="http://127.0.0.1:$FAKE_PORT"
+FAKE_KEY="smoke-key-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+SETUP_TOKEN="smoke-setup-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+DB="copilot_smoke_$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+fail() {
+  echo "scripts.smoke.failed $*" >&2
+  exit 1
+}
+
+pass() {
+  echo "scripts.smoke.passed $*"
+}
+
+for tool in curl jq psql; do
+  command -v "$tool" >/dev/null || fail "missing $tool (install it to run the smoke test)"
+done
+
+for url in "$API" "$FAKE"; do
+  if curl -s -o /dev/null "$url"; then
+    fail "something already answers on $url (stop it, or set SMOKE_API_PORT / SMOKE_FAKE_PORT)"
+  fi
+done
+
+sql() {
+  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres \
+    -v ON_ERROR_STOP=1 -qAtc "$1"
+}
+
+fake_pid=""
+api_pid=""
+created=""
+cleanup() {
+  local code=$?
+  for pid in "$api_pid" "$fake_pid"; do
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  if [[ $code -ne 0 ]]; then
+    for log in api fake-llm; do
+      if [[ -s "$RUN_DIR/$log.log" ]]; then
+        echo "--- last lines of $RUN_DIR/$log.log" >&2
+        tail -n 25 "$RUN_DIR/$log.log" >&2
+      fi
+    done
+  fi
+  if [[ -n "$created" ]]; then
+    if [[ -n "${SMOKE_KEEP:-}" ]]; then
+      echo "scripts.smoke.kept $DB"
+    else
+      sql "DROP DATABASE IF EXISTS $DB WITH (FORCE)" || echo "scripts.smoke.drop-failed $DB" >&2
+    fi
+  fi
+  exit "$code"
+}
+trap cleanup EXIT
+
+# Binaries: prebuilt (CI) or this checkout's debug builds.
+if [[ -n "${SMOKE_BIN_DIR:-}" ]]; then
+  BIN="$(cd "$SMOKE_BIN_DIR" && pwd)"
+else
+  # One build per package, as `make test-bruno`, `make migrate`, and `make fake-llm` build them,
+  # so their artifacts are reused and fake-llm's rmcp server features stay out of the server.
+  cargo build -q -p copilot-api --bin server
+  cargo build -q -p copilot-database --bin migrate
+  cargo build -q -p fake-llm
+  BIN="$ROOT/${CARGO_TARGET_DIR:-target}/debug"
+fi
+for binary in server migrate fake-llm; do
+  [[ -x "$BIN/$binary" ]] || fail "no executable $BIN/$binary"
+done
+
+sql "CREATE DATABASE $DB" || fail "could not create the database $DB on $DB_HOST:$DB_PORT"
+created=yes
+DB_NAME="$DB" ENVIRONMENT=local "$BIN/migrate" >"$RUN_DIR/migrate.log" 2>&1 ||
+  fail "migrate (see $RUN_DIR/migrate.log)"
+pass "database $DB migrated"
+
+FAKE_LLM_PORT="$FAKE_PORT" FAKE_LLM_KEY="$FAKE_KEY" FAKE_LLM_CHUNK_MS=5 \
+  "$BIN/fake-llm" >"$RUN_DIR/fake-llm.log" 2>&1 &
+fake_pid=$!
+
+env -u WEB_DIR -u CORS_ALLOWED_ORIGINS \
+  ENVIRONMENT=local HOST=127.0.0.1 PORT="$API_PORT" LOG_LEVEL=info \
+  DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_NAME="$DB" \
+  SECRET_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')" \
+  ALLOW_PRIVATE_NETWORK=all AUTH_REGISTRATION_OPEN=false AUTH_SETUP_TOKEN="$SETUP_TOKEN" \
+  "$BIN/server" >"$RUN_DIR/api.log" 2>&1 &
+api_pid=$!
+
+wait_for() {
+  local url="$1" pid="$2"
+  for _ in $(seq 1 100); do
+    curl -sf "$url" >/dev/null && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.2
+  done
+  return 1
+}
+wait_for "$FAKE/health" "$fake_pid" || fail "fake-llm did not start on $FAKE"
+wait_for "$API/health/ready" "$api_pid" || fail "the API did not get ready on $API"
+pass "fake-llm on $FAKE and the API on $API"
+
+# --- HTTP helpers ---------------------------------------------------------------------------
+
+token=""
+status=""
+body=""
+
+# request <method> <path> [json]: the API's answer in $status and $body.
+request() {
+  local args=(-sS -o "$RUN_DIR/body" -w '%{http_code}' -X "$1" "$API/api$2")
+  [[ -n "$token" ]] && args+=(-H "authorization: Bearer $token")
+  [[ $# -ge 3 ]] && args+=(-H 'content-type: application/json' --data "$3")
+  status="$(curl "${args[@]}")"
+  body="$(cat "$RUN_DIR/body")"
+}
+
+# expect <status> <what>: the last request answered <status>.
+expect() {
+  [[ "$status" == "$1" ]] || fail "$2: expected HTTP $1, got $status: $body"
+}
+
+# field <jq filter>: one value of the last body (a failure ends the script where it is used as a
+# command or an assignment).
+field() {
+  jq -er "$1" <<<"$body" || {
+    echo "scripts.smoke.failed no $1 in: $body" >&2
+    return 1
+  }
+}
+
+events=""
+
+# stream <path> <json>: POSTs a turn and reads its server-sent events (the data of each) into
+# $events as a JSON array.
+stream() {
+  local code
+  code="$(curl -sS -N --max-time 60 -o "$RUN_DIR/stream" -w '%{http_code}' -X POST "$API/api$1" \
+    -H "authorization: Bearer $token" -H 'content-type: application/json' --data "$2")"
+  [[ "$code" == 200 ]] || fail "POST $1: expected a 200 stream, got $code: $(cat "$RUN_DIR/stream")"
+  events="$(sed -n 's/^data: \{0,1\}//p' "$RUN_DIR/stream" | jq -cs .)" ||
+    fail "POST $1: unreadable events: $(cat "$RUN_DIR/stream")"
+}
+
+# check <what> <jq filter>: the filter holds for $events.
+check() {
+  jq -e "$2" >/dev/null <<<"$events" || fail "$1: $events"
+  pass "$1"
+}
+
+# text: the streamed text of the last stream.
+text() {
+  jq -r '[.[] | select(.type == "text.delta") | .text] | join("")' <<<"$events"
+}
+
+# --- 1. The first account -------------------------------------------------------------------
+
+request GET /auth/setup
+expect 200 "setup status"
+[[ "$(field .data.needsSetup)" == true ]] || fail "a fresh database should need setup: $body"
+request POST /auth/register \
+  "{\"username\":\"smoke\",\"password\":\"smoke-password-123\",\"displayName\":\"Smoke\",\"setupToken\":\"$SETUP_TOKEN\"}"
+expect 201 "register with the setup token"
+token="$(field .data.token)"
+pass "registered the administrator with the setup token"
+
+# connect <kind> <name> <base URL>: adds a connection, refreshes it, enables fake-chat, and sets
+# $model to fake-chat's id.
+model=""
+connect() {
+  local kind="$1" name="$2" base="$3" provider
+  request POST /providers \
+    "{\"kind\":\"$kind\",\"preset\":\"custom\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"}"
+  expect 201 "add the $kind connection"
+  provider="$(field .data.id)"
+  request POST "/providers/$provider/refresh"
+  expect 200 "refresh the $kind models"
+  [[ "$(field .data.added)" == 3 ]] || fail "$kind refresh should add three models: $body"
+  request GET "/providers/$provider/models"
+  expect 200 "list the $kind models"
+  model="$(field '.items[] | select(.remoteId == "fake-chat") | .id')"
+  if [[ "$kind" == openai ]]; then
+    field '.items[] | select(.remoteId == "fake-audio") | .capabilities | select(.audioIn and .audioOut)' >/dev/null
+    field '.items[] | select(.remoteId == "fake-reasoner") | .capabilities | select(.reasoning)' >/dev/null
+  else
+    field '.items[] | select(.remoteId == "fake-audio") | .capabilities | select((.audioIn or .audioOut) | not)' >/dev/null
+    field '.items[] | select(.remoteId == "fake-reasoner") | .capabilities | select(.reasoning)' >/dev/null
+  fi
+  request PATCH "/models/$model" '{"enabled":true}'
+  expect 200 "enable fake-chat ($kind)"
+  [[ "$(field .data.enabled)" == true ]] || fail "fake-chat should be enabled: $body"
+  pass "$kind connection: three models with their capabilities, fake-chat enabled"
+}
+
+# chat <kind>: a chat on $model; "hello", then "failed 403", then the saved messages.
+chat() {
+  local kind="$1" id
+  request POST /chats "{\"modelId\":\"$model\"}"
+  expect 201 "create a $kind chat"
+  id="$(field .data.id)"
+
+  stream "/chats/$id/messages" '{"text":"hello"}'
+  [[ "$(text)" == "You said: hello" ]] || fail "$kind hello: streamed $(text)"
+  check "$kind: hello streams You said: hello and ends complete with usage" '
+    (map(.type) | first == "message.started" and last == "done")
+    and ([.[] | select(.type == "text.delta")] | length >= 1)
+    and any(.[]; .type == "message.finished" and .status == "complete"
+      and .finishReason == "stop" and (.usage.outputTokens // 0) > 0)'
+
+  stream "/chats/$id/messages" '{"text":"failed 403"}'
+  check "$kind: failed 403 ends with PROVIDER_AUTH" '
+    any(.[]; .type == "error" and .code == "PROVIDER_AUTH"
+      and .message == "Key rejected: open provider settings.")
+    and any(.[]; .type == "message.finished" and .status == "error")
+    and (map(.type) | last == "done")'
+
+  request GET "/chats/$id/messages"
+  expect 200 "read the $kind messages"
+  jq -e '[.items[] | [.role, .status]] == [["user","complete"],["assistant","complete"],["user","complete"],["assistant","error"]]' \
+    >/dev/null <<<"$body" || fail "$kind saved messages: $body"
+  pass "$kind: both turns are saved (an answer, then an error)"
+}
+
+# --- 2. OpenAI-compatible ---------------------------------------------------------------------
+
+connect openai "Fake OpenAI" "$FAKE/v1"
+openai_model="$model"
+chat openai
+
+# --- 3. Tools ---------------------------------------------------------------------------------
+
+request POST /tool-servers "{\"name\":\"Fake tools\",\"url\":\"$FAKE/mcp\",\"approval\":\"ask\"}"
+expect 201 "add the tool server"
+server="$(field .data.id)"
+request POST "/tool-servers/$server/test"
+expect 200 "test the tool server"
+[[ "$(field '[.data.server.tools[].name] | sort | join(",")')" == "add,echo" ]] ||
+  fail "the tool server should list add and echo: $body"
+pass "tool server: Test lists echo and add"
+
+request POST /chats "{\"modelId\":\"$openai_model\",\"toolOverrides\":[{\"serverId\":\"$server\",\"enabled\":true}]}"
+expect 201 "create a chat with the tool server"
+tool_chat="$(field .data.id)"
+stream "/chats/$tool_chat/messages" '{"text":"tool echo {\"text\":\"smoke check\"}"}'
+check "tool echo asks for approval" '
+  any(.[]; .type == "tool.requested" and .toolName == "echo" and .needsApproval
+    and .arguments == {"text": "smoke check"} and .serverId != null)
+  and any(.[]; .type == "message.finished" and .status == "awaiting_approval")'
+message="$(jq -er '.[] | select(.type == "tool.requested") | .messageId' <<<"$events")"
+call="$(jq -er '.[] | select(.type == "tool.requested") | .callId' <<<"$events")"
+
+stream "/chats/$tool_chat/messages/$message/decisions" "{\"decisions\":[{\"callId\":\"$call\",\"decision\":\"approve\"}]}"
+check "the approved call runs and the model reads its result" '
+  any(.[]; .type == "tool.finished" and .status == "ok"
+    and .output == [{"type": "text", "text": "smoke check"}])
+  and any(.[]; .type == "message.finished" and .status == "complete")'
+[[ "$(text)" == "Tool said: smoke check" ]] || fail "after the tool: streamed $(text)"
+pass "the answer after the tool is Tool said: smoke check"
+
+# --- 4. Anthropic -----------------------------------------------------------------------------
+
+connect anthropic "Fake Anthropic" "$FAKE"
+chat anthropic
+
+pass "all steps"

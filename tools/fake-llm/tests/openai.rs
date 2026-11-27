@@ -361,3 +361,20 @@ async fn refuses_an_unknown_model_and_a_bad_body() {
     let answer = openai(json!({ "model": "fake-chat", "messages": [] })).await;
     assert_eq!(answer.status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn reads_only_the_newest_of_merged_user_messages() {
+    // A refused answer is left out of the request, so its prompt merges into the next message.
+    let body = json!({
+        "model": "fake-chat",
+        "stream": true,
+        "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "refuse" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } },
+            { "type": "text", "text": "hello" },
+        ] }],
+    });
+    let chunks = openai(body).await.chunks();
+    assert_eq!(joined(&chunks, "content"), "You said: hello");
+    assert_eq!(finish(&chunks), ["stop"]);
+}

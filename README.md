@@ -69,6 +69,7 @@ make dev-web        # web only on :4000
 | `make test` | Rust and TypeScript unit tests |
 | `make test-db` | Tests that need Postgres (one throwaway database per test) |
 | `make test-bruno` | Bruno API tests against this checkout's API (`BASE_URL=<url>` tests a server that is already running) |
+| `make smoke` | The API against the fake model server over HTTP, on a throwaway database (see [Development](#development)) |
 | `make lint` | rustfmt, Clippy, Rust import paths, Biome, markdownlint |
 | `make format` | Auto-fix lint and format |
 | `make type-check` | `cargo check` + TypeScript across the workspace |
@@ -99,6 +100,10 @@ After `make update` or `make update-latest`, run `make check` to catch breaking 
 | `audio` (model `fake-audio`, Speak replies on) | A short tone as streamed audio with a transcript |
 
 The loopback address needs a connection that may reach private addresses: with the default `ALLOW_PRIVATE_NETWORK=admins`, use the administrator account. Every keyword, model, setting, and check is in [tools/fake-llm/README.md](./tools/fake-llm/README.md).
+
+### Smoke Test
+
+`make smoke` (`scripts/smoke.sh`) drives the API over HTTP the way a person would, against the fake server: it registers the first account with the setup token, adds an OpenAI-compatible connection, refreshes and enables `fake-chat`, sends `hello` and `failed 403`, adds the fake MCP server, approves a `tool echo {...}` call and checks its result, then repeats the text flow over an Anthropic connection. It creates a throwaway database on the `DB_*` server with `psql` (never the dev database), starts both servers on ports of their own (`SMOKE_API_PORT` 3091, `SMOKE_FAKE_PORT` 4091), and drops the database at the end (`SMOKE_KEEP=1` keeps it). It needs Postgres, `curl`, `jq`, and `psql`. CI runs it as the `smoke` job on the release binaries of the Rust job.
 
 ---
 

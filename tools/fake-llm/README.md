@@ -33,7 +33,7 @@ Every model reports a 128,000-token context window and 8,192 output tokens. For 
 
 ## Keywords
 
-Words match whole and in any case; punctuation around them is ignored.
+Words match whole and in any case; punctuation around them is ignored. Only the newest message counts: Copilot leaves a refused answer (and a failed one without text) out of the next request, so its prompt merges into the next user message, and the fake reads the last text of the last user message and the attachments after it.
 
 | Message | Answer |
 | --- | --- |

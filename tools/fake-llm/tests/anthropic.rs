@@ -310,3 +310,22 @@ async fn refuses_prefill_a_missing_max_tokens_and_an_unknown_model() {
     assert_eq!(answer.status, StatusCode::NOT_FOUND);
     assert_eq!(answer.json()["error"]["type"], "not_found_error");
 }
+
+#[tokio::test]
+async fn reads_only_the_newest_of_merged_user_messages() {
+    let body = json!({
+        "model": "fake-chat",
+        "max_tokens": 1024,
+        "stream": true,
+        "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "failed 403" },
+            { "type": "text", "text": "hello" },
+            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } },
+        ] }],
+    });
+    let chunks = anthropic(body).await.chunks();
+    assert_eq!(
+        joined(&chunks, "text"),
+        "You said: hello (with 1 attachment)"
+    );
+}

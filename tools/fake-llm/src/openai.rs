@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
 
 use crate::http::{now, pieces, stream, with_id};
-use crate::reply::{Block, Ending, Plan, Reply, Turn, chunks, plan, wav};
+use crate::reply::{Block, Ending, Plan, Reply, Turn, chunks, newest, plan, wav};
 use crate::{AppState, CONTEXT_WINDOW, MAX_OUTPUT_TOKENS, MODELS, model};
 
 /// The header that carries a request id.
@@ -39,6 +39,7 @@ pub(crate) fn models(state: &AppState, headers: &HeaderMap) -> Response {
     if let Some(response) = refusal(state, headers) {
         return with_id(response, REQUEST_ID, &id);
     }
+    tracing::info!("fake-llm.openai.models-listed");
     let created = now();
     let data: Vec<Value> = MODELS
         .iter()
@@ -104,6 +105,7 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
     let turn = match turn(&request) {
         Ok(turn) => turn,
         Err(message) => {
+            tracing::warn!(model = name, reason = %message, "fake-llm.openai.invalid");
             return error(
                 StatusCode::BAD_REQUEST,
                 &message,
@@ -142,6 +144,7 @@ fn refusal(state: &AppState, headers: &HeaderMap) -> Option<Response> {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
     (given != Some(expected.as_str())).then(|| {
+        tracing::warn!("fake-llm.openai.key-rejected");
         error(
             StatusCode::UNAUTHORIZED,
             "Incorrect API key provided. The fake server takes the key set in FAKE_LLM_KEY.",
@@ -208,14 +211,16 @@ fn turn(request: &Value) -> Result<Turn, String> {
             .rev()
             .find(|message| role(message) == "user")
         {
-            let content = user.get("content");
-            turn.text = texts(content).join("\n").trim().to_owned();
-            turn.attachments = match content {
-                Some(Value::Array(parts)) => parts
-                    .iter()
-                    .filter(|part| part.get("type").and_then(Value::as_str) != Some("text"))
-                    .count(),
-                _ => 0,
+            (turn.text, turn.attachments) = match user.get("content") {
+                Some(Value::String(text)) => newest([Some(text.as_str())]),
+                Some(Value::Array(parts)) => newest(parts.iter().map(|part| {
+                    if part.get("type").and_then(Value::as_str) == Some("text") {
+                        Some(part.get("text").and_then(Value::as_str).unwrap_or_default())
+                    } else {
+                        None
+                    }
+                })),
+                _ => (String::new(), 0),
             };
         }
     } else {

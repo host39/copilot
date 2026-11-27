@@ -47,6 +47,24 @@ impl Turn {
     }
 }
 
+/// The newest message of a user message's content parts (`Some(text)` for a text part, `None`
+/// for an image, file, or audio clip): its text and how many attachments it has.
+///
+/// Copilot sends a message's text first and its attachments after it, and merges a user message
+/// whose answer it leaves out of the request (refused, or failed before any text) into the next
+/// one. So the newest message is the last text part and the parts after it; without one, every
+/// part counts.
+pub fn newest<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> (String, usize) {
+    let parts: Vec<Option<&str>> = parts.into_iter().collect();
+    match parts.iter().rposition(Option::is_some) {
+        Some(position) => (
+            parts[position].unwrap_or_default().trim().to_owned(),
+            parts.len() - position - 1,
+        ),
+        None => (String::new(), parts.len()),
+    }
+}
+
 /// One piece of a reply, in order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Block {
@@ -451,6 +469,18 @@ mod tests {
             4
         );
         assert_eq!(file.len(), 48);
+    }
+
+    #[test]
+    fn the_newest_message_is_the_last_text_and_what_follows() {
+        assert_eq!(newest([Some(" hello ")]), ("hello".to_owned(), 0));
+        assert_eq!(
+            newest([Some("refuse"), None, Some("hello"), None, None]),
+            ("hello".to_owned(), 2),
+            "a merged earlier message and its attachment are not counted"
+        );
+        assert_eq!(newest([None, None]), (String::new(), 2));
+        assert_eq!(newest([]), (String::new(), 0));
     }
 
     #[test]

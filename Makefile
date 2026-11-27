@@ -1,4 +1,4 @@
-.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno lint format type-check boundaries check ci build clean
+.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke lint format type-check boundaries check ci build clean
 
 .DEFAULT_GOAL := help
 
@@ -24,6 +24,7 @@ help:
 	@echo "  test           Rust and TypeScript unit tests"
 	@echo "  test-db        Tests that need Postgres (ignored by default; one throwaway database each)"
 	@echo "  test-bruno     Bruno API tests (starts this checkout's API; BASE_URL=<url> tests a running one)"
+	@echo "  smoke          The API against fake-llm over HTTP, on a throwaway database (needs Postgres)"
 	@echo "  lint           rustfmt, clippy, Rust import paths, Biome, markdownlint"
 	@echo "  format         Auto-fix formatting and lint"
 	@echo "  type-check     cargo check + tsc across the workspace"
@@ -91,6 +92,9 @@ test-db:
 
 test-bruno:
 	bash scripts/test-bruno.sh
+
+smoke:
+	bash scripts/smoke.sh
 
 lint:
 	cargo fmt --all --check
