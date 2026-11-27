@@ -5,6 +5,7 @@
 
 mod calls;
 mod decode;
+mod gemini;
 mod models;
 mod replay;
 mod request;

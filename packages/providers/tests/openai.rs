@@ -13,7 +13,9 @@ use copilot_providers::{Gateway, UNSUPPORTED};
 use copilot_security::{Purpose, clients};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{
+    body_partial_json, header, method, path, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn gateway() -> Gateway {
@@ -1174,6 +1176,192 @@ async fn lists_gemini_models_without_their_prefix() {
         .await
         .expect("listed");
     assert_eq!(models[0].remote_id, "gemini-4-hydrogen");
+    assert_eq!(
+        models[0].context_window, None,
+        "a base URL without /openai has no native list next to it"
+    );
+}
+
+/// A `gemini` connection at `{server}/v1beta/openai`, Google's layout: the native API is
+/// `{server}/v1beta`.
+fn gemini_provider(server: &MockServer) -> ProviderTarget {
+    ProviderTarget {
+        base_url: BaseUrl::parse(
+            &format!("{}/v1beta/openai", server.uri()),
+            NetworkScope::Private,
+        )
+        .expect("a loopback URL"),
+        ..provider(server, Preset::Gemini, Some("gemini-key"))
+    }
+}
+
+async fn mount_gemini_list(server: &MockServer, ids: &[&str]) {
+    let data: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": format!("models/{id}"), "object": "model", "owned_by": "google" }))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/v1beta/openai/models"))
+        .and(header("authorization", "Bearer gemini-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "object": "list", "data": data })),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn gemini_limits_come_from_the_native_model_list() {
+    let server = MockServer::start().await;
+    mount_gemini_list(
+        &server,
+        &["gemini-4-hydrogen", "gemini-3-helium", "gemma-5"],
+    )
+    .await;
+    // Two pages, as Google pages its list: the second page is asked for by its token.
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .and(query_param("pageSize", "1000"))
+        .and(query_param("pageToken", "page-2"))
+        .and(header("x-goog-api-key", "gemini-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [
+            {
+                "name": "models/gemini-3-helium",
+                "displayName": "Gemini 3 Helium",
+                "inputTokenLimit": 1_048_576,
+                "outputTokenLimit": 65_536,
+                "thinking": false,
+            },
+            { "name": "models/embedding-9", "inputTokenLimit": 2_048, "outputTokenLimit": 1 },
+        ] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .and(query_param("pageSize", "1000"))
+        .and(query_param_is_missing("pageToken"))
+        .and(header("x-goog-api-key", "gemini-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [{
+                "name": "models/gemini-4-hydrogen",
+                "version": "001",
+                "displayName": "Gemini 4 Hydrogen",
+                "description": "A model shaped after Google's documented Model resource.",
+                "inputTokenLimit": 2_097_152,
+                "outputTokenLimit": 131_072,
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+                "temperature": 1.0,
+                "thinking": true,
+            }],
+            "nextPageToken": "page-2",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let models = gateway()
+        .models(&gemini_provider(&server))
+        .await
+        .expect("listed");
+    assert_eq!(
+        models,
+        [
+            RemoteModel {
+                remote_id: "gemini-4-hydrogen".to_owned(),
+                display_name: "Gemini 4 Hydrogen".to_owned(),
+                context_window: Some(2_097_152),
+                max_output_tokens: Some(131_072),
+                reported: ReportedCapabilities {
+                    reasoning: Some(true),
+                    ..ReportedCapabilities::default()
+                },
+            },
+            RemoteModel {
+                remote_id: "gemini-3-helium".to_owned(),
+                display_name: "Gemini 3 Helium".to_owned(),
+                context_window: Some(1_048_576),
+                max_output_tokens: Some(65_536),
+                reported: ReportedCapabilities {
+                    reasoning: Some(false),
+                    ..ReportedCapabilities::default()
+                },
+            },
+            RemoteModel {
+                remote_id: "gemma-5".to_owned(),
+                display_name: "gemma-5".to_owned(),
+                ..RemoteModel::default()
+            },
+        ],
+        "models the native list does not name keep what the OpenAI-compatible list said"
+    );
+    for request in requests(&server).await {
+        if request.url.path() == "/v1beta/models" {
+            assert!(
+                request.headers.get("authorization").is_none(),
+                "the native list takes the key in x-goog-api-key only"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failing_native_list_keeps_the_gemini_models_as_listed() {
+    let server = MockServer::start().await;
+    mount_gemini_list(&server, &["gemini-4-hydrogen"]).await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let models = gateway()
+        .models(&gemini_provider(&server))
+        .await
+        .expect("the refresh still succeeds");
+    assert_eq!(
+        models,
+        [RemoteModel {
+            remote_id: "gemini-4-hydrogen".to_owned(),
+            display_name: "gemini-4-hydrogen".to_owned(),
+            ..RemoteModel::default()
+        }]
+    );
+
+    let unreadable = MockServer::start().await;
+    mount_gemini_list(&unreadable, &["gemini-4-hydrogen"]).await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+        .expect(1)
+        .mount(&unreadable)
+        .await;
+    let models = gateway()
+        .models(&gemini_provider(&unreadable))
+        .await
+        .expect("the refresh still succeeds");
+    assert_eq!(models[0].context_window, None);
+}
+
+#[tokio::test]
+async fn the_native_list_is_read_for_at_most_three_pages() {
+    let server = MockServer::start().await;
+    mount_gemini_list(&server, &["gemini-4-hydrogen"]).await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [{ "name": "models/other", "inputTokenLimit": 1_000 }],
+            "nextPageToken": "again",
+        })))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let models = gateway()
+        .models(&gemini_provider(&server))
+        .await
+        .expect("listed");
+    assert_eq!(models[0].context_window, None);
 }
 
 // The Gemini spike (P2.B.5): Google's OpenAI-compatible endpoint, with fixtures shaped after

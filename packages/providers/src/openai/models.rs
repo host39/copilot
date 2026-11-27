@@ -13,10 +13,11 @@
 //! | `architecture.output_modalities` (`audio`) | OpenRouter | `audio_out` |
 //! | `supported_parameters` (`tools`, `reasoning`) | OpenRouter | `tools`, `reasoning` |
 //!
-//! The `gemini` preset lists ids as `models/<id>`; the prefix is dropped. On the `ollama`
-//! preset each model's `POST /api/show` (next to `/v1`) adds its `capabilities` (`vision`,
-//! `tools`, `thinking`, `audio`) and context length, for lists of up to [`SHOW_MAX_MODELS`]
-//! models, four at a time; a model whose details fail keeps the defaults.
+//! The `gemini` preset lists ids as `models/<id>`; the prefix is dropped, and Google's native
+//! model list adds each model's limits (`crate::openai::gemini`). On the `ollama` preset each
+//! model's `POST /api/show` (next to `/v1`) adds its `capabilities` (`vision`, `tools`,
+//! `thinking`, `audio`) and context length, for lists of up to [`SHOW_MAX_MODELS`] models, four
+//! at a time; a model whose details fail keeps the defaults.
 
 use copilot_core::{DomainResult, Outbound, Preset, ProviderTarget, RemoteModel};
 use futures_util::stream::{self, StreamExt};
@@ -25,6 +26,7 @@ use reqwest::header::AUTHORIZATION;
 use serde_json::{Value, json};
 
 use crate::http::{bad_response, bearer, body, client, send};
+use crate::openai::gemini::add_native;
 
 /// Ollama lists at most this many models before the adapter stops asking for each one's details.
 pub(crate) const SHOW_MAX_MODELS: usize = 64;
@@ -48,10 +50,11 @@ pub(crate) async fn list(
         tracing::warn!(provider_id = %target.provider_id, "provider.models.invalid");
         bad_response()
     })?;
-    if target.preset == Preset::Ollama {
-        return Ok(show_all(client, target, models).await);
-    }
-    Ok(models)
+    Ok(match target.preset {
+        Preset::Ollama => show_all(client, target, models).await,
+        Preset::Gemini => add_native(client, target, models).await,
+        _ => models,
+    })
 }
 
 /// The listed models, or `None` when the body is not a model list.
@@ -117,7 +120,7 @@ fn model(preset: Preset, item: &Value) -> Option<RemoteModel> {
 }
 
 /// The first of `fields` that holds a token count that fits a `u32`.
-fn count(item: &Value, fields: &[&str]) -> Option<u32> {
+pub(crate) fn count(item: &Value, fields: &[&str]) -> Option<u32> {
     fields
         .iter()
         .find_map(|field| item.get(*field).and_then(Value::as_u64))
