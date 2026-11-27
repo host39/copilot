@@ -10,6 +10,10 @@ name: Native apps
 #
 # Pull requests from forks build and check the bundles but upload none: their artifacts would sit
 # in this repository's run list under the same names as trusted builds.
+#
+# On a version tag the `release` job attaches the three bundles and their SHA256SUMS to the tag's
+# GitHub Release, with that version's CHANGELOG.md section as the notes. A manual run goes
+# through the same job up to the release, so the release path is exercised before a tag.
 on:
   push:
     branches: ["main", "claude/**"]
@@ -25,6 +29,7 @@ on:
       - pnpm-workspace.yaml
       - .nvmrc
       - rust-toolchain.toml
+      - scripts/release.sh
   pull_request:
     paths:
       - apps/native/**
@@ -37,6 +42,7 @@ on:
       - pnpm-workspace.yaml
       - .nvmrc
       - rust-toolchain.toml
+      - scripts/release.sh
   workflow_dispatch:
 
 concurrency:
@@ -305,3 +311,77 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: ${{ env.RETENTION_DAYS }}
+
+  # The only job that may write to the repository, and only on a version tag: it creates the
+  # tag's GitHub Release (or adds to one that exists) with this run's bundles and checksums.
+  release:
+    name: GitHub Release
+    needs: [native-linux, native-android]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A tag must name the version in Cargo.toml and apps/native/package.json.
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(bash scripts/release.sh version)"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            bash scripts/release.sh check "$GITHUB_REF_NAME"
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Download the bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: Copilot_*
+          path: ${{ runner.temp }}/bundles
+          merge-multiple: true
+
+      - name: Checksums and notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/release"
+          mkdir -p "$dir"
+          find "$RUNNER_TEMP/bundles" -type f -name 'Copilot_*' -exec mv -t "$dir" {} +
+          for name in "Copilot_${VERSION}_amd64.deb" "Copilot_${VERSION}_amd64.AppImage" "Copilot_${VERSION}_arm64.apk"; do
+            test -s "$dir/$name"
+          done
+          test "$(find "$dir" -type f | wc -l)" = 3
+          (cd "$dir" && sha256sum Copilot_* >SHA256SUMS && sha256sum -c SHA256SUMS)
+          bash scripts/release.sh notes "$VERSION" >"$RUNNER_TEMP/notes.md"
+          {
+            echo "Release files:"
+            echo
+            echo '```text'
+            cat "$dir/SHA256SUMS"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/release"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            flags=()
+            if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$TAG" "$dir"/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "Copilot $TAG" --notes-file "$RUNNER_TEMP/notes.md" ${flags[@]+"${flags[@]}"}
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url | tee -a "$GITHUB_STEP_SUMMARY"

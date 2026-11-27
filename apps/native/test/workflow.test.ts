@@ -13,7 +13,13 @@ type Step = {
   with?: Record<string, unknown>;
   env?: Record<string, string>;
 };
-type Job = { "runs-on": string; steps: Step[] };
+type Job = {
+  "runs-on": string;
+  steps: Step[];
+  needs?: string[];
+  if?: string;
+  permissions?: Record<string, string>;
+};
 type Workflow = {
   on: {
     push: { branches: string[]; tags: string[]; paths: string[] };
@@ -30,6 +36,7 @@ const read = (file: string) => readFileSync(file, "utf8");
 const workflow = parse(read("../../.github/workflows/native.yml")) as Workflow;
 const linux = workflow.jobs["native-linux"];
 const android = workflow.jobs["native-android"];
+const release = workflow.jobs.release;
 
 /** A GitHub Actions expression as the workflow writes it: `${{ body }}`. */
 const expression = (body: string) => `\${{ ${body} }}`;
@@ -100,8 +107,11 @@ describe("native workflow triggers", () => {
     );
   });
 
-  test("only reads the repository and pins every action to a commit", () => {
+  test("only reads the repository (but for the release job) and pins every action to a commit", () => {
     expect(workflow.permissions).toEqual({ contents: "read" });
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      expect(job.permissions).toEqual(name === "release" ? { contents: "write" } : undefined);
+    }
     for (const job of Object.values(workflow.jobs)) {
       for (const step of job.steps.filter((entry) => entry.uses)) {
         expect(step.uses).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
@@ -221,5 +231,54 @@ describe("native-android", () => {
     expect(uploads(android).map((step) => step.with)).toEqual([
       expect.objectContaining({ path: expression("steps.apk.outputs.apk"), archive: false }),
     ]);
+  });
+});
+
+describe("release", () => {
+  const tagOrManual =
+    "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'";
+
+  test("runs after both builds, on version tags and manual runs only, on the smallest runner", () => {
+    expect(release.needs).toEqual(["native-linux", "native-android"]);
+    expect(release.if).toBe(tagOrManual);
+    expect(release["runs-on"]).toBe("ubuntu-slim");
+  });
+
+  test("refuses a tag that does not name the release version", () => {
+    const version = release.steps.find((step) => step.name === "Version");
+    expect(version?.run).toContain('version="$(bash scripts/release.sh version)"');
+    expect(version?.run).toContain('bash scripts/release.sh check "$GITHUB_REF_NAME"');
+  });
+
+  test("takes exactly the three bundles of this run and writes their checksums", () => {
+    const download = release.steps.find((step) =>
+      step.uses?.startsWith("actions/download-artifact@")
+    );
+    expect(download?.with).toMatchObject({ pattern: "Copilot_*", "merge-multiple": true });
+    const commands = scripts(release);
+    for (const name of [
+      `Copilot_\${VERSION}_amd64.deb`,
+      `Copilot_\${VERSION}_amd64.AppImage`,
+      `Copilot_\${VERSION}_arm64.apk`,
+    ]) {
+      expect(commands).toContain(name);
+    }
+    expect(commands).toContain('test "$(find "$dir" -type f | wc -l)" = 3');
+    expect(commands).toContain("sha256sum Copilot_* >SHA256SUMS && sha256sum -c SHA256SUMS");
+    expect(commands).toContain('bash scripts/release.sh notes "$VERSION"');
+  });
+
+  test("publishes only on a version tag, for that existing tag, with the changelog as notes", () => {
+    const publish = release.steps.find((step) => step.name === "Publish the release");
+    expect(publish?.if).toBe("startsWith(github.ref, 'refs/tags/v')");
+    expect(publish?.env).toMatchObject({ GH_TOKEN: expression("github.token") });
+    expect(publish?.run).toContain("gh release create");
+    expect(publish?.run).toContain("--verify-tag");
+    expect(publish?.run).toContain('--notes-file "$RUNNER_TEMP/notes.md"');
+    expect(publish?.run).toContain("--clobber");
+    // Only the publish step talks to the GitHub API.
+    for (const step of release.steps.filter((entry) => entry !== publish)) {
+      expect(step.run ?? "").not.toContain("gh release");
+    }
   });
 });
