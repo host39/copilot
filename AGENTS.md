@@ -36,7 +36,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 
 | Path | Role |
 | --- | --- |
-| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), OpenAPI routes under `/api` (core to wire mapping in `routes/convert.rs`), the web bundle (`WEB_DIR`), the `server` binary |
+| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), per-user stream limits (`helpers/streams.rs`), OpenAPI routes under `/api` (core to wire mapping in `routes/convert.rs`), the web bundle (`WEB_DIR`), the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
