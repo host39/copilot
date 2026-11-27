@@ -15,9 +15,10 @@ use reqwest::{Client, RequestBuilder, Response, StatusCode};
 /// same cap as MCP responses (`docs/design/copilot.md`, Outbound Requests, item 7).
 pub(crate) const RESPONSE_MAX_BYTES: usize = MCP_RESPONSE_MAX_BYTES;
 
-/// The header that names a request in the provider's own logs (OpenAI and most compatible
-/// servers), logged with failures so an operator can match them.
-const PROVIDER_REQUEST_ID: &str = "x-request-id";
+/// The headers that name a request in the provider's own logs (`x-request-id` on OpenAI and
+/// most compatible servers, `request-id` on Anthropic), logged with failures so an operator can
+/// match them.
+const PROVIDER_REQUEST_IDS: [&str; 2] = ["x-request-id", "request-id"];
 
 pub(crate) const PROVIDER_AUTH: &str = "PROVIDER_AUTH";
 pub(crate) const PROVIDER_RATE_LIMITED: &str = "PROVIDER_RATE_LIMITED";
@@ -50,6 +51,20 @@ pub(crate) fn client<'a>(
 /// `Authorization: Bearer <key>` when the connection has a key (OpenAI-compatible servers take
 /// credentials in this header only, never in the URL). The value is marked sensitive.
 pub(crate) fn bearer(target: &ProviderTarget) -> DomainResult<Option<HeaderValue>> {
+    key_header(target, |key| format!("Bearer {key}"))
+}
+
+/// The `x-api-key` value when the connection has a key (Anthropic connections take credentials
+/// in this header only). The value is marked sensitive.
+pub(crate) fn api_key(target: &ProviderTarget) -> DomainResult<Option<HeaderValue>> {
+    key_header(target, str::to_owned)
+}
+
+/// A sensitive header value made of the connection's key, or `None` without a key.
+fn key_header(
+    target: &ProviderTarget,
+    value: impl FnOnce(&str) -> String,
+) -> DomainResult<Option<HeaderValue>> {
     let Some(key) = &target.api_key else {
         return Ok(None);
     };
@@ -57,14 +72,14 @@ pub(crate) fn bearer(target: &ProviderTarget) -> DomainResult<Option<HeaderValue
     if key.is_empty() {
         return Ok(None);
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| {
+    let mut header = HeaderValue::from_str(&value(key)).map_err(|_| {
         DomainError::upstream(
             "The API key contains characters that cannot be sent. Enter it again in the provider settings.",
             PROVIDER_KEY_INVALID,
         )
     })?;
-    value.set_sensitive(true);
-    Ok(Some(value))
+    header.set_sensitive(true);
+    Ok(Some(header))
 }
 
 /// Sends `request` and returns a successful response; connection failures and error statuses
@@ -81,10 +96,9 @@ pub(crate) async fn send(
     if status.is_success() {
         return Ok(response);
     }
-    let request_id = response
-        .headers()
-        .get(PROVIDER_REQUEST_ID)
-        .and_then(|value| value.to_str().ok())
+    let request_id = PROVIDER_REQUEST_IDS
+        .into_iter()
+        .find_map(|name| response.headers().get(name)?.to_str().ok())
         .map(str::to_owned);
     tracing::warn!(
         provider_id = %target.provider_id,
@@ -129,6 +143,14 @@ pub(crate) fn status_error(status: StatusCode, retry_after: Option<u64>) -> Doma
             };
             DomainError::upstream(message, PROVIDER_RATE_LIMITED)
         }
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            DomainError::upstream("The request is too large for this provider.", PROVIDER_HTTP)
+        }
+        // 529 is Anthropic's "overloaded".
+        status if status.as_u16() == 529 => DomainError::upstream(
+            "The provider is overloaded. Try again in a moment.",
+            PROVIDER_HTTP,
+        ),
         status => DomainError::upstream(
             format!("The provider answered with HTTP {}.", status.as_u16()),
             PROVIDER_HTTP,
@@ -145,7 +167,8 @@ pub(crate) fn bad_response() -> DomainError {
     )
 }
 
-fn blocked_error() -> DomainError {
+/// The error of an address the outbound policy refused (or a base URL that cannot be one).
+pub(crate) fn blocked_error() -> DomainError {
     DomainError::upstream(
         "This connection may not reach that address. Check the base URL.",
         PROVIDER_BLOCKED,
@@ -230,6 +253,19 @@ mod tests {
         let other = status_error(StatusCode::SERVICE_UNAVAILABLE, None);
         assert_eq!(other.code(), PROVIDER_HTTP);
         assert_eq!(other.to_string(), "The provider answered with HTTP 503.");
+
+        let large = status_error(StatusCode::PAYLOAD_TOO_LARGE, None);
+        assert_eq!(large.code(), PROVIDER_HTTP);
+        assert_eq!(
+            large.to_string(),
+            "The request is too large for this provider."
+        );
+        let overloaded = status_error(StatusCode::from_u16(529).expect("a status"), None);
+        assert_eq!(overloaded.code(), PROVIDER_HTTP);
+        assert_eq!(
+            overloaded.to_string(),
+            "The provider is overloaded. Try again in a moment."
+        );
     }
 
     #[test]
@@ -244,9 +280,22 @@ mod tests {
     }
 
     #[test]
+    fn sends_a_sensitive_api_key_header_only_with_a_key() {
+        assert_eq!(api_key(&target(None)).expect("no key"), None);
+        assert_eq!(api_key(&target(Some(" "))).expect("blank key"), None);
+        let value = api_key(&target(Some(" sk-ant-test ")))
+            .expect("valid key")
+            .expect("a header");
+        assert_eq!(value.to_str().expect("ascii"), "sk-ant-test");
+        assert!(value.is_sensitive());
+    }
+
+    #[test]
     fn refuses_a_key_that_cannot_be_a_header() {
-        let error = bearer(&target(Some("sk\ntest"))).expect_err("control character");
-        assert_eq!(error.code(), PROVIDER_KEY_INVALID);
-        assert!(!error.to_string().contains("sk"), "never echoes the key");
+        for header in [bearer, api_key] {
+            let error = header(&target(Some("sk\ntest"))).expect_err("control character");
+            assert_eq!(error.code(), PROVIDER_KEY_INVALID);
+            assert!(!error.to_string().contains("sk"), "never echoes the key");
+        }
     }
 }

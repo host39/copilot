@@ -4,6 +4,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::sse::PROVIDER_ERROR;
 
 fn decode_as(dialect: Dialect, events: &[&str]) -> (Out, Flow) {
     let mut decoder = Decoder::new(ProviderId::generate(), dialect);

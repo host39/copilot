@@ -34,9 +34,7 @@ use serde_json::Value;
 use crate::http::{PROVIDER_BAD_RESPONSE, bad_response};
 use crate::openai::calls::{Calls, Fragment};
 use crate::openai::replay::{REASONING, REASONING_CONTENT, ReplayState};
-
-/// The code of an answer the provider ended with an error chunk.
-pub(crate) const PROVIDER_ERROR: &str = "PROVIDER_ERROR";
+use crate::sse::failed;
 
 /// The most replay state (reasoning text, `reasoning_details`, extra call fields) one answer
 /// may collect: what core stores in `provider_state` is not counted by the engine's ceiling.
@@ -405,15 +403,6 @@ impl Decoder {
         }
         Ok(())
     }
-}
-
-/// The provider ended the answer with an error (an error chunk, an `error` event, or a JSON
-/// error reply to a streamed request). Its text is not echoed.
-pub(crate) fn failed() -> DomainError {
-    DomainError::upstream(
-        "The provider ended the answer with an error.",
-        PROVIDER_ERROR,
-    )
 }
 
 /// A non-empty string field.

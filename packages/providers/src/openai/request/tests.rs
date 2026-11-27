@@ -589,6 +589,45 @@ fn gemini_replays_extra_call_fields_but_never_over_the_call_itself() {
 }
 
 #[test]
+fn gemini_signs_unsigned_steps_with_the_documented_stand_in() {
+    let rebuilt = message(
+        Role::Assistant,
+        vec![
+            call("call_1", "files__read", json!({ "path": "a" })),
+            call("call_2", "files__read", json!({ "path": "b" })),
+        ],
+    );
+    let messages = vec![
+        text(Role::User, &["Q"]),
+        rebuilt,
+        message(
+            Role::Tool,
+            vec![
+                result("call_1", vec![ToolContent::Text("a".to_owned())], false),
+                result("call_2", vec![ToolContent::Text("b".to_owned())], false),
+            ],
+        ),
+    ];
+    let body = body(&target(Preset::Gemini), &request(messages.clone())).expect("a body");
+    let calls = &body["messages"][2]["tool_calls"];
+    assert_eq!(
+        calls[0]["extra_content"],
+        json!({ "google": { "thought_signature": "skip_thought_signature_validator" } })
+    );
+    assert!(
+        calls[1].get("extra_content").is_none(),
+        "only the first call of a step"
+    );
+
+    let body = super::body(&target(Preset::OpenRouter), &request(messages)).expect("a body");
+    assert!(
+        body["messages"][2]["tool_calls"][0]
+            .get("extra_content")
+            .is_none()
+    );
+}
+
+#[test]
 fn an_unreadable_replay_state_replays_nothing_extra() {
     let mut answer = text(Role::Assistant, &["Answer."]);
     answer.replay = Some(json!("garbage"));
