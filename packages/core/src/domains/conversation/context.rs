@@ -294,8 +294,10 @@ fn snapshot_tools(inputs: &ContextInputs<'_>) -> Vec<SnapshotTool> {
 
 /// The reasoning level of the turn: `None` for models without reasoning; `off` on presets that
 /// need it whenever tools are sent; else the chat's, or its project's, or the model default.
-/// `level` as the current model may take it: none without the `reasoning` capability, and `off`
-/// where the preset needs it whenever tools are sent.
+/// `level` as the current model may take it: none without the `reasoning` capability, `off`
+/// where the preset needs it whenever tools are sent, and none (the model default) for a level
+/// the model does not list, such as a project's `off` on a model that cannot turn thinking off
+/// (the provider would refuse the request).
 fn reasoning(
     inputs: &ContextInputs<'_>,
     sends_tools: bool,
@@ -307,7 +309,8 @@ fn reasoning(
     if sends_tools && reasoning_off_with_tools(inputs.provider.preset(), inputs.model.remote_id()) {
         return Some(ReasoningLevel::Off);
     }
-    level
+    let levels = &inputs.capabilities.reasoning_levels;
+    level.filter(|level| levels.is_empty() || levels.contains(level))
 }
 
 fn dialect(inputs: &ContextInputs<'_>) -> Dialect {

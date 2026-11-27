@@ -792,6 +792,40 @@ fn reasoning_is_fixed_per_turn_and_off_with_tools_where_needed() {
 }
 
 #[test]
+fn levels_the_model_does_not_list_become_the_model_default() {
+    let mut setup = Setup::new();
+    setup.user("Hi");
+    setup.capabilities.reasoning = true;
+    setup.capabilities.reasoning_levels = vec![
+        ReasoningLevel::Low,
+        ReasoningLevel::Medium,
+        ReasoningLevel::High,
+    ];
+    let project = Project::create(setup.user_id(), "Work", now())
+        .unwrap()
+        .with_reasoning(Some(ReasoningLevel::Off));
+    setup.chat = setup.chat.clone().with_project(Some(project.id()));
+    setup.project = Some(project);
+    let context = setup.build();
+    assert_eq!(context.reasoning, None, "the project's off is not listed");
+    assert_eq!(setup.request_with(&context).reasoning, None);
+
+    setup.chat = setup
+        .chat
+        .clone()
+        .with_reasoning(Some(ReasoningLevel::Medium));
+    assert_eq!(setup.build().reasoning, Some(ReasoningLevel::Medium));
+
+    let listed = setup.build();
+    setup.capabilities.reasoning_levels = vec![ReasoningLevel::Low];
+    assert_eq!(
+        setup.request_with(&listed).reasoning,
+        None,
+        "a snapshot level the current model does not list"
+    );
+}
+
+#[test]
 fn request_settings_follow_the_model_and_chat() {
     let mut setup = Setup::new();
     setup.user("Hi");
