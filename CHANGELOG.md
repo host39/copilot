@@ -2,7 +2,7 @@
 
 All notable changes to Copilot are recorded here. The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) with tags `vMAJOR.MINOR.PATCH`. One version covers the server image, the Linux and Android apps, and the web app they bundle: the root `Cargo.toml` (`workspace.package.version`) and `apps/native/package.json` hold it, and a release tag must name it.
 
-Every release lists what an operator must do under "Upgrade Notes": schema changes, new or changed environment variables, and whether the release may be skipped. The steps of an upgrade are in [docs/self-hosting.md](./docs/self-hosting.md#upgrades).
+Every release lists what an operator must do under "Upgrade Notes": schema changes, new or changed environment variables, and whether the release may be skipped. The steps of an upgrade are in [docs/self-hosting.md](./docs/self-hosting.md#upgrades). `make test-upgrade` and CI upgrade a database written by the previous release tag with the current code and use it ([scripts/check-upgrade.sh](./scripts/check-upgrade.sh)).
 
 ## [Unreleased]
 

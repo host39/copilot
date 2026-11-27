@@ -14,12 +14,15 @@
 #   4. the same text flow over an Anthropic connection to the fake server.
 #
 # Both servers stop and the database is dropped when the script exits (SMOKE_KEEP=1 keeps the
-# database and prints its name). The dev database (DB_NAME in apps/api/.env.local) is never used.
+# database and prints its name as `scripts.smoke.kept <name>`; scripts/check-upgrade.sh keeps it
+# as the previous release's data). The dev database (DB_NAME in apps/api/.env.local) is never used.
 #
 # Settings: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD (the shell, then apps/api/.env.local, then
 # localhost:5432 and postgres/postgres); SMOKE_API_PORT (3091) and SMOKE_FAKE_PORT (4091);
 # SMOKE_BIN_DIR, a folder with prebuilt `server`, `migrate`, and `fake-llm` binaries (CI),
-# otherwise this checkout's debug builds. Needs curl, jq, and psql.
+# otherwise this checkout's debug builds; SMOKE_SECRET_KEY and SMOKE_FAKE_KEY, the server's
+# SECRET_KEY and the fake server's key (random otherwise), so a kept database's sealed keys can be
+# opened again. Needs curl, jq, and psql.
 #
 # Usage: bash scripts/smoke.sh   (or `make smoke`)
 set -euo pipefail
@@ -44,7 +47,8 @@ API_PORT="${SMOKE_API_PORT:-3091}"
 FAKE_PORT="${SMOKE_FAKE_PORT:-4091}"
 API="http://127.0.0.1:$API_PORT"
 FAKE="http://127.0.0.1:$FAKE_PORT"
-FAKE_KEY="smoke-key-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+FAKE_KEY="${SMOKE_FAKE_KEY:-smoke-key-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+SECRET_KEY_VALUE="${SMOKE_SECRET_KEY:-$(head -c 32 /dev/urandom | base64 | tr -d '\n')}"
 SETUP_TOKEN="smoke-setup-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 DB="copilot_smoke_$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
@@ -132,7 +136,7 @@ fake_pid=$!
 env -u WEB_DIR -u CORS_ALLOWED_ORIGINS \
   ENVIRONMENT=local HOST=127.0.0.1 PORT="$API_PORT" LOG_LEVEL=info \
   DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_NAME="$DB" \
-  SECRET_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')" \
+  SECRET_KEY="$SECRET_KEY_VALUE" \
   ALLOW_PRIVATE_NETWORK=all AUTH_REGISTRATION_OPEN=false AUTH_SETUP_TOKEN="$SETUP_TOKEN" \
   "$BIN/server" >"$RUN_DIR/api.log" 2>&1 &
 api_pid=$!

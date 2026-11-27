@@ -89,10 +89,12 @@ jobs:
           --health-interval 2s
           --health-retries 10
     steps:
+      # The full history with tags: the upgrade check builds the previous release tag.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
@@ -171,6 +173,14 @@ jobs:
           command -v psql || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
           command -v jq curl
           SMOKE_BIN_DIR=target/release bash scripts/smoke.sh
+
+      # A database written by the previous release tag (its own smoke test on its own binaries),
+      # upgraded by this commit's migrate and used by this commit's server (scripts/check-upgrade.sh).
+      # Before the first tag both sides are this commit.
+      - name: Run the upgrade check
+        env:
+          UPGRADE_BIN_DIR: target/release
+        run: bash scripts/check-upgrade.sh
 
       - name: Run Bruno smoke tests
         run: make test-bruno

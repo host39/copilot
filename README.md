@@ -153,11 +153,12 @@ Open <http://localhost:4000>. The OpenAPI document is at <http://localhost:3000/
 | `make test` / `make test-db` | Unit tests; tests that need Postgres (one throwaway database each) |
 | `make test-bruno` | Bruno API tests against this checkout's API |
 | `make smoke` | The API against the fake model server over HTTP, on a throwaway database |
+| `make test-upgrade` | A database written by the previous release tag, upgraded and used by this checkout |
 | `make build` | Release binaries and the production web bundle |
 | `make native-dev` / `make android-dev` | The Linux or Android app on the web dev server |
 | `make update` / `make clean` | Update dependencies; remove build output, dependencies, and the database volume |
 
-Run `make check` before pushing; CI runs it plus the database tests, Bruno, the smoke test, the footprint budgets, and (when their inputs change) the image and the native apps. Every environment variable is in [docs/env.md](./docs/env.md); contributor and assistant rules are in [AGENTS.md](./AGENTS.md).
+Run `make check` before pushing; CI runs it plus the database tests, Bruno, the smoke test, the upgrade check, the footprint budgets, and (when their inputs change) the image and the native apps. Every environment variable is in [docs/env.md](./docs/env.md); contributor and assistant rules are in [AGENTS.md](./AGENTS.md).
 
 ## Architecture
 

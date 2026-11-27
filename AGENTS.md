@@ -16,6 +16,7 @@ Run these yourself from the repo root to verify work:
 | `make check` | format + lint + type-check + test + boundaries |
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
+| `make test-upgrade` | The previous release tag's smoke test writes a database, this checkout's `migrate` upgrades it, and its server must read the data and answer a new turn (`scripts/check-upgrade.sh`; before the first tag both sides are this checkout). Needs Postgres, `jq`, `psql`, and the tags |
 | `make smoke` | The API against `tools/fake-llm` over HTTP (`scripts/smoke.sh`): providers of both kinds, streamed replies, a provider error, an approved MCP tool call. Creates and drops its own throwaway database (needs Postgres, `jq`, `psql`) |
 | `make fake-llm` | Runs the fake model and MCP server on port 4010 (key `fake-key`) for trying the app by hand; keywords in `tools/fake-llm/README.md` |
 | `make migrations name=<name>` | Scaffolds a migration pair |
