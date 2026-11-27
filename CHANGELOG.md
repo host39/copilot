@@ -18,11 +18,11 @@ The first release, planned as `v0.1.0`. It has no predecessor, so there is nothi
 - **Schedules:** cron rules in the owner's time zone, fired by the server's clock; the model may propose a schedule, which the owner approves.
 - **Voice:** push to talk (16 kHz WAV clips up to 5 minutes) for models that take audio, and spoken replies saved as WAV files for models that return audio. None for Claude models.
 - **Accounts:** lib-rustauth `v0.1.0` (pinned by commit): the first account is the administrator, registration is closed by default, sessions, lockout, and per-address limits.
-- **Apps:** the installable web app, a Linux app (`.deb` and AppImage, glibc 2.39 or newer), and an Android app (arm64 APK), built by the Native apps workflow.
-- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`) and the self-hosting guide (reverse proxy, private network policy, Ollama, a stdio MCP server behind a bridge, upgrades, backups).
+- **Apps:** the installable web app, a Linux app (`.deb` and AppImage, glibc 2.39 or newer), and an Android app (arm64 APK), attached to each GitHub Release with `SHA256SUMS`.
+- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`), the image `ghcr.io/host39/copilot:<version>` published on each release tag, and the self-hosting guide (reverse proxy, private network policy, Ollama, a stdio MCP server behind a bridge, upgrades, backups).
 
 ### Upgrade Notes
 
-- **From nothing:** install with [docs/self-hosting.md](./docs/self-hosting.md#install). Keep `deploy/.env`: a different `SECRET_KEY` makes every stored provider key and tool server header unreadable.
+- **From nothing:** install with [docs/self-hosting.md](./docs/self-hosting.md#install), with `COPILOT_IMAGE=ghcr.io/host39/copilot:0.1.0`. Keep `deploy/.env`: a different `SECRET_KEY` makes every stored provider key and tool server header unreadable.
 - **Schema:** the migrations in `packages/database/migrations/` become fixed with this release. Later releases change the schema only with new migrations, which `migrate` applies on the next `up`.
 - **Development databases** created before the first release (from this branch) may have applied migrations that were edited before the release; recreate them with `make clean` and `make setup` if `migrate` reports a changed checksum.

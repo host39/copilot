@@ -3,12 +3,14 @@ name: Code quality
 on:
   pull_request:
   push:
-    branches: ["claude/**"]
+    branches: ["main", "claude/**"]
+    tags: ["v*"]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push replaces a branch's run; a tag's run always finishes.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -42,6 +44,17 @@ jobs:
 
       - name: Run markdownlint
         run: pnpm check:markdown
+
+      # The release version agrees across Cargo.toml and apps/native/package.json, the changelog
+      # has release notes for it, and a version tag names it (scripts/release.sh).
+      - name: Release version
+        run: |
+          set -euo pipefail
+          version="$(bash scripts/release.sh version)"
+          bash scripts/release.sh notes "$version" >/dev/null 2>&1
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            bash scripts/release.sh check "$GITHUB_REF_NAME"
+          fi
 
       - name: Type check
         run: pnpm type-check

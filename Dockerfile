@@ -40,6 +40,12 @@ FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57
 COPY --from=rust /out/ /usr/local/bin/
 COPY --from=web /app/apps/web/dist /app/web
 
+# The source label links the published package (ghcr.io/host39/copilot) to this repository.
+LABEL org.opencontainers.image.title="Copilot" \
+      org.opencontainers.image.description="Self-hosted chat app: the server, migrate, and the web bundle" \
+      org.opencontainers.image.source="https://github.com/host39/copilot" \
+      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
+
 USER nonroot
 # Buffers of 1 MiB and more (an upload's bytes) come from mmap and go back to the system when
 # freed, so the server shrinks to its idle size after a burst.

@@ -99,7 +99,7 @@ The server starts only when lib-rustauth's `auth` migrations are applied (`migra
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `SECRET_KEY`, `DB_PASSWORD`, `DB_SERVER_PASSWORD` | Yes | none | The three secrets: `DB_PASSWORD` is the database owner's (Postgres and `migrate`), `DB_SERVER_PASSWORD` the server role's |
-| `COPILOT_IMAGE` | No | `copilot:local` | A prebuilt image instead of building one from this checkout |
+| `COPILOT_IMAGE` | No | `copilot:local` | The image to run instead of building one from this checkout: a release's `ghcr.io/host39/copilot:<version>` |
 | `COPILOT_SUBNET`, `COPILOT_GATEWAY` | No | `172.31.239.0/24`, `172.31.239.1` | The compose network; change both (and `AUTH_TRUSTED_PROXIES`) when the subnet overlaps one of the host's networks |
 | `AUTH_TRUSTED_PROXIES` | No | `172.31.239.1` | The compose network's gateway, which is where Docker's port proxy connects from |
 | `ALLOW_PRIVATE_NETWORK`, `AUTH_REGISTRATION_OPEN`, `AUTH_SETUP_TOKEN`, `LOG_LEVEL` | No | `admins`, `false`, generated, `info` | Passed through |

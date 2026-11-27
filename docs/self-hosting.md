@@ -2,7 +2,7 @@
 
 Copilot runs as one server process next to one Postgres database. The image holds everything: the `server` binary (the API, which also serves the web app), the `migrate` binary (lib-rustauth's `auth` migrations, then Copilot's, plus the database roles), and the web bundle at `/app/web`. File bytes live in Postgres too, so the database is the only state besides `SECRET_KEY`. Run exactly one server per database ([ADR-005](./adr/005-copilot-architecture.md)): runs, the scheduler, and stream limits live in that process.
 
-What it needs: Docker with Compose v2, a few hundred MB of disk for the image and Postgres (plus the files people upload), and little memory (the server idles at about 20 MB; see [footprint.md](./footprint.md)). Building the image compiles the Rust binaries, which takes a few minutes and a couple of GB of memory once; after that, `docker compose` reuses the image.
+What it needs: Docker with Compose v2, a few hundred MB of disk for the image and Postgres (plus the files people upload), and little memory (the server idles at about 20 MB; see [footprint.md](./footprint.md)). Each release publishes the image as `ghcr.io/host39/copilot:<version>` (amd64), so an install downloads about 20 MB and builds nothing. Building it from source instead compiles the Rust binaries, which takes a few minutes and a couple of GB of memory once.
 
 ## What Runs
 
@@ -18,20 +18,26 @@ The image is built from the [`Dockerfile`](../Dockerfile) at the repository root
 
 ## Install
 
+Pick a release from the [releases page](https://github.com/host39/copilot/releases) (the commands use `v0.1.0`) and check out its tag, which holds the matching `deploy/compose.yml`:
+
 ```bash
-git clone https://github.com/host39/copilot.git
+git clone --branch v0.1.0 https://github.com/host39/copilot.git
 cd copilot
 
 umask 077
 cat >deploy/.env <<EOF
+COPILOT_IMAGE=ghcr.io/host39/copilot:0.1.0
 SECRET_KEY=$(openssl rand -base64 32)
 DB_PASSWORD=$(openssl rand -hex 24)
 DB_SERVER_PASSWORD=$(openssl rand -hex 24)
 EOF
 
-docker compose -f deploy/compose.yml up -d --build
+docker compose -f deploy/compose.yml pull
+docker compose -f deploy/compose.yml up -d --no-build
 docker compose -f deploy/compose.yml logs copilot | grep rustauth.setup.token-issued
 ```
+
+`--no-build` makes a mistyped `COPILOT_IMAGE` fail instead of quietly building that name from the checkout. To build from source instead (any commit, or a machine the image does not support), leave `COPILOT_IMAGE` out of `deploy/.env` and run `docker compose -f deploy/compose.yml up -d --build`; the image is then `copilot:local`.
 
 Open <http://127.0.0.1:3000> on the same machine: the setup screen creates the administrator account with the setup token from the log. Then the first-run setup asks for a provider ([Adding Providers](../README.md#adding-providers)).
 
@@ -49,7 +55,7 @@ Compose reads `deploy/.env` (and the shell, which wins) for the variables it pas
 | `AUTH_TRUSTED_PROXIES` | the compose gateway | See [Trusted Proxies](#trusted-proxies) |
 | `COPILOT_SUBNET`, `COPILOT_GATEWAY` | `172.31.239.0/24`, `172.31.239.1` | When the subnet overlaps one of the host's networks |
 | `LOG_LEVEL` | `info` | `debug` while chasing a problem |
-| `COPILOT_IMAGE` | `copilot:local` | A prebuilt image instead of building one |
+| `COPILOT_IMAGE` | `copilot:local` (built from the checkout) | The published image of a release, `ghcr.io/host39/copilot:<version>` |
 
 The compose file fixes `ENVIRONMENT=production` (JSON logs) and `DB_SSL=false` (Postgres never leaves the compose network). Upload limits (`MAX_UPLOAD_MB`, `MAX_STORAGE_MB_PER_USER`) and every other variable are in [env.md](./env.md); to set one the compose file does not pass, add it to the `copilot` service's `environment` in a `deploy/compose.override.yml` and start with `-f deploy/compose.yml -f deploy/compose.override.yml`.
 
@@ -216,21 +222,26 @@ Then, as the administrator, add a tool server in Settings, Tool servers with the
 
 Install and upgrade are the same `up`: `migrate` runs first and the server starts only after it succeeded. Migrations go forward only, each in its own transaction, lib-rustauth's (schema `auth`, history `auth._sqlx_migrations`) before Copilot's (history `public._sqlx_migrations`). The order:
 
+First read the "Upgrade Notes" in [CHANGELOG.md](../CHANGELOG.md) (also on each release's page) for every release you skip. Then, with `v0.2.0` as the new version:
+
 ```bash
 cd copilot
 # 1. Back up (see below) and keep the dump until the new version has run for a while.
 docker compose -f deploy/compose.yml exec -T postgres pg_dump -U copilot -Fc copilot >copilot-$(date +%F).dump
-# 2. Get and build the new version while the old one keeps running.
-git pull
-docker compose -f deploy/compose.yml build
+# 2. Get the new version while the old one keeps running.
+git fetch --tags && git checkout v0.2.0
+sed -i 's|^COPILOT_IMAGE=.*|COPILOT_IMAGE=ghcr.io/host39/copilot:0.2.0|' deploy/.env
+docker compose -f deploy/compose.yml pull
 # 3. Stop the old server, so it never runs against the new schema.
 docker compose -f deploy/compose.yml stop copilot
 # 4. Migrate, then start the new server.
-docker compose -f deploy/compose.yml up -d
+docker compose -f deploy/compose.yml up -d --no-build
 docker compose -f deploy/compose.yml logs migrate copilot
 ```
 
-Stopping lets answers being written finish or save what they have (the compose file gives the server 20 seconds). When a migration fails, `up` reports the error and the server stays stopped: that migration rolls back, the ones before it stay applied, and `docker compose logs migrate` says which one failed (`database.migrate.auth.failed` or `database.migrate.copilot.failed`). The new server also refuses to start while lib-rustauth's migrations are missing (`Auth schema is out of date: run migrations`). `migrate` never reverts anything; to go back to an older version, restore the dump taken before the upgrade and build the older commit.
+Built from source, step 2 is `git pull` (or the checkout) followed by `docker compose -f deploy/compose.yml build`, and step 4 is `up -d`.
+
+Stopping lets answers being written finish or save what they have (the compose file gives the server 20 seconds). When a migration fails, `up` reports the error and the server stays stopped: that migration rolls back, the ones before it stay applied, and `docker compose logs migrate` says which one failed (`database.migrate.auth.failed` or `database.migrate.copilot.failed`). The new server also refuses to start while lib-rustauth's migrations are missing (`Auth schema is out of date: run migrations`). `migrate` never reverts anything; to go back to an older version, restore the dump taken before the upgrade and start the older image (or build the older tag).
 
 ## Backups
 
@@ -279,9 +290,9 @@ On `SIGTERM` the server stops accepting connections, gives answers being written
 ## Without Compose
 
 ```bash
-docker build -t copilot .
-docker run --rm --env-file copilot.env copilot migrate
-docker run -d --env-file copilot.env -p 127.0.0.1:3000:3000 copilot
+docker pull ghcr.io/host39/copilot:0.1.0
+docker run --rm --env-file copilot.env ghcr.io/host39/copilot:0.1.0 migrate
+docker run -d --env-file copilot.env -p 127.0.0.1:3000:3000 ghcr.io/host39/copilot:0.1.0
 ```
 
-`copilot.env` holds `ENVIRONMENT`, the `DB_*` variables, `SECRET_KEY`, and whatever else you set ([env.md](./env.md)); run `migrate` as the database owner with `DB_SERVER_PASSWORD`, and the server as `copilot_server`. The image sets `HOST=0.0.0.0`, `PORT=3000`, and `WEB_DIR=/app/web`. With no shell in the image, inspect a container with `docker logs` rather than `exec`. CI builds the image and starts the compose stack whenever the image's inputs change (`.github/workflows/image.yml`).
+`copilot.env` holds `ENVIRONMENT`, the `DB_*` variables, `SECRET_KEY`, and whatever else you set ([env.md](./env.md)); run `migrate` as the database owner with `DB_SERVER_PASSWORD`, and the server as `copilot_server`. The image sets `HOST=0.0.0.0`, `PORT=3000`, and `WEB_DIR=/app/web`. With no shell in the image, inspect a container with `docker logs` rather than `exec`. To build the image yourself, run `docker build -t copilot .` at the repository root. CI builds it and starts the compose stack whenever the image's inputs change, and on a version tag pushes the image it tested to `ghcr.io/host39/copilot` (`.github/workflows/image.yml`).

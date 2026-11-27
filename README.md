@@ -34,23 +34,25 @@ Not in this version: retrieval with vector search, running code inside Copilot, 
 
 ## Quick Start
 
-You need Docker with Compose v2. This builds the image from source (a few minutes once), starts Postgres, applies the migrations, and starts the server on `127.0.0.1:3000`:
+You need Docker with Compose v2. This checks out a release (see [Releases](https://github.com/host39/copilot/releases); the commands use `v0.1.0`), pulls its published image, starts Postgres, applies the migrations, and starts the server on `127.0.0.1:3000`:
 
 ```bash
-git clone https://github.com/host39/copilot.git
+git clone --branch v0.1.0 https://github.com/host39/copilot.git
 cd copilot
 
 umask 077
 cat >deploy/.env <<EOF
+COPILOT_IMAGE=ghcr.io/host39/copilot:0.1.0
 SECRET_KEY=$(openssl rand -base64 32)
 DB_PASSWORD=$(openssl rand -hex 24)
 DB_SERVER_PASSWORD=$(openssl rand -hex 24)
 EOF
 
-docker compose -f deploy/compose.yml up -d --build
+docker compose -f deploy/compose.yml pull
+docker compose -f deploy/compose.yml up -d --no-build
 ```
 
-Keep `deploy/.env`: `SECRET_KEY` seals the stored API keys, and a different one makes them unreadable.
+Keep `deploy/.env`: `SECRET_KEY` seals the stored API keys, and a different one makes them unreadable. To build the image from source instead (a few minutes once), leave `COPILOT_IMAGE` out and run `docker compose -f deploy/compose.yml up -d --build`.
 
 ### First Run
 
@@ -124,7 +126,7 @@ Every keyword, model, and setting is in [tools/fake-llm/README.md](./tools/fake-
 
 The Linux and Android apps wrap the same web app with Tauri 2. On first launch they ask for your server's URL (they warn before using plain `http` to a public address) and then behave like the web app, with downloads through the system's save dialog and the microphone where the model supports audio.
 
-Builds come from the **Native apps** workflow in GitHub Actions (`.github/workflows/native.yml`): open a run and download its artifacts, `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage`, and `Copilot_<version>_arm64.apk`. It runs on version tags (`v*`, release-signed APK, kept 90 days), on manual dispatch, and on pushes that change the apps or the web app (debug-signed, kept 14 days). The `.deb` needs Ubuntu 24.04 or another system with glibc 2.39 or newer and WebKitGTK 4.1; the APK is for 64-bit ARM phones. Building them yourself, signing, and the device checklist are in [apps/native/README.md](./apps/native/README.md).
+Download them from the [releases page](https://github.com/host39/copilot/releases): each release has `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage`, and `Copilot_<version>_arm64.apk` (release-signed) with a `SHA256SUMS` file (`sha256sum -c SHA256SUMS --ignore-missing`). The **Native apps** workflow (`.github/workflows/native.yml`) builds them on the version tag and attaches them; it also builds on manual dispatch and on pushes that change the apps or the web app, as run artifacts (debug-signed, kept 14 days). The `.deb` needs Ubuntu 24.04 or another system with glibc 2.39 or newer and WebKitGTK 4.1; the APK is for 64-bit ARM phones. Building them yourself, signing, and the device checklist are in [apps/native/README.md](./apps/native/README.md).
 
 ## Development
 
