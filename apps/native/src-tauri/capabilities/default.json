@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: API calls through the HTTP plugin to any server the user connects to, links opened in the system browser, and Android's back button.",
+  "description": "The main window: API calls through the HTTP plugin to any server the user connects to, links opened in the system browser, downloads saved through the system's save dialog, and Android's back button.",
   "windows": ["main"],
   "permissions": [
     "core:app:default",
     "core:app:allow-exit",
+    "allow-save-file",
     {
       "identifier": "http:default",
       "allow": [{ "url": "http://*:*" }, { "url": "https://*:*" }]

@@ -14,6 +14,10 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// The release keystore (apps/native/README.md, "Release Signing"): CI sets these for tag builds
+// from repository secrets. Without them, release APKs are signed with the SDK's debug key.
+val releaseKeystore: String? = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+
 android {
     compileSdk = 37
     namespace = "com.host39.copilot"
@@ -24,6 +28,16 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,9 +53,10 @@ android {
             }
         }
         getByName("release") {
-            // Signed with the SDK's debug key (apps/native/README.md, "Android"): the APK installs by
-            // sideloading without a release keystore. Stores refuse debug-signed apps.
-            signingConfig = signingConfigs.getByName("debug")
+            // Tag builds sign with the release keystore. Other builds fall back to the SDK's debug
+            // key (apps/native/README.md, "Android"), so the APK still installs by sideloading;
+            // stores refuse debug-signed apps.
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
             optimization {
                enable = true
             }

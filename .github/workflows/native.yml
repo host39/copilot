@@ -2,11 +2,11 @@ name: Native apps
 
 # Builds the Tauri shell (apps/native) around the production web build and uploads each bundle as a
 # workflow artifact: the .deb and the AppImage built on Ubuntu 24.04 (glibc 2.39 floor), and the
-# debug-signed arm64 APK. Runs on version tags, on demand, and when the shell, the web app it
-# bundles, or what builds them changes (the Make targets, the toolchains, the pnpm lockfile that
-# pins the Tauri CLI and its JS packages, and the contracts the web app imports). The
-# workflow-level path filter skips the run entirely otherwise, so no path-filter job is needed;
-# tag pushes ignore path filters and always build.
+# arm64 APK (release-signed on tags, debug-signed otherwise). Runs on version tags, on demand, and
+# when the shell, the web app it bundles, or what builds them changes (the Make targets, the
+# toolchains, the pnpm lockfile that pins the Tauri CLI and its JS packages, and the contracts the
+# web app imports). The workflow-level path filter skips the run entirely otherwise, so no
+# path-filter job is needed; tag pushes ignore path filters and always build.
 #
 # Pull requests from forks build and check the bundles but upload none: their artifacts would sit
 # in this repository's run list under the same names as trusted builds.
@@ -216,12 +216,33 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The release build type is signed with the runner's SDK debug key (apps/native/README.md).
+      # Tag builds are releases: they are signed with the release keystore from the repository
+      # secrets and fail without it (apps/native/README.md, "Release Signing"). Branch, pull
+      # request, and manual builds are signed with the runner's SDK debug key.
+      - name: Release keystore
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Tag builds need the release keystore: add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD to the repository secrets (apps/native/README.md)"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >>"$GITHUB_ENV"
+
       - name: Build the arm64 APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: make android-build
 
       - name: Check the APK
         id: apk
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           set -euo pipefail
           version="$(jq -r .version apps/native/package.json)"
@@ -230,9 +251,18 @@ jobs:
           test "${#apks[@]}" = 1
           apk="${apks[0]}"
           tools="$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
-          # Signed with an SDK debug key, so it installs by sideloading.
+          # Tag builds carry the release signature; every other build an SDK debug key, so it
+          # installs by sideloading.
           "$tools/apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
-          grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"
+          if [ "$IS_TAG" = true ]; then
+            if grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"; then
+              echo "::error::The tag build is signed with a debug key"
+              exit 1
+            fi
+          else
+            grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"
+          fi
+          signer="$(grep -m 1 'certificate SHA-256 digest' "$RUNNER_TEMP/certs.txt" | sed 's/.*digest: //')"
           # Native code for arm64 phones only.
           unzip -Z1 "$apk" 'lib/*' >"$RUNNER_TEMP/libs.txt"
           cat "$RUNNER_TEMP/libs.txt"
@@ -262,6 +292,8 @@ jobs:
             echo "| Artifact | Bytes |"
             echo "| --- | --- |"
             echo "| \`$(basename "$out")\` | $(stat -c %s "$out") |"
+            echo
+            echo "Signer certificate SHA-256: \`$signer\`"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           echo "apk=$out" >>"$GITHUB_OUTPUT"
 

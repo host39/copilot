@@ -10,7 +10,10 @@ The Linux desktop and Android apps: a [Tauri](https://v2.tauri.app/) 2.12 shell 
 | `src-tauri/Cargo.toml` | The `copilot-native` crate. It is excluded from the root Cargo workspace, so `make check` never needs WebKitGTK; it has its own `Cargo.lock` and `target/` |
 | `src-tauri/tauri.conf.json` | Name (`Copilot`), identifier (`com.host39.copilot`), version (from `package.json`), the web build it bundles, the window, and the Content-Security-Policy |
 | `src-tauri/capabilities/default.json` | Everything the page may ask of the shell (see [Security](#security)) |
-| `src-tauri/src/lib.rs` | Registers the two plugins, `http` and `opener`, and the permission handler, and starts the app |
+| `src-tauri/src/lib.rs` | Registers the plugins (`http`, `opener`, `dialog`, `fs`, and the navigation guard), the `save_file` command, and the permission handler, and starts the app |
+| `src-tauri/src/navigation.rs` | The navigation guard (see [Security](#security)), with unit tests |
+| `src-tauri/src/files.rs` | `save_file`: saves a download through the system's save dialog (see [Security](#security)), with unit tests |
+| `src-tauri/build.rs` | The app manifest: `save_file` gets permissions like a plugin command (`allow-save-file`) |
 | `src-tauri/src/microphone.rs` | The microphone (see [Microphone](#microphone)): the permission answer and, on Linux, WebKitGTK's media stream setting, with unit tests |
 | `src-tauri/icons/` | Generated from `apps/web/public/icons/icon.svg` |
 | `src-tauri/gen/android/` | The Android Studio project from `tauri android init`, committed because it is customized (see [Android](#android)) |
@@ -55,9 +58,9 @@ The version comes from `version` in `package.json`; Android's version code is de
 | Linux bundles (`native-linux`) | `ubuntu-24.04`, pinned so the bundles need glibc 2.39 or newer, not the newest image's | `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage` |
 | Android APK (`native-android`) | `ubuntu-latest`, with the image's Android SDK, NDK 29, and Java 21 | `Copilot_<version>_arm64.apk` |
 
-Before uploading, the Linux job runs `make native-lint` and `make native-test` and checks the `.deb`'s version, its WebKitGTK dependency, and the newest glibc symbol in the binary, and that the AppImage is an x86-64 type 2 AppImage. The Android job checks that the APK is signed with a debug certificate, holds native code for `arm64-v8a` only, carries the package name `com.host39.copilot` and the version from `package.json`, asks for `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` but not `CAMERA`, and turns off backup (`allowBackup` false and `dataExtractionRules` set in the compiled manifest). Each job writes the artifact sizes to its run summary. `test/workflow.test.ts` keeps the workflow's triggers, runners, and checks in place.
+Before uploading, the Linux job runs `make native-lint` and `make native-test` and checks the `.deb`'s version, its WebKitGTK dependency, and the newest glibc symbol in the binary, and that the AppImage is an x86-64 type 2 AppImage. The Android job checks that the APK is signed with the release key on tags and with a debug certificate otherwise (and writes the signer's SHA-256 fingerprint to the run summary), holds native code for `arm64-v8a` only, carries the package name `com.host39.copilot` and the version from `package.json`, asks for `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` but not `CAMERA`, and turns off backup (`allowBackup` false and `dataExtractionRules` set in the compiled manifest). Each job writes the artifact sizes to its run summary. `test/workflow.test.ts` keeps the workflow's triggers, runners, and checks in place.
 
-Each runner signs with a debug key of its own, so an APK from a later run does not install over one from an earlier run: uninstall first (see [Android](#android)).
+Outside tags, each runner signs with a debug key of its own, so an APK from a later branch run does not install over one from an earlier run: uninstall first (see [Android](#android)).
 
 ## Security
 
@@ -66,7 +69,10 @@ Each runner signs with a debug key of its own, so an APK from a later run does n
   - `http:default` scoped to `http://*:*` and `https://*:*`. The user picks the server at run time, so any host is allowed; the explicit port wildcard is needed, because `http://*` does not match `http://192.168.1.10:3000`. The web client sends the bearer token only to the stored server's origin.
   - `opener:allow-open-url` scoped to `http://*`, `https://*`, and `mailto:*`. The opener plugin opens links with `target="_blank"` (every link in a chat) in the system browser or mail app.
   - `core:app:default` and `core:app:allow-exit`, for Android's back button (`onBackButtonPress`) and leaving the app from the chat list.
-  - Nothing else: no file system, shell, window, or event permissions. `build.removeUnusedCommands` strips the commands no capability allows.
+  - `allow-save-file`, the app's own command for downloads (below).
+  - Nothing else: no file system, dialog, shell, window, or event permissions. `build.removeUnusedCommands` strips the commands no capability allows, including every command of the `fs` and `dialog` plugins, which only the shell's Rust code uses.
+- **Navigation guard** (`src/navigation.rs`): the main web view only shows the bundle (`tauri://localhost` on Linux, `http://tauri.localhost` on Android, and the dev server under `tauri dev`). Any other navigation is cancelled, and an `http` or `https` one opens in the system browser instead. So no remote page ever runs in the window that holds the session token and may use the microphone.
+- **Downloads** (`src/files.rs`): web views ignore `<a download>` on a `blob:` URL, so native builds send a download's bytes to `save_file`, which opens the system's save dialog (Android's document picker) and writes the file where the user chose. The page never gets a path or a file handle, and nothing is written without the dialog.
 - **Web view permissions**: the microphone only (see [Microphone](#microphone)). Every other request (camera, screen, location, notifications, MIDI, protected media) is denied.
 - `useHttpsScheme` stays `false`. Changing it later moves the WebView's storage (the server address and the session token) on Android and Windows.
 
@@ -86,10 +92,27 @@ The manifest also marks the microphone as not required, so devices without one c
 
 The committed project differs from what `tauri android init` writes in four places. Re-apply them after regenerating it:
 
-1. `app/build.gradle.kts`: the `release` build type is signed with the SDK's debug key (`signingConfig = signingConfigs.getByName("debug")`). The APK installs by sideloading without a release keystore; app stores refuse it. Each machine (and each CI runner) has its own debug key, so an APK built elsewhere cannot update an installed one in place: uninstall first, which also forgets the stored server and session. A release keystore replaces this before any store release.
+1. `app/build.gradle.kts`: the `release` build type is signed with the release keystore when `ANDROID_KEYSTORE_PATH` is set (CI sets it on tags; see [Release Signing](#release-signing)), and with the SDK's debug key otherwise. A debug-signed APK installs by sideloading; app stores refuse it. Each machine (and each CI runner) has its own debug key, so a debug-signed APK built elsewhere cannot update an installed one in place: uninstall first, which also forgets the stored server and session.
 2. `MainActivity.kt` pads the WebView's parent by the system bar, display cutout, and keyboard insets. Android 15 and later draw apps edge to edge, and the WebView does not offset the page by itself.
 3. `AndroidManifest.xml` declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` and a microphone feature that is not required (see [Microphone](#microphone)).
 4. `AndroidManifest.xml` turns off backup and device-to-device transfer: `android:allowBackup="false"` and `android:fullBackupContent="false"` (Android 11 and older), and `android:dataExtractionRules="@xml/data_extraction_rules"` (Android 12 and later), whose `res/xml/data_extraction_rules.xml` excludes every domain from `cloud-backup` and `device-transfer`. The WebView keeps its `localStorage` in the app's data folder, and that holds the session token and the server address; a backup restored on another phone would carry a token that still works. After a phone change, connect and sign in again.
+
+### Release Signing
+
+Tag builds (`v*`) are releases, signed with one release key so every APK of a release line updates the one before it and users can check where it came from. The workflow fails a tag build without the key. Before the first tag:
+
+1. Create the keystore once and keep it (and its passwords) outside the repository; losing it means no update can ever install over the released app again.
+
+   ```bash
+   keytool -genkeypair -v -keystore copilot-release.jks -alias copilot -keyalg RSA -keysize 4096 -validity 10000
+   ```
+
+2. Add four repository secrets (Settings, Secrets and variables, Actions): `ANDROID_KEYSTORE_BASE64` (`base64 -w0 copilot-release.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`copilot`), and `ANDROID_KEY_PASSWORD`.
+3. Tag a release. The Android job's summary shows the signer's SHA-256 fingerprint (also `keytool -list -v -keystore copilot-release.jks`); publish it here, under "Signer Fingerprint", so users can compare it with `apksigner verify --print-certs`.
+
+Branch, pull request, and manual builds never see the secrets and keep the runner's debug key.
+
+Signer Fingerprint: none yet (no release has been tagged).
 
 Release builds keep `usesCleartextTraffic="false"` for the WebView. That does not affect `http://` servers on the LAN, because API calls go through the plugin, not the WebView.
 
@@ -134,7 +157,8 @@ The owner's checkpoint P5.4 covers what only a real device shows: section 12 of 
 - [ ] **Push to talk.** Open a chat with `fake-audio` and tap the microphone. Expect: on Android, the system asks "Allow Copilot to record audio?" the first time; on Linux, no prompt. The bar counts against the cap (`0:03 / 5:00`); Stop attaches the clip with a player that plays your voice back; the reply to it ends in "(with 1 attachment)".
 - [ ] **Spoken replies.** Turn on Speak replies and send `audio`. Expect: a one-second tone plays while the reply streams, and the saved reply plays again from its player.
 - [ ] **Links.** Send `see https://example.com` (the fake repeats it). Expect: tapping the link in the reply opens the system browser, and the app stays on the chat.
-- [ ] **Saving a file.** Use the download button of an attachment chip or of a project file. Expect: the file lands in Downloads (or a save dialog opens). Note what happens either way: the page saves through an `<a download>` on a `blob:` URL, which WebKitGTK and Android's WebView may each handle differently or ignore.
+- [ ] **Saving a file.** Use the download button of an attachment chip or of a project file. Expect: the system's save dialog opens with the file's name (Android: the document picker), the file is written where you chose, and Cancel leaves no file and no error.
+- [ ] **Links stay out of the window.** Open a link in a chat answer, and drop a URL on the window. Expect: the link opens in the system browser, and the app window stays on Copilot.
 - [ ] **Restart.** Quit and reopen the app. Expect: it opens on the chat list, still connected and signed in.
 
 ### Linux

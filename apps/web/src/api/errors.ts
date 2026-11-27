@@ -9,8 +9,12 @@ export type Problem = {
   retryAfterSecs?: number;
 };
 
+/** A failure on this device (saving a download), with a message written for the user. */
+export class LocalError extends Error {}
+
 /** Turns any thrown value into a message for the user; servers' messages are shown as they are. */
 export function describeError(error: unknown): Problem {
+  if (error instanceof LocalError) return { message: error.message };
   if (!(error instanceof ApiError)) return { message: "Something went wrong. Try again." };
   return { message: error.message, field: error.field, retryAfterSecs: error.retryAfterSecs };
 }
