@@ -42,9 +42,9 @@ use copilot_core::shared::constants::{
     DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
 };
 use copilot_core::{
-    Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, DomainError, FileId, MessageId,
-    ModelId, NewChat, PreparedTurn, ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnInput,
-    TurnOutcome, TurnSink, UserId,
+    Actor, CallDecision, CallId, Chat, ChatId, ChatQuery, ChatUpdate, DomainError, FileId,
+    MessageId, ModelId, NewChat, PreparedTurn, ProjectId, RUN_DELETED, RUN_FAILED, RunMode,
+    RunOutcome, ScheduleId, ServerOverride, ToolServerId, TurnInput, TurnOutcome, TurnSink, UserId,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
@@ -125,6 +125,10 @@ pub(crate) fn launch(
 ) -> JoinHandle<Option<TurnOutcome>> {
     let engine = Arc::clone(&state.engine);
     let chat = turn.chat.id();
+    // A turn the owner runs in a scheduled run's chat (after it paused for approval) records how
+    // that run ended; the scheduler records the run's own turn.
+    let follow = (turn.mode == RunMode::Interactive && turn.chat.schedule_id().is_some())
+        .then(|| (state.clone(), turn.chat.clone()));
     reservation.serve(turn.provider.id());
     reservation.start();
     tokio::spawn(async move {
@@ -149,8 +153,34 @@ pub(crate) fn launch(
         };
         // A run that panicked never sent `done`: dropping the reservation ends its streams.
         drop(reservation);
+        if let Some((state, chat)) = follow {
+            let ended = outcome.as_ref().map_or_else(
+                || RunOutcome::Failed(RUN_FAILED.to_owned()),
+                RunOutcome::from,
+            );
+            follow_up(&state, &chat, ended).await;
+        }
         outcome
     })
+}
+
+/// Records how a scheduled run's chat ended after the run paused (see
+/// `ScheduleService::follow_up`), and tells the owner's event streams.
+async fn follow_up(state: &AppState, chat: &Chat, outcome: RunOutcome) {
+    let Some(schedule) = chat.schedule_id() else {
+        return;
+    };
+    match state.schedules.follow_up(chat, outcome).await {
+        Ok(()) => state.runs.publish(
+            chat.user_id(),
+            UserEvent::ScheduleUpdated {
+                schedule_id: schedule.uuid(),
+            },
+        ),
+        Err(error) => {
+            tracing::warn!(schedule_id = %schedule, error = %error, "api.chats.follow-up.failed");
+        }
+    }
 }
 
 /// Tells the owner's event streams that `chat` changed.
@@ -352,7 +382,7 @@ pub async fn delete(
 ) -> Result<StatusCode, HttpError> {
     let chat = ChatId::new(id);
     // The caller's chat first: another user's chat is a 404 and its run is never touched.
-    state.chats.get(&caller, chat).await?;
+    let found = state.chats.get(&caller, chat).await?;
     if !state
         .runs
         .stop(chat, Duration::from_secs(SHUTDOWN_DRAIN_SECS))
@@ -362,6 +392,8 @@ pub async fn delete(
     }
     state.chats.delete(&caller, chat).await?;
     changed(&state, caller.user_id, chat);
+    // A scheduled run's chat deleted while it waited for approval.
+    follow_up(&state, &found, RunOutcome::Ended(RUN_DELETED.to_owned())).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    Actor, Chat, ChatRepository, CreatedBy, CronRule, OnAsk, Project, ProjectRepository,
-    ReasoningLevel, RunOutcome, RunRecord, RunStatus, Schedule, ScheduleParts, ScheduleQuery,
+    Chat, ChatRepository, CreatedBy, CronRule, OnAsk, Project, ProjectRepository, ReasoningLevel,
+    RunOutcome, RunRecord, RunStatus, Schedule, ScheduleId, ScheduleParts, ScheduleQuery,
     ScheduleRepository, UserId,
 };
 use copilot_database::{DbPool, PgStore};
@@ -57,28 +57,26 @@ async fn due_schedules_take_turns_between_owners_and_busy_owners_wait(pool: DbPo
     }
     let bobs = schedule(&store, bob, bobs_model, true).await;
     due_at(&store, bobs, at(10)).await;
-    let order = |due: Vec<(Schedule, Actor)>| -> Vec<Uuid> {
-        due.iter()
-            .map(|(schedule, _)| schedule.id().uuid())
-            .collect()
+    let order = |due: Vec<Schedule>| -> Vec<Uuid> {
+        due.iter().map(|schedule| schedule.id().uuid()).collect()
     };
 
     assert_eq!(
-        order(store.due(at(20), 10, &[]).await.unwrap()),
+        order(store.due(at(20), 10, &[], &[]).await.unwrap()),
         [alices[0], bobs, alices[1], alices[2]],
         "each owner's oldest before anyone's second"
     );
     assert_eq!(
-        order(store.due(at(20), 2, &[]).await.unwrap()),
+        order(store.due(at(20), 2, &[], &[]).await.unwrap()),
         [alices[0], bobs]
     );
     assert_eq!(
-        order(store.due(at(20), 2, &[alice]).await.unwrap()),
+        order(store.due(at(20), 2, &[alice], &[]).await.unwrap()),
         [bobs, alices[0]],
         "an owner holding a slot waits for everyone else"
     );
     assert_eq!(
-        order(store.due(at(20), 10, &[alice, bob]).await.unwrap()),
+        order(store.due(at(20), 10, &[alice, bob], &[]).await.unwrap()),
         [alices[0], bobs, alices[1], alices[2]],
         "turns among busy owners too"
     );
@@ -420,38 +418,23 @@ async fn concurrent_claims_fire_a_due_schedule_once(pool: DbPool) {
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
-async fn due_skips_disabled_owners_and_builds_each_owners_actor(pool: DbPool) {
+async fn due_reads_copilots_tables_only_and_leaves_out_skipped_owners(pool: DbPool) {
     let store = store(pool).await;
-    let admin = user(&store).await;
-    let plain = user(&store).await;
-    let manager = user(&store).await;
-    let disabled = user(&store).await;
-    for (owner, role) in [(admin, "administrator"), (manager, "manager")] {
-        sqlx::query("UPDATE auth.users SET role = $2 WHERE id = $1")
-            .bind(owner.uuid())
-            .bind(role)
-            .execute(store.pool())
-            .await
-            .unwrap();
-    }
-    sqlx::query("UPDATE auth.users SET disabled_at = now() WHERE id = $1")
-        .bind(disabled.uuid())
-        .execute(store.pool())
-        .await
-        .unwrap();
-
+    let first = user(&store).await;
+    let second = user(&store).await;
+    let skipped = user(&store).await;
     let mut ids = Vec::new();
-    for owner in [admin, plain, manager, disabled] {
+    for owner in [first, second, skipped] {
         let model = model(&store, owner).await;
         let schedule = daily(owner, &model);
         ScheduleRepository::insert(&store, &schedule).await.unwrap();
         ids.push(schedule.id());
     }
-    let model = model(&store, plain).await;
-    let off = daily(plain, &model).disabled(None);
+    let model = model(&store, second).await;
+    let off = daily(second, &model).disabled(None);
     ScheduleRepository::insert(&store, &off).await.unwrap();
     let later = Schedule::create(
-        plain,
+        second,
         "Later",
         CronRule::parse("0 9 1 1 *", "UTC", at(0)).unwrap(),
         "Happy new year.",
@@ -459,37 +442,38 @@ async fn due_skips_disabled_owners_and_builds_each_owners_actor(pool: DbPool) {
     )
     .unwrap();
     ScheduleRepository::insert(&store, &later).await.unwrap();
+    // Even a disabled account's schedules are due here: core asks `Accounts` and skips them.
+    sqlx::query("UPDATE auth.users SET disabled_at = now() WHERE id = $1")
+        .bind(skipped.uuid())
+        .execute(store.pool())
+        .await
+        .unwrap();
 
-    let due_at = stored(&store, admin, ids[0]).await.next_run_at().unwrap();
+    let due_at = stored(&store, first, ids[0]).await.next_run_at().unwrap();
     assert!(
         store
-            .due(due_at - chrono::Duration::seconds(1), 10, &[])
+            .due(due_at - chrono::Duration::seconds(1), 10, &[], &[])
             .await
             .unwrap()
             .is_empty(),
         "nothing is due before its time"
     );
-    let due = store.due(due_at, 10, &[]).await.unwrap();
-    let found: Vec<_> = due
-        .iter()
-        .map(|(schedule, actor)| (schedule.id(), *actor))
-        .collect();
-    let mut expected = vec![
-        (ids[0], Actor::admin(admin)),
-        (ids[1], Actor::user(plain)),
-        (ids[2], Actor::user(manager)),
-    ];
-    expected.sort_by_key(|(id, _)| id.uuid());
+    let ids_of = |due: &[Schedule]| -> Vec<ScheduleId> { due.iter().map(Schedule::id).collect() };
+    let due = store.due(due_at, 10, &[], &[]).await.unwrap();
+    let mut expected = ids.clone();
+    expected.sort_by_key(|id| id.uuid());
     assert_eq!(
-        found, expected,
-        "same time: by id; no disabled owner or schedule"
+        ids_of(&due),
+        expected,
+        "same time: by id; no disabled schedule"
     );
+    assert_eq!(due[0], stored(&store, due[0].user_id(), due[0].id()).await);
+    let due = store.due(due_at, 10, &[], &[skipped]).await.unwrap();
+    let mut expected = ids[..2].to_vec();
+    expected.sort_by_key(|id| id.uuid());
+    assert_eq!(ids_of(&due), expected, "skipped owners are left out");
     assert_eq!(
-        due[0].0,
-        stored(&store, due[0].1.user_id, due[0].0.id()).await
-    );
-    assert_eq!(
-        store.due(due_at, 2, &[]).await.unwrap().len(),
+        store.due(due_at, 2, &[], &[]).await.unwrap().len(),
         2,
         "at most the limit"
     );
@@ -530,6 +514,42 @@ async fn run_records_count_failures_and_disable_after_the_third(pool: DbPool) {
     assert_eq!(after.consecutive_failures(), 4, "counted on while off");
     assert_eq!(after.last_status(), Some(RunStatus::Error));
     assert_eq!(after.last_error(), Some("Four."));
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_paused_runs_follow_up_and_an_interrupted_run_count_nothing_extra(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let model = model(&store, owner).await;
+    let schedule = daily(owner, &model);
+    ScheduleRepository::insert(&store, &schedule).await.unwrap();
+
+    let interrupted = RunRecord::new(RunOutcome::Ended("Restarted.".to_owned()), at(10));
+    store.record(schedule.id(), &interrupted).await.unwrap();
+    let read = stored(&store, owner, schedule.id()).await;
+    assert_eq!(read.last_status(), Some(RunStatus::Error));
+    assert_eq!(read.consecutive_failures(), 0, "a restart is not a failure");
+
+    let paused = RunRecord::new(RunOutcome::AwaitingApproval, at(20));
+    store.record(schedule.id(), &paused).await.unwrap();
+    let older = RunRecord::follow_up(RunOutcome::Ok, at(10));
+    store.record(schedule.id(), &older).await.unwrap();
+    assert_eq!(
+        stored(&store, owner, schedule.id()).await.last_status(),
+        Some(RunStatus::AwaitingApproval),
+        "an older run's chat changes nothing"
+    );
+    let approved = RunRecord::follow_up(RunOutcome::Ok, at(20));
+    store.record(schedule.id(), &approved).await.unwrap();
+    let read = stored(&store, owner, schedule.id()).await;
+    assert_eq!(read.last_status(), Some(RunStatus::Ok));
+    assert_eq!(read.last_run_at(), Some(at(20)));
+
+    store
+        .record(ScheduleId::generate(), &paused)
+        .await
+        .expect("a gone schedule records nothing");
 }
 
 /// Every field of `schedule`, to build a changed copy.

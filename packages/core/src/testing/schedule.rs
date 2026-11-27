@@ -9,6 +9,7 @@ use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::schedule::{
     RunRecord, Schedule, ScheduleParts, ScheduleQuery, ScheduleRepository,
 };
+use crate::ports::accounts::Accounts;
 use crate::shared::actor::Actor;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ModelId, ScheduleId, UserId};
@@ -152,45 +153,38 @@ impl ScheduleRepository for MemoryStore {
         now: DateTime<Utc>,
         limit: u32,
         busy: &[UserId],
-    ) -> DomainResult<Vec<(Schedule, Actor)>> {
+        skip: &[UserId],
+    ) -> DomainResult<Vec<Schedule>> {
         let tables = self.tables();
-        let mut due: Vec<(Schedule, Actor)> = tables
+        let mut due: Vec<Schedule> = tables
             .schedules
             .values()
             .filter(|schedule| schedule.enabled())
             .filter(|schedule| schedule.next_run_at().is_some_and(|next| next <= now))
-            .filter_map(|schedule| {
-                let owner = tables
-                    .users
-                    .get(&schedule.user_id())
-                    .copied()
-                    .unwrap_or_default();
-                (!owner.disabled).then(|| {
-                    (
-                        schedule.clone(),
-                        Actor::new(schedule.user_id(), owner.is_admin),
-                    )
-                })
-            })
+            .filter(|schedule| !skip.contains(&schedule.user_id()))
+            .cloned()
             .collect();
-        due.sort_by_key(|(schedule, _)| (schedule.next_run_at(), schedule.id()));
+        due.sort_by_key(|schedule| (schedule.next_run_at(), schedule.id()));
         // Turns: each owner's oldest first, then each owner's second, and so on; busy owners
         // after everyone else.
         let mut turns: HashMap<UserId, usize> = HashMap::new();
-        let mut ranked: Vec<(bool, usize, (Schedule, Actor))> = due
+        let mut ranked: Vec<(bool, usize, Schedule)> = due
             .into_iter()
-            .map(|entry| {
-                let owner = entry.0.user_id();
+            .map(|schedule| {
+                let owner = schedule.user_id();
                 let turn = turns.entry(owner).or_default();
                 *turn += 1;
-                (busy.contains(&owner), *turn, entry)
+                (busy.contains(&owner), *turn, schedule)
             })
             .collect();
-        ranked.sort_by_key(|(busy, turn, (schedule, _))| {
+        ranked.sort_by_key(|(busy, turn, schedule)| {
             (*busy, *turn, schedule.next_run_at(), schedule.id())
         });
         ranked.truncate(limit as usize);
-        Ok(ranked.into_iter().map(|(_, _, entry)| entry).collect())
+        Ok(ranked
+            .into_iter()
+            .map(|(_, _, schedule)| schedule)
+            .collect())
     }
 
     async fn advance(
@@ -212,10 +206,28 @@ impl ScheduleRepository for MemoryStore {
 
     async fn record(&self, id: ScheduleId, outcome: &RunRecord) -> DomainResult<()> {
         let mut tables = self.tables();
-        if let Some(schedule) = tables.schedules.get_mut(&id) {
+        if let Some(schedule) = tables.schedules.get_mut(&id)
+            && schedule.takes(outcome)
+        {
             *schedule = schedule.clone().recorded(outcome);
         }
         Ok(())
+    }
+}
+
+/// lib-rustauth's accounts as the memory store knows them (`add_user`, `disable_user`); an
+/// unknown user is an active plain user.
+#[async_trait]
+impl Accounts for MemoryStore {
+    async fn active(&self, ids: &[UserId]) -> DomainResult<Vec<Actor>> {
+        let tables = self.tables();
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                let owner = tables.users.get(id).copied().unwrap_or_default();
+                (!owner.disabled).then(|| Actor::new(*id, owner.is_admin))
+            })
+            .collect())
     }
 }
 

@@ -81,8 +81,13 @@ fn fixture_with(limits: FileLimits) -> Fixture {
         clock.clone(),
         network,
     );
-    let schedules =
-        ScheduleService::new(store.clone(), store.clone(), store.clone(), clock.clone());
+    let schedules = ScheduleService::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        clock.clone(),
+    );
     let files = FileService::new(
         store.clone(),
         store.clone(),

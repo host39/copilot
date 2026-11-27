@@ -1,14 +1,15 @@
-//! `ScheduleRepository` on Postgres (`schedules`). `due` is the one place that reads `auth.users`
-//! (`disabled_at`, `role`). User writes and the scheduler's writes never undo each other:
-//! `update` writes settings only, `reschedule` writes the rule and the on/off state only while
-//! the scheduler's columns still hold what the caller read, `advance` claims a fire by
-//! compare-and-set, and `record` applies a run's outcome in one statement.
+//! `ScheduleRepository` on Postgres (`schedules`). It reads Copilot's tables only: the owners'
+//! accounts come from lib-rustauth through core's `Accounts` port. User writes and the
+//! scheduler's writes never undo each other: `update` writes settings only, `reschedule` writes
+//! the rule and the on/off state only while the scheduler's columns still hold what the caller
+//! read, `advance` claims a fire by compare-and-set, and `record` applies `Schedule::recorded`
+//! to the row under a row lock.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    Actor, ChatId, CronRule, DomainError, DomainResult, ModelId, ProjectId, ReasoningLevel,
-    RunRecord, Schedule, ScheduleId, ScheduleParts, ScheduleQuery, ScheduleRepository, UserId,
+    ChatId, CronRule, DomainError, DomainResult, ModelId, ProjectId, ReasoningLevel, RunRecord,
+    RunStatus, Schedule, ScheduleId, ScheduleParts, ScheduleQuery, ScheduleRepository, UserId,
 };
 use uuid::Uuid;
 
@@ -43,14 +44,6 @@ struct ScheduleRow {
     last_status: Option<String>,
     last_error: Option<String>,
     disabled_reason: Option<String>,
-}
-
-/// A due schedule with its owner's role.
-#[derive(sqlx::FromRow)]
-struct DueRow {
-    #[sqlx(flatten)]
-    schedule: ScheduleRow,
-    is_admin: bool,
 }
 
 impl TryFrom<ScheduleRow> for Schedule {
@@ -265,35 +258,31 @@ impl ScheduleRepository for PgStore {
         now: DateTime<Utc>,
         limit: u32,
         busy: &[UserId],
-    ) -> DomainResult<Vec<(Schedule, Actor)>> {
-        // The partial index on `next_run_at` (where `enabled`) finds the candidates; owners that
-        // lib-rustauth disabled are skipped, and only the `administrator` role acts as an admin.
-        // `turn` numbers each owner's due schedules, oldest first, so owners take turns; the
-        // owners in `busy` come after everyone else.
+        skip: &[UserId],
+    ) -> DomainResult<Vec<Schedule>> {
+        // The partial index on `next_run_at` (where `enabled`) finds the candidates. `turn`
+        // numbers each owner's due schedules, oldest first, so owners take turns; the owners in
+        // `busy` come after everyone else, and those in `skip` are left out.
         let sql = format!(
-            "SELECT {COLUMNS}, s.is_admin FROM ( \
-               SELECT s.*, u.role = 'administrator' AS is_admin, \
+            "SELECT {COLUMNS} FROM ( \
+               SELECT s.*, \
                  ROW_NUMBER() OVER (PARTITION BY s.user_id ORDER BY s.next_run_at, s.id) AS turn \
-               FROM schedules s JOIN auth.users u ON u.id = s.user_id \
-               WHERE s.enabled AND s.next_run_at <= $1 AND u.disabled_at IS NULL \
+               FROM schedules s \
+               WHERE s.enabled AND s.next_run_at <= $1 AND NOT (s.user_id = ANY($4)) \
              ) s \
              ORDER BY s.user_id = ANY($3), s.turn, s.next_run_at, s.id LIMIT $2"
         );
-        let busy: Vec<Uuid> = busy.iter().map(|user| user.uuid()).collect();
-        let rows: Vec<DueRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        let ids =
+            |users: &[UserId]| -> Vec<Uuid> { users.iter().map(|user| user.uuid()).collect() };
+        let rows: Vec<ScheduleRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(now)
             .bind(i64::from(limit))
-            .bind(busy)
+            .bind(ids(busy))
+            .bind(ids(skip))
             .fetch_all(self.pool())
             .await
             .map_err(failed("database.schedules.due.failed"))?;
-        rows.into_iter()
-            .map(|row| {
-                let schedule = Schedule::try_from(row.schedule)?;
-                let actor = Actor::new(schedule.user_id(), row.is_admin);
-                Ok((schedule, actor))
-            })
-            .collect()
+        rows.into_iter().map(Schedule::try_from).collect()
     }
 
     async fn advance(
@@ -319,30 +308,41 @@ impl ScheduleRepository for PgStore {
     }
 
     async fn record(&self, id: ScheduleId, outcome: &RunRecord) -> DomainResult<()> {
-        // `Schedule::recorded` is the reference. Every column reference is the row before the
-        // update, so `failures` is spelled out where the disable rule needs it.
-        const FAILURES: &str = "(CASE $3::text WHEN 'ok' THEN 0 \
-             WHEN 'error' THEN consecutive_failures + 1 ELSE consecutive_failures END)";
-        let sql = format!(
-            "UPDATE schedules SET last_run_at = $2, last_status = $3, last_error = $4, \
-             consecutive_failures = {FAILURES}, \
-             enabled = enabled AND {FAILURES} < $5, \
-             next_run_at = CASE WHEN enabled AND {FAILURES} >= $5 THEN NULL \
-               ELSE next_run_at END, \
-             disabled_reason = CASE WHEN enabled AND {FAILURES} >= $5 THEN $6 \
-               ELSE disabled_reason END \
-             WHERE id = $1"
-        );
-        sqlx::query(sqlx::AssertSqlSafe(sql))
+        let key = "database.schedules.record.failed";
+        let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        // The row lock makes the read and the write one step: a user's change waits.
+        let sql = format!("SELECT {COLUMNS} FROM schedules s WHERE s.id = $1 FOR UPDATE");
+        let row: Option<ScheduleRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(id.uuid())
-            .bind(outcome.started_at)
-            .bind(outcome.status.as_str())
-            .bind(outcome.error.as_deref())
-            .bind(count(outcome.max_failures))
-            .bind(&outcome.disable_reason)
-            .execute(self.pool())
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(failed("database.schedules.record.failed"))?;
-        Ok(())
+            .map_err(failed(key))?;
+        let Some(row) = row else {
+            // Deleted meanwhile: nothing to record.
+            return Ok(());
+        };
+        let stored = Schedule::try_from(row)?;
+        if !stored.takes(outcome) {
+            // A later run, or a decision recorded already: nothing to change.
+            return Ok(());
+        }
+        let recorded = stored.recorded(outcome);
+        sqlx::query(
+            "UPDATE schedules SET last_run_at = $2, last_status = $3, last_error = $4, \
+             consecutive_failures = $5, enabled = $6, next_run_at = $7, disabled_reason = $8 \
+             WHERE id = $1",
+        )
+        .bind(id.uuid())
+        .bind(recorded.last_run_at())
+        .bind(recorded.last_status().map(RunStatus::as_str))
+        .bind(recorded.last_error())
+        .bind(count(recorded.consecutive_failures()))
+        .bind(recorded.enabled())
+        .bind(recorded.next_run_at())
+        .bind(recorded.disabled_reason())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed(key))?;
+        tx.commit().await.map_err(failed(key))
     }
 }

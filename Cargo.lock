@@ -514,7 +514,6 @@ dependencies = [
  "serde_json",
  "sse-stream 0.3.0",
  "tokio",
- "tokio-util",
  "tracing",
  "wiremock",
 ]

@@ -135,21 +135,35 @@ async fn a_run_past_the_time_limit_is_stopped_and_fails() {
     });
     let limit = Duration::from_millis(50);
     assert_eq!(
-        ended(slow, &cancel, limit).await,
+        ended(slow, &cancel, limit, || false).await,
         RunOutcome::Failed(RUN_TIMED_OUT.to_owned())
     );
     assert!(cancel.is_cancelled());
 
     let quick = tokio::spawn(async move { Some(outcome(MessageStatus::Complete)) });
     let untouched = CancellationToken::new();
-    assert_eq!(ended(quick, &untouched, limit).await, RunOutcome::Ok);
+    assert_eq!(
+        ended(quick, &untouched, limit, || false).await,
+        RunOutcome::Ok
+    );
     assert!(
         !untouched.is_cancelled(),
         "a run within the limit is left alone"
     );
     let failed = tokio::spawn(async { None });
     assert!(matches!(
-        ended(failed, &untouched, limit).await,
+        ended(failed, &untouched, limit, || false).await,
+        RunOutcome::Failed(_)
+    ));
+
+    // Cancelled by a shutdown: not the schedule's failure. A user's Stop still is.
+    let stopped = || tokio::spawn(async move { Some(outcome(MessageStatus::Cancelled)) });
+    assert_eq!(
+        ended(stopped(), &untouched, limit, || true).await,
+        RunOutcome::Ended(copilot_core::RUN_INTERRUPTED.to_owned())
+    );
+    assert!(matches!(
+        ended(stopped(), &untouched, limit, || false).await,
         RunOutcome::Failed(_)
     ));
 }

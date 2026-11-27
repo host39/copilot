@@ -30,8 +30,8 @@ use copilot_core::shared::constants::{
     MAX_SCHEDULED_RUNS, SCHEDULED_RUN_MAX_SECS, SCHEDULER_TICK_SECS, SHUTDOWN_DRAIN_SECS,
 };
 use copilot_core::{
-    ChatId, DomainError, DomainResult, Firing, MODEL_UNAVAILABLE, RUN_FAILED, RUN_TIMED_OUT,
-    RunOutcome, ScheduleId, ScheduledTurn, TurnOutcome, UserId,
+    ChatId, DomainError, DomainResult, Firing, MODEL_UNAVAILABLE, MessageStatus, RUN_FAILED,
+    RUN_INTERRUPTED, RUN_TIMED_OUT, RunOutcome, ScheduleId, ScheduledTurn, TurnOutcome, UserId,
 };
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -164,20 +164,26 @@ pub async fn fire(
     let state = state.clone();
     state.tasks.clone().spawn(async move {
         let limit = Duration::from_secs(SCHEDULED_RUN_MAX_SECS);
-        let outcome = ended(task, &cancel, limit).await;
+        let outcome = ended(task, &cancel, limit, || state.runs.is_closing()).await;
         record(&state, schedule, owner, outcome, at).await;
     });
     Ok(chat)
 }
 
 /// How the run of `task` ended, as the schedule records it. A run still live after `limit` is
-/// cancelled (it saves its partial answer) and fails with [`RUN_TIMED_OUT`].
+/// cancelled (it saves its partial answer) and fails with [`RUN_TIMED_OUT`]. A run cancelled
+/// while the server shuts down (`closing`) ended with [`RUN_INTERRUPTED`], which is not counted
+/// as a failure; a user's Stop still is.
 async fn ended(
     mut task: JoinHandle<Option<TurnOutcome>>,
     cancel: &CancellationToken,
     limit: Duration,
+    closing: impl Fn() -> bool,
 ) -> RunOutcome {
     match tokio::time::timeout(limit, &mut task).await {
+        Ok(Ok(Some(outcome))) if outcome.status == MessageStatus::Cancelled && closing() => {
+            RunOutcome::Ended(RUN_INTERRUPTED.to_owned())
+        }
         Ok(Ok(Some(outcome))) => RunOutcome::from(&outcome),
         Ok(Ok(None) | Err(_)) => RunOutcome::Failed(RUN_FAILED.to_owned()),
         Err(_) => {

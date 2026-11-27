@@ -1,16 +1,19 @@
 //! Schedule use cases: settings with limits, previews, firing due schedules, run records, and the
 //! built-in schedule tools.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
+use crate::domains::chat::Chat;
 use crate::domains::project::ProjectRepository;
 use crate::domains::provider::ModelRepository;
 use crate::domains::schedule::builtin::{SchedulePrompt, ToolOrigin};
 use crate::domains::schedule::cron::CronRule;
 use crate::domains::schedule::entities::{CreatedBy, OnAsk, RunOutcome, RunRecord, Schedule};
 use crate::domains::schedule::ports::{ScheduleQuery, ScheduleRepository};
+use crate::ports::accounts::Accounts;
 use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::constants::MAX_SCHEDULES_PER_USER;
@@ -22,6 +25,8 @@ use crate::shared::reasoning::ReasoningLevel;
 const PREVIEW_RUNS: usize = 3;
 /// Tries of an update whose state write lost a race with the scheduler.
 const UPDATE_TRIES: usize = 3;
+/// Queries `fire_due` runs at most, each without the disabled owners the one before found.
+const DUE_PASSES: usize = 4;
 
 /// Input of [`ScheduleService::create`]. New schedules are enabled.
 #[derive(Clone, Debug, Default)]
@@ -80,6 +85,7 @@ pub struct ScheduleService {
     schedules: Arc<dyn ScheduleRepository>,
     projects: Arc<dyn ProjectRepository>,
     models: Arc<dyn ModelRepository>,
+    accounts: Arc<dyn Accounts>,
     clock: Arc<dyn Clock>,
 }
 
@@ -88,12 +94,14 @@ impl ScheduleService {
         schedules: Arc<dyn ScheduleRepository>,
         projects: Arc<dyn ProjectRepository>,
         models: Arc<dyn ModelRepository>,
+        accounts: Arc<dyn Accounts>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             schedules,
             projects,
             models,
+            accounts,
             clock,
         }
     }
@@ -242,8 +250,9 @@ impl ScheduleService {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let due = self.claimable(now, limit, busy).await?;
         let mut firings = Vec::new();
-        for (schedule, actor) in self.schedules.due(now, limit, busy).await? {
+        for (schedule, actor) in due {
             let (Some(expected), Some(next)) =
                 (schedule.next_run_at(), schedule.rule().next_after(now))
             else {
@@ -274,6 +283,43 @@ impl ScheduleService {
         Ok(firings)
     }
 
+    /// Due schedules with their owners' actors. A disabled owner's schedules never run and
+    /// never take a place: the query runs again without them, a few times at most.
+    async fn claimable(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+        busy: &[UserId],
+    ) -> DomainResult<Vec<(Schedule, Actor)>> {
+        let mut skip: Vec<UserId> = Vec::new();
+        for pass in 1..=DUE_PASSES {
+            let due = self.schedules.due(now, limit, busy, &skip).await?;
+            let mut owners: Vec<UserId> = due.iter().map(Schedule::user_id).collect();
+            owners.sort_unstable_by_key(|owner| owner.uuid());
+            owners.dedup();
+            let active: HashMap<UserId, Actor> = self
+                .accounts
+                .active(&owners)
+                .await?
+                .into_iter()
+                .map(|actor| (actor.user_id, actor))
+                .collect();
+            let disabled = owners.iter().filter(|owner| !active.contains_key(owner));
+            let before = skip.len();
+            skip.extend(disabled);
+            if skip.len() == before || pass == DUE_PASSES {
+                return Ok(due
+                    .into_iter()
+                    .filter_map(|schedule| {
+                        let actor = active.get(&schedule.user_id()).copied()?;
+                        Some((schedule, actor))
+                    })
+                    .collect());
+            }
+        }
+        Ok(Vec::new())
+    }
+
     /// Run now: an unattended run exactly like a scheduled fire, without moving `next_run_at`.
     pub async fn run_now(&self, actor: &Actor, id: ScheduleId) -> DomainResult<Firing> {
         let schedule = self.get(actor, id).await?;
@@ -295,6 +341,19 @@ impl ScheduleService {
     ) -> DomainResult<()> {
         self.schedules
             .record(id, &RunRecord::new(outcome, started_at))
+            .await
+    }
+
+    /// A later turn in `chat`, the chat of a scheduled run that paused for approval (the owner
+    /// approved or skipped the calls), or the chat's deletion, ended with `outcome`: records it
+    /// while that run is still the schedule's latest and still shows as awaiting approval, so the
+    /// Scheduled page stops saying "Awaiting approval". Any other chat records nothing.
+    pub async fn follow_up(&self, chat: &Chat, outcome: RunOutcome) -> DomainResult<()> {
+        let Some(id) = chat.schedule_id() else {
+            return Ok(());
+        };
+        self.schedules
+            .record(id, &RunRecord::follow_up(outcome, chat.created_at()))
             .await
     }
 
@@ -473,6 +532,7 @@ mod tests {
         let gateway = Arc::new(ScriptedGateway::new());
         Fixture {
             service: ScheduleService::new(
+                store.clone(),
                 store.clone(),
                 store.clone(),
                 store.clone(),
@@ -824,10 +884,21 @@ mod tests {
         let bobs = f.service.create(&bob, daily(bob_model)).await.unwrap();
         f.store.disable_user(alice.user_id);
 
-        let firings = f.service.fire_due(at(10, 0), 5, &[]).await.unwrap();
-        assert_eq!(firings.len(), 1);
+        let firings = f.service.fire_due(at(10, 0), 1, &[]).await.unwrap();
+        assert_eq!(
+            firings.len(),
+            1,
+            "a disabled owner's schedules take no place"
+        );
         assert_eq!(firings[0].schedule.id(), bobs.id());
         assert!(!firings[0].actor.is_admin);
+        assert!(
+            f.service
+                .fire_due(at(10, 0), 5, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             f.service
                 .fire_due(at(10, 0), 0, &[])
@@ -1393,8 +1464,9 @@ mod tests {
             now: DateTime<Utc>,
             limit: u32,
             busy: &[UserId],
-        ) -> DomainResult<Vec<(Schedule, Actor)>> {
-            self.store.due(now, limit, busy).await
+            skip: &[UserId],
+        ) -> DomainResult<Vec<Schedule>> {
+            self.store.due(now, limit, busy, skip).await
         }
 
         async fn advance(
@@ -1439,6 +1511,7 @@ mod tests {
         });
         let service = ScheduleService::new(
             racing.clone(),
+            f.store.clone(),
             f.store.clone(),
             f.store.clone(),
             f.clock.clone(),
@@ -1488,6 +1561,7 @@ mod tests {
         });
         let service = ScheduleService::new(
             racing.clone(),
+            f.store.clone(),
             f.store.clone(),
             f.store.clone(),
             f.clock.clone(),

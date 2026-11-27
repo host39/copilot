@@ -193,7 +193,9 @@ impl ChatService {
         let files = self.project_files(&actor, project.as_ref()).await?;
 
         let title = format!("{} · {}", schedule.name(), schedule.rule().local_date(at));
-        let chat = Chat::scheduled(chat_id, user, schedule.id(), title, self.clock.now())
+        // Created at the firing's time, which the schedule records as the run's start, so a
+        // later turn in this chat can tell it is still the schedule's latest run.
+        let chat = Chat::scheduled(chat_id, user, schedule.id(), title, at)
             .with_project(schedule.project_id())
             .with_model(schedule.model_id())
             .with_reasoning(schedule.reasoning());

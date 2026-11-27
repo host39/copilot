@@ -61,7 +61,8 @@ pub fn assemble(dependencies: AppDependencies) -> App {
         allowed_origins: config.cors_allowed_origins.clone(),
     };
     let web_dir = config.web_dir.clone();
-    let state = wire(Arc::new(config), db, adapters, shutdown);
+    let accounts = Arc::new(identity.directory());
+    let state = wire(Arc::new(config), db, adapters, accounts, shutdown);
     let shared = state.clone();
 
     let (router, openapi) = routes::router(&identity).split_for_parts();

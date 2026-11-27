@@ -39,10 +39,10 @@ pub use crate::domains::provider::{
     reasoning_off_with_tools,
 };
 pub use crate::domains::schedule::{
-    CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RUN_FAILED,
-    RUN_TIMED_OUT, RunOutcome, RunRecord, RunStatus, START_FAILED, Schedule, ScheduleParts,
-    SchedulePreview, SchedulePrompt, ScheduleQuery, ScheduleRepository, ScheduleService,
-    ScheduleTool, ScheduleUpdate, ToolOrigin, cancel_target,
+    CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RUN_DELETED,
+    RUN_FAILED, RUN_INTERRUPTED, RUN_TIMED_OUT, RunOutcome, RunRecord, RunStatus, START_FAILED,
+    Schedule, ScheduleParts, SchedulePreview, SchedulePrompt, ScheduleQuery, ScheduleRepository,
+    ScheduleService, ScheduleTool, ScheduleUpdate, ToolOrigin, cancel_target,
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{
@@ -52,6 +52,7 @@ pub use crate::domains::tool::{
     ToolServerUpdate, ToolService, ToolSpec, ToolTest, UnavailableServer, offered,
 };
 // Ports (interfaces implemented by adapters in other crates)
+pub use crate::ports::accounts::Accounts;
 pub use crate::ports::clock::{Clock, SystemClock};
 pub use crate::ports::llm_gateway::{
     AudioOut, LlmEvent, LlmGateway, LlmMessage, LlmPart, LlmRequest, ModelTarget, PartKind,

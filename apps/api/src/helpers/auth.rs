@@ -5,6 +5,8 @@
 //! - [`Identity`] starts rustauth on the database, mounts its routes, and puts its guard in front
 //!   of Copilot's `/api` routes.
 //! - [`Caller`] turns rustauth's `AuthUser` into core's [`Actor`].
+//! - [`Directory`] is core's `Accounts` port: the owners of scheduled runs, through rustauth's
+//!   `AuthService::users`, never by reading the `auth` tables.
 //! - [`to_domain`] maps `AuthError` into [`DomainError`] for the rustauth calls Copilot code makes
 //!   (the extractor and the composition root). rustauth's own routes and guard answer with
 //!   rustauth's mapping and the same error envelope.
@@ -12,15 +14,19 @@
 //! See "Identity (lib-rustauth)" in `docs/design/copilot.md` and lib-rustauth's
 //! `docs/integration.md`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use copilot_contracts::ErrorResponse;
-use copilot_core::{Actor, DomainError, DomainResult, UserId};
+use copilot_core::{Accounts, Actor, DomainError, DomainResult, UserId};
 use copilot_database::{DbPool, Env};
 use copilot_middleware::HttpError;
-use rustauth::{AuthConfig, AuthError, AuthUser, BuildError, Principal, Role, RustAuth};
+use rustauth::{
+    AuthConfig, AuthError, AuthService, AuthUser, BuildError, Principal, Role, RustAuth, User,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use utoipa_axum::router::OpenApiRouter;
@@ -71,6 +77,11 @@ impl Identity {
 }
 
 impl Identity {
+    /// Core's `Accounts` port on rustauth's service.
+    pub fn directory(&self) -> Directory {
+        Directory(Arc::clone(self.0.service()))
+    }
+
     /// Deletes expired sessions and stale sign-in failure records now and every hour, until
     /// `shutdown` fires. A failed pass is logged (`api.auth.purge.failed`) and retried next hour.
     pub fn purge(&self, shutdown: CancellationToken) -> JoinHandle<()> {
@@ -114,6 +125,38 @@ fn actor(principal: &Principal) -> Actor {
         UserId::new(principal.user_id.as_uuid()),
         principal.has_role(Role::Administrator),
     )
+}
+
+/// Core's view of an account read for background work, with the same admin rule as [`actor`].
+fn account(user: &User) -> Actor {
+    Actor::new(
+        UserId::new(user.id.as_uuid()),
+        user.role == Role::Administrator,
+    )
+}
+
+/// The `Accounts` port: accounts many at once through rustauth's `AuthService::users` (one
+/// query), so Copilot never reads lib-rustauth's tables beyond `auth.users (id)`.
+#[derive(Clone)]
+pub struct Directory(Arc<AuthService>);
+
+#[async_trait]
+impl Accounts for Directory {
+    async fn active(&self, ids: &[UserId]) -> DomainResult<Vec<Actor>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<rustauth::UserId> = ids
+            .iter()
+            .map(|id| rustauth::UserId::from(id.uuid()))
+            .collect();
+        let users = self.0.users(&ids).await.map_err(to_domain)?;
+        Ok(users
+            .iter()
+            .filter(|user| !user.is_disabled())
+            .map(account)
+            .collect())
+    }
 }
 
 /// Maps an `AuthError` into a [`DomainError`]; codes and waits survive the mapping. Variants
@@ -464,6 +507,51 @@ mod tests {
         assert_eq!(signed_in.status, StatusCode::OK, "past the guard");
         let anonymous = send(app, request(Method::GET, "/api/settings", None, None)).await;
         assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn the_directory_resolves_active_accounts_with_the_admin_rule(pool: DbPool) {
+        copilot_database::operations::migrate::run(&pool)
+            .await
+            .expect("migrated");
+        let identity = Identity::start(pool.clone(), &testing::config())
+            .await
+            .expect("started on Postgres");
+        let directory = identity.directory();
+        let app = crate::helpers::testing::app_on_identity(
+            crate::helpers::testing::config(),
+            pool.clone(),
+            identity,
+        );
+        let token = crate::helpers::testing::register(&app, "admin").await;
+        crate::helpers::testing::other_user(&app, &token, "plain").await;
+        crate::helpers::testing::other_user(&app, &token, "gone").await;
+        let ids: Vec<(Uuid, String)> = sqlx::query_as("SELECT id, username FROM auth.users")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let id = |name: &str| {
+            let found = ids.iter().find(|(_, username)| username == name).unwrap();
+            UserId::new(found.0)
+        };
+        sqlx::query("UPDATE auth.users SET disabled_at = now() WHERE username = 'gone'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let missing = UserId::new(Uuid::now_v7());
+        let mut active = directory
+            .active(&[id("admin"), id("plain"), id("gone"), missing])
+            .await
+            .unwrap();
+        active.sort_by_key(|actor| actor.is_admin);
+        assert_eq!(
+            active,
+            [Actor::user(id("plain")), Actor::admin(id("admin"))],
+            "disabled and missing accounts are left out"
+        );
+        assert!(directory.active(&[]).await.unwrap().is_empty());
     }
 
     /// Every rustauth use stays in this module, so a library upgrade touches one place.

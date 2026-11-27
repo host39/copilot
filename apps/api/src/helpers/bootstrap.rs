@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use copilot_core::shared::constants::{SHUTDOWN_DRAIN_SECS, SHUTDOWN_GRACE_SECS};
 use copilot_core::{
-    BoxError, ChatEngine, ChatRepositories, ChatService, Clock, FileService, LlmGateway,
+    Accounts, BoxError, ChatEngine, ChatRepositories, ChatService, Clock, FileService, LlmGateway,
     ModelService, ProjectService, ProviderService, ScheduleService, SecretCipher, SettingsService,
     SystemClock, ToolHost, ToolService,
 };
@@ -154,11 +154,13 @@ impl Adapters {
 }
 
 /// Builds every service once, on the database adapter ([`PgStore`]), the security adapter
-/// ([`AesCipher`] under `SECRET_KEY`), the system clock, and `adapters`.
+/// ([`AesCipher`] under `SECRET_KEY`), the system clock, `adapters`, and `accounts` (lib-rustauth,
+/// through `helpers::auth`).
 pub fn wire(
     config: Arc<AppConfig>,
     db: DbPool,
     adapters: Adapters,
+    accounts: Arc<dyn Accounts>,
     shutdown: CancellationToken,
 ) -> AppState {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -208,6 +210,7 @@ pub fn wire(
         stores.schedules.clone(),
         stores.projects.clone(),
         stores.models.clone(),
+        accounts,
         clock.clone(),
     );
     let engine = ChatEngine::new(

@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::domains::schedule::entities::{CreatedBy, RunRecord, Schedule};
-use crate::shared::actor::Actor;
 use crate::shared::errors::DomainResult;
 use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId, UserId};
 
@@ -39,18 +38,19 @@ pub trait ScheduleRepository: Send + Sync {
         model: ModelId,
         reason: &str,
     ) -> DomainResult<u64>;
-    /// System: enabled schedules with `next_run_at <= now`, at most `limit`, each with its
-    /// owner's `Actor`, in turns: every owner's oldest due schedule before any owner's second
-    /// (oldest due first within a turn), and the schedules of the owners in `busy` after all
-    /// others. Joins `auth.users`: owners with `disabled_at` set are skipped, and
-    /// `is_admin = (role = 'administrator')`. Takes no lock; claim each one with
+    /// System: enabled schedules with `next_run_at <= now`, at most `limit`, in turns: every
+    /// owner's oldest due schedule before any owner's second (oldest due first within a turn),
+    /// and the schedules of the owners in `busy` after all others. Schedules of the owners in
+    /// `skip` (disabled accounts) are left out. Reads Copilot's tables only; the owners' accounts
+    /// come from the `Accounts` port. Takes no lock; claim each one with
     /// [`ScheduleRepository::advance`].
     async fn due(
         &self,
         now: DateTime<Utc>,
         limit: u32,
         busy: &[UserId],
-    ) -> DomainResult<Vec<(Schedule, Actor)>>;
+        skip: &[UserId],
+    ) -> DomainResult<Vec<Schedule>>;
     /// System compare-and-set claim: `next_run_at = next, last_run_at = now` only while the
     /// schedule is enabled and `next_run_at = expected`. `true` when this caller claimed it.
     async fn advance(
@@ -60,7 +60,9 @@ pub trait ScheduleRepository: Send + Sync {
         next: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> DomainResult<bool>;
-    /// System: stores how a run ended (see `RunRecord`), in one statement.
+    /// System: stores how a run ended (see `RunRecord`): under a row lock, when
+    /// `Schedule::takes` accepts it, writes what `Schedule::recorded` gives. A gone schedule
+    /// records nothing.
     async fn record(&self, id: ScheduleId, outcome: &RunRecord) -> DomainResult<()>;
 }
 

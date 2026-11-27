@@ -103,7 +103,7 @@ Spike outcome (roadmap P2.B.5, 2026-11-27): **no native Gemini adapter in v1.** 
 - One process caps scale; serverless hosting is not possible.
 - Users in a household each add their own provider keys until shared connections arrive.
 - Copilot depends on a second repository: a change to identity is made in lib-rustauth first, then Copilot bumps its pinned commit or tag. Until lib-rustauth's steps land, the Copilot steps that need them wait (see the roadmap's Track R).
-- Two migration histories share one database (`auth._sqlx_migrations` and Copilot's), and Copilot's scheduler reads two `auth.users` columns directly.
+- Two migration histories share one database (`auth._sqlx_migrations` and Copilot's). Copilot's scheduler resolves schedule owners through rustauth's `AuthService::users` (core's `Accounts` port), never by reading `auth.users` beyond its `id`.
 
 ### Neutral
 

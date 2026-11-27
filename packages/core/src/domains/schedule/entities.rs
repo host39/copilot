@@ -51,6 +51,10 @@ pub const START_FAILED: &str = "The run could not start. It will try again at th
 pub const RUN_FAILED: &str = "Something went wrong while answering.";
 /// The failure a run records when it ran past `SCHEDULED_RUN_MAX_SECS` and was stopped.
 pub const RUN_TIMED_OUT: &str = "The run took longer than 30 minutes and was stopped.";
+/// What a run records when the server shut down while it answered (not counted as a failure).
+pub const RUN_INTERRUPTED: &str = "The server restarted during the run.";
+/// What a paused run records when its chat is deleted before it finished (not counted).
+pub const RUN_DELETED: &str = "The run's chat was deleted before it finished.";
 
 /// How a run ended, as the scheduler reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +70,10 @@ pub enum RunOutcome {
         reason: String,
         message: String,
     },
+    /// The run ended for a reason that is not the schedule's fault (a server shutdown, its chat
+    /// deleted): recorded as an `error` with this text that does not count toward
+    /// `SCHEDULE_MAX_FAILURES`.
+    Ended(String),
 }
 
 impl RunOutcome {
@@ -79,12 +87,12 @@ impl RunOutcome {
     }
 }
 
-/// What `ScheduleRepository::record` writes, built by core so the failure rule stays here:
-/// `last_run_at`, `last_status`, `last_error`, `consecutive_failures` (reset by `ok`, raised
-/// by `error`, kept by `awaiting_approval`), and, when the failures reach `max_failures` on an
-/// enabled schedule, `enabled = false`, `next_run_at = NULL`, and `disabled_reason`. A paused
-/// run is an `error` with `max_failures` 0, so it disables the schedule at once.
-/// [`Schedule::recorded`] is the reference implementation.
+/// How a run ended, for `ScheduleRepository::record`, which applies [`Schedule::takes`] and
+/// [`Schedule::recorded`] to the row under a lock: `last_run_at`, `last_status`, `last_error`,
+/// `consecutive_failures` (reset by `ok`, raised by a counted `error`, kept by
+/// `awaiting_approval`), and, when the failures reach `max_failures` on an enabled schedule,
+/// `enabled = false`, `next_run_at = NULL`, and `disabled_reason`. A paused run is an `error`
+/// with `max_failures` 0, so it disables the schedule at once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunRecord {
     pub status: RunStatus,
@@ -92,12 +100,18 @@ pub struct RunRecord {
     pub started_at: DateTime<Utc>,
     pub max_failures: u32,
     pub disable_reason: String,
+    /// An `error` raises `consecutive_failures`; `false` for [`RunOutcome::Ended`].
+    pub counts: bool,
+    /// The later end of a run that paused for approval: applies only while the schedule still
+    /// shows that run (`last_run_at = started_at`) as awaiting approval.
+    pub follow_up: bool,
 }
 
 impl RunRecord {
     pub fn new(outcome: RunOutcome, started_at: DateTime<Utc>) -> Self {
         let mut max_failures = SCHEDULE_MAX_FAILURES;
         let mut disable_reason = format!("Failed {SCHEDULE_MAX_FAILURES} times in a row");
+        let counts = !matches!(outcome, RunOutcome::Ended(_));
         let (status, error) = match outcome {
             RunOutcome::Ok => (RunStatus::Ok, None),
             RunOutcome::Failed(reason) => (RunStatus::Error, Some(reason)),
@@ -107,6 +121,7 @@ impl RunRecord {
                 disable_reason = reason;
                 (RunStatus::Error, Some(message))
             }
+            RunOutcome::Ended(message) => (RunStatus::Error, Some(message)),
         };
         Self {
             status,
@@ -114,6 +129,16 @@ impl RunRecord {
             started_at,
             max_failures,
             disable_reason,
+            counts,
+            follow_up: false,
+        }
+    }
+
+    /// How a run that paused for approval at `started_at` ended later (see `follow_up`).
+    pub fn follow_up(outcome: RunOutcome, started_at: DateTime<Utc>) -> Self {
+        Self {
+            follow_up: true,
+            ..Self::new(outcome, started_at)
         }
     }
 }
@@ -329,7 +354,16 @@ impl Schedule {
         self
     }
 
-    /// What `ScheduleRepository::record` writes (see [`RunRecord`]).
+    /// Whether `record` applies: always, except a follow-up of a paused run, which applies only
+    /// while this schedule still shows that run as its latest and as awaiting approval.
+    pub fn takes(&self, record: &RunRecord) -> bool {
+        !record.follow_up
+            || (self.last_run_at == Some(record.started_at)
+                && self.last_status == Some(RunStatus::AwaitingApproval))
+    }
+
+    /// What `ScheduleRepository::record` writes (see [`RunRecord`]); check [`Schedule::takes`]
+    /// first.
     #[must_use]
     pub fn recorded(mut self, record: &RunRecord) -> Self {
         self.last_run_at = Some(record.started_at);
@@ -337,8 +371,8 @@ impl Schedule {
         self.last_error.clone_from(&record.error);
         match record.status {
             RunStatus::Ok => self.consecutive_failures = 0,
-            RunStatus::Error => self.consecutive_failures += 1,
-            RunStatus::AwaitingApproval => {}
+            RunStatus::Error if record.counts => self.consecutive_failures += 1,
+            RunStatus::Error | RunStatus::AwaitingApproval => {}
         }
         if self.enabled && self.consecutive_failures >= record.max_failures {
             self = self.disabled(Some(record.disable_reason.clone()));
@@ -623,5 +657,44 @@ mod tests {
             Ok(RunStatus::AwaitingApproval)
         );
         assert!("later".parse::<OnAsk>().is_err());
+    }
+
+    #[test]
+    fn an_ended_run_is_an_error_that_does_not_count() {
+        let interrupted = RunRecord::new(RunOutcome::Ended(RUN_INTERRUPTED.to_owned()), now());
+        assert!(!interrupted.counts);
+        let mut schedule = schedule();
+        for _ in 0..SCHEDULE_MAX_FAILURES + 1 {
+            schedule = schedule.recorded(&interrupted);
+        }
+        assert_eq!(schedule.last_status(), Some(RunStatus::Error));
+        assert_eq!(schedule.last_error(), Some(RUN_INTERRUPTED));
+        assert_eq!(schedule.consecutive_failures(), 0, "never raised");
+        assert!(schedule.enabled(), "restarts never turn a schedule off");
+        let failed = schedule.recorded(&failed(now()));
+        assert_eq!(
+            failed.consecutive_failures(),
+            1,
+            "a real failure still counts"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_applies_only_to_the_latest_paused_run() {
+        let paused_at = now() + Duration::hours(9);
+        let paused = schedule().recorded(&RunRecord::new(RunOutcome::AwaitingApproval, paused_at));
+        let approved = RunRecord::follow_up(RunOutcome::Ok, paused_at);
+        assert!(paused.takes(&approved));
+        let done = paused.clone().recorded(&approved);
+        assert_eq!(done.last_status(), Some(RunStatus::Ok));
+        assert_eq!(done.last_run_at(), Some(paused_at));
+        assert!(!done.takes(&approved), "once: it no longer awaits approval");
+
+        let older = RunRecord::follow_up(RunOutcome::Ok, paused_at - Duration::days(1));
+        assert!(!paused.takes(&older), "an older run's chat changes nothing");
+        assert!(
+            paused.takes(&RunRecord::new(RunOutcome::Ok, now())),
+            "a run's own record always applies"
+        );
     }
 }
