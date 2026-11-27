@@ -336,16 +336,19 @@ export async function apiFetch<S extends z.ZodType>(
  * Sends a request whose answer is an event stream (`text/event-stream`) and calls `onEvent` with
  * each event's JSON `data`, parsed with `schema`, until the stream ends. Events the schema does
  * not know (a newer server) are skipped. Returns `false` when the server answered `204` (no run
- * to attach to), `true` after a stream. Abort `options.signal` to stop reading.
+ * to attach to), `true` after a stream; `options.onOpen` hears when the stream starts. Abort
+ * `options.signal` to stop reading.
  */
 export async function apiStream<S extends z.ZodType>(
   path: string,
   schema: S,
   onEvent: (event: z.output<S>) => void,
-  options: RequestOptions = {}
+  options: RequestOptions & { onOpen?: () => void } = {}
 ): Promise<boolean> {
-  const response = await apiRequest(path, { ...options, accept: "text/event-stream" });
+  const { onOpen, ...rest } = options;
+  const response = await apiRequest(path, { ...rest, accept: "text/event-stream" });
   if (response.status === 204 || response.body === null) return false;
+  onOpen?.();
 
   await readSse(
     response.body,

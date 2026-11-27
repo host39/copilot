@@ -4,12 +4,14 @@
 // the last `seq` it applied. Generation never depends on the page: the server keeps answering
 // while nobody reads, so leaving the page only stops reading.
 
-import type { CallDecision, ChatStreamEvent, MessageResponse } from "@copilot/contracts";
+import type { CallDecision, ChatStreamEvent, MessageResponse, UserEvent } from "@copilot/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, isAbort, NETWORK_ERROR } from "@web/api/client";
 import { describeError } from "@web/api/errors";
+import { backoff } from "@web/api/retry";
 import { attach, decide, regenerate, retry, sendMessage, stop } from "@web/api/routes/chats";
 import { keys } from "@web/api/routes/keys";
+import { useUserEvent } from "@web/hooks/useEvents";
 import { log } from "@web/logging";
 import {
   DRAFT_ID,
@@ -44,11 +46,6 @@ type Open = (
   onEvent: (event: ChatStreamEvent) => void,
   signal: AbortSignal
 ) => Promise<boolean | undefined>;
-
-/** The wait before reconnect `attempt` (from 0): 1, 2, 4, 8, then every 15 seconds. */
-export function backoff(attempt: number): number {
-  return Math.min(1_000 * 2 ** Math.max(0, attempt), 15_000);
-}
 
 /**
  * Whether a stream failed because the connection dropped (the run goes on without the page)
@@ -100,6 +97,23 @@ export function regenerateCut(messages: MessageResponse[]): string | null {
 export function retryCut(messages: Pick<MessageResponse, "id" | "role" | "status">[]) {
   const last = [...messages].reverse().find((message) => message.role === "assistant");
   return last?.status === "error" ? last.id : null;
+}
+
+/**
+ * What a chat page does with a live user event while it follows no stream (`following` false): a
+ * run that started in this chat (on another device, or a schedule's) is attached to; one that
+ * ended or waits for approval changed the saved messages, which are read again. Events of other
+ * chats, and every event while the page follows a stream, change nothing here.
+ */
+export function eventAction(
+  event: UserEvent,
+  chatId: string,
+  following: boolean
+): "attach" | "refresh" | null {
+  if (following || !("chatId" in event) || event.chatId !== chatId) return null;
+  if (event.type === "run.started") return "attach";
+  if (event.type === "run.finished" || event.type === "approval.pending") return "refresh";
+  return null;
 }
 
 /**
@@ -381,6 +395,17 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
       document.removeEventListener("visibilitychange", visible);
     };
   }, [attempt, phase, reattach]);
+
+  // Live events about this chat: a run another device (or a schedule) started is followed at
+  // once; one that ended or waits for approval while the page follows nothing changed the saved
+  // messages.
+  useUserEvent((event) => {
+    const action = eventAction(event, chatId, connection.current !== null);
+    if (action === "attach") void reattach(current.current?.seq || null);
+    else if (action === "refresh") {
+      void client.invalidateQueries({ queryKey: keys.chatMessages(chatId) });
+    }
+  });
 
   return {
     run,

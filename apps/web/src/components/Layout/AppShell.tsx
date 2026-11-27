@@ -1,6 +1,7 @@
 import { type Shell, ShellContext } from "@web/components/Layout/Shell";
 import { Sidebar } from "@web/components/Sidebar/Sidebar";
 import { PageLoading } from "@web/components/Suspense/PageLoading";
+import { useEventStream } from "@web/hooks/useEvents";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { LuMenu, LuX } from "react-icons/lu";
 import { Outlet, useLocation } from "react-router-dom";
@@ -8,9 +9,11 @@ import { Outlet, useLocation } from "react-router-dom";
 /**
  * The signed-in layout: a sidebar beside the screen on wide windows, and a drawer behind a menu
  * button on phones (a modal `<dialog>`, so Escape, focus, and the inert page come from the
- * browser). A page with its own top bar (`useOwnHeader`) replaces the phone header's row.
+ * browser). A page with its own top bar (`useOwnHeader`) replaces the phone header's row. The
+ * shell reads the user's live events (`useEventStream`), so lists and dots stay current.
  */
 export function AppShell() {
+  useEventStream();
   const drawer = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const [ownHeader, setOwnHeader] = useState(false);

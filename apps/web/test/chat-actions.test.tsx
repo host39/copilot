@@ -6,6 +6,7 @@ import type { ChatStreamEvent, MessageResponse } from "@copilot/contracts";
 import { describe, expect, test } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError, NETWORK_ERROR } from "@web/api/client";
+import { backoff } from "@web/api/retry";
 import { type ListActions, MessageList } from "@web/components/Chat/MessageList";
 import {
   CONTINUE_TEXT,
@@ -27,7 +28,7 @@ import {
   type ToolCall,
   type ViewMessage,
 } from "@web/routes/chat/stream";
-import { backoff, draftMessage, dropped, regenerateCut, retryCut } from "@web/routes/chat/turn";
+import { draftMessage, dropped, regenerateCut, retryCut } from "@web/routes/chat/turn";
 import type { ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
