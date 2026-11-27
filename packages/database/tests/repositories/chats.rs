@@ -649,3 +649,82 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
         "the failed replace rolled back its delete"
     );
 }
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn search_finds_title_and_message_words_by_prefix(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let notes = Chat::create(owner, at(0)).titled_by("Rust ownership notes");
+    ChatRepository::insert(&store, &notes).await.unwrap();
+    let borrow = say(
+        &store,
+        owner,
+        notes.id(),
+        "The borrow checker\nenforces   ownership rules.",
+        1,
+    )
+    .await;
+    let long_text = format!(
+        "{} the rustacean mascot is a crab {}",
+        "words before ".repeat(40),
+        "and words after ".repeat(40)
+    );
+    let long = say(&store, owner, notes.id(), &long_text, 2).await;
+    let shopping = Chat::create(owner, at(0)).titled_by("Groceries");
+    ChatRepository::insert(&store, &shopping).await.unwrap();
+    let bread = say(&store, owner, shopping.id(), "Buy rustic bread", 3).await;
+    let foreign = Chat::create(other, at(0)).titled_by("Rust secrets");
+    ChatRepository::insert(&store, &foreign).await.unwrap();
+    say(&store, other, foreign.id(), "rust rust rust", 4).await;
+
+    let hits = store.search(owner, "rust", 10).await.unwrap();
+    assert_eq!(hits[0].chat_id, notes.id(), "the title first");
+    assert_eq!(hits[0].message_id, None);
+    assert_eq!(hits[0].snippet, "Rust ownership notes");
+    let messages: Vec<_> = hits[1..].iter().map(|hit| hit.message_id).collect();
+    assert_eq!(messages.len(), 2, "{hits:?}");
+    assert!(messages.contains(&Some(long.id())) && messages.contains(&Some(bread.id())));
+    assert!(
+        hits.iter().all(|hit| hit.chat_id != foreign.id()),
+        "only the caller's chats"
+    );
+    let crab = hits
+        .iter()
+        .find(|hit| hit.message_id == Some(long.id()))
+        .unwrap();
+    assert_eq!(crab.chat_title, "Rust ownership notes");
+    assert!(
+        crab.snippet.contains("rustacean mascot"),
+        "{}",
+        crab.snippet
+    );
+    assert!(crab.snippet.len() < 300, "the words around the match");
+
+    let both = store.search(owner, "BORROW check", 10).await.unwrap();
+    assert_eq!(both.len(), 1, "every word must match: {both:?}");
+    assert_eq!(both[0].message_id, Some(borrow.id()));
+    assert_eq!(
+        both[0].snippet, "The borrow checker enforces ownership rules.",
+        "one line"
+    );
+    let prefix = store.search(owner, "own", 10).await.unwrap();
+    assert_eq!(prefix.len(), 2, "the title and one message: {prefix:?}");
+
+    assert_eq!(store.search(owner, "rust", 1).await.unwrap().len(), 1);
+    assert!(store.search(owner, "???", 10).await.unwrap().is_empty());
+    assert!(store.search(owner, "crabs", 10).await.unwrap().is_empty());
+    let syntax = store
+        .search(owner, "rust & | ! <-> ( ' :*", 10)
+        .await
+        .unwrap();
+    assert_eq!(syntax.len(), 3, "query syntax is plain text: {syntax:?}");
+    assert!(
+        store
+            .search(other, "groceries", 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

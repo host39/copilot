@@ -1,0 +1,33 @@
+meta {
+  name: 08-08 Search Deleted Chat
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/search?q=searchable
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+tests {
+  test("no longer finds the deleted chat", function () {
+    const ids = res.body.items.map((hit) => hit.chatId);
+    expect(ids).to.not.include(bru.getVar("searchChatId"));
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/search?q=searchable`
+
+  **This test verifies:** a deleted chat leaves the results.
+}

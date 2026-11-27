@@ -1,0 +1,31 @@
+meta {
+  name: 08-02 Search by Prefix
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/search?q=SEARCHA%20own
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: eq 1
+  res.body.items[0].chatId: eq {{searchChatId}}
+  res.body.items[0].chatTitle: eq "Bruno searchable ownership notes"
+  res.body.items[0].messageId: isNull
+  res.body.items[0].snippet: eq "Bruno searchable ownership notes"
+}
+
+docs {
+  **Endpoint:** `GET /api/search?q=SEARCHA own`
+
+  **This test verifies:** every word of the search text matches a title word as a prefix, in any
+  case; a title match has no `messageId`.
+}

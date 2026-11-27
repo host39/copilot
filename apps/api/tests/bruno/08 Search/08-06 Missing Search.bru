@@ -1,0 +1,26 @@
+meta {
+  name: 08-06 Missing Search
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/search
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+}
+
+docs {
+  **Endpoint:** `GET /api/search`
+
+  **This test verifies:** the search text is required.
+}

@@ -1,0 +1,27 @@
+meta {
+  name: 08-05 Blank Search
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/search?q=%20%20
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq q
+}
+
+docs {
+  **Endpoint:** `GET /api/search?q=` (blank)
+
+  **This test verifies:** blank search text is a `400` on the `q` field.
+}

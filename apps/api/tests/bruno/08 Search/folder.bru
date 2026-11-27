@@ -1,0 +1,10 @@
+meta {
+  name: 08 Search
+  seq: 9
+}
+
+docs {
+  `/api/search`: user A finds a chat by the prefixes of its title words, while user B
+  (`otherToken`) never finds user A's chats. Message text needs a model provider, so the route and
+  repository tests on Postgres cover it.
+}

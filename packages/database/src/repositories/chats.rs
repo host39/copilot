@@ -417,6 +417,50 @@ impl TryFrom<MessageRow> for Message {
     }
 }
 
+/// Full-text search over the user's chat titles and message text (`text_content`, whose GIN
+/// index is on `to_tsvector('simple', text_content)`). Every word of the search text matches as a
+/// prefix: Postgres parses the text into lexemes (`plainto_tsquery`, which accepts any input),
+/// and each quoted lexeme gets `:*`. Title matches come first (most recently updated chat
+/// first), then message matches by rank, newest first. Snippets are plain text: the title, or
+/// the words around the match on one line.
+const SEARCH: &str = r#"WITH q AS (
+  SELECT to_tsquery('simple', regexp_replace(plainto_tsquery('simple', $2)::text,
+    '''( |$)', ''':*\1', 'g')) AS query
+),
+hits AS (
+  (SELECT c.id AS chat_id, NULL::uuid AS message_id, c.title AS body, 0 AS kind,
+     1::real AS rank, c.updated_at AS at
+   FROM chats c, q
+   WHERE c.user_id = $1 AND to_tsvector('simple', c.title) @@ q.query
+   ORDER BY c.updated_at DESC, c.id DESC LIMIT $3)
+  UNION ALL
+  (SELECT m.chat_id, m.id, m.text_content, 1,
+     ts_rank(to_tsvector('simple', m.text_content), q.query), m.created_at
+   FROM messages m, q
+   WHERE m.user_id = $1 AND to_tsvector('simple', m.text_content) @@ q.query
+   ORDER BY 5 DESC, m.created_at DESC, m.id DESC LIMIT $3)
+),
+best AS (
+  SELECT * FROM hits
+  ORDER BY kind, rank DESC, at DESC, chat_id DESC, message_id DESC
+  LIMIT $3
+)
+SELECT b.chat_id, c.title AS chat_title, b.message_id,
+  CASE WHEN b.message_id IS NULL THEN b.body
+    ELSE btrim(regexp_replace(ts_headline('simple', b.body, q.query,
+      'StartSel="", StopSel="", MaxWords=24, MinWords=8'), '\s+', ' ', 'g'))
+  END AS snippet
+FROM best b JOIN chats c ON c.id = b.chat_id AND c.user_id = $1, q
+ORDER BY b.kind, b.rank DESC, b.at DESC, b.chat_id DESC, b.message_id DESC"#;
+
+#[derive(sqlx::FromRow)]
+struct SearchRow {
+    chat_id: Uuid,
+    chat_title: String,
+    message_id: Option<Uuid>,
+    snippet: String,
+}
+
 /// The stored `jsonb` values of a message: parts, provider state, and usage.
 struct Stored {
     parts: Vec<PartRecord>,
@@ -625,13 +669,28 @@ impl MessageRepository for PgStore {
         pending("MessageRepository::decide")
     }
 
-    async fn search(
-        &self,
-        _user: UserId,
-        _query: &str,
-        _limit: u32,
-    ) -> DomainResult<Vec<SearchHit>> {
-        pending("MessageRepository::search")
+    async fn search(&self, user: UserId, query: &str, limit: u32) -> DomainResult<Vec<SearchHit>> {
+        // Text without a letter or digit holds no word to look for (and Postgres would only
+        // log a notice).
+        if !query.chars().any(char::is_alphanumeric) {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<SearchRow> = sqlx::query_as(SEARCH)
+            .bind(user.uuid())
+            .bind(query)
+            .bind(i64::from(limit))
+            .fetch_all(self.pool())
+            .await
+            .map_err(failed("database.messages.search.failed"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SearchHit {
+                chat_id: ChatId::new(row.chat_id),
+                chat_title: row.chat_title,
+                message_id: row.message_id.map(MessageId::new),
+                snippet: row.snippet,
+            })
+            .collect())
     }
 
     async fn recover(&self, _now: DateTime<Utc>) -> DomainResult<u64> {

@@ -1,0 +1,27 @@
+meta {
+  name: 08-03 Search Syntax as Text
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/search?q=searchable%20%26%20!%20(
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items[0].chatId: eq {{searchChatId}}
+}
+
+docs {
+  **Endpoint:** `GET /api/search?q=searchable & ! (`
+
+  **This test verifies:** full-text query operators in the search text are plain text, never an
+  error.
+}
