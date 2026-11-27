@@ -39,6 +39,7 @@ pub fn response(provider: &Provider, key: KeyState) -> ProviderResponse {
         id: provider.id().uuid(),
         kind: provider.kind().to_dto(),
         preset: provider.preset().to_dto(),
+        api: provider.api().map(ToDto::to_dto),
         name: provider.name().to_owned(),
         base_url: provider.base_url().as_str().to_owned(),
         enabled: provider.enabled(),
@@ -102,6 +103,7 @@ pub async fn create(
             NewProvider {
                 kind: body.kind.to_core(),
                 preset: body.preset.to_core(),
+                api: body.api.map(ToCore::to_core),
                 name: body.name,
                 base_url: body.base_url,
                 api_key: body.api_key,
@@ -165,6 +167,7 @@ pub async fn update(
 ) -> Result<axum::Json<DetailsResponse<ProviderResponse>>, HttpError> {
     let changes = ProviderUpdate {
         name: body.name,
+        api: body.api.map(ToCore::to_core),
         base_url: body.base_url,
         // A blank key clears the stored one (`ProviderService` seals only non-blank keys).
         api_key: body.api_key.map(KeyChange::Set),

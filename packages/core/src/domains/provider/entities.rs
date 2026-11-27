@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::domains::provider::capabilities::{Capabilities, CapabilityOverrides, Locks};
-use crate::domains::provider::values::{Dialect, Preset, ProviderKind};
+use crate::domains::provider::values::{Dialect, OpenAiApi, Preset, ProviderKind};
 use crate::ports::llm_gateway::{ModelTarget, ProviderTarget};
 use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher};
 use crate::shared::base_url::BaseUrl;
@@ -22,6 +22,8 @@ pub struct Provider {
     user_id: UserId,
     kind: ProviderKind,
     preset: Preset,
+    /// `Some` exactly for `openai` connections.
+    api: Option<OpenAiApi>,
     name: String,
     base_url: BaseUrl,
     api_key_sealed: Option<Vec<u8>>,
@@ -37,6 +39,7 @@ pub struct ProviderParts {
     pub user_id: UserId,
     pub kind: ProviderKind,
     pub preset: Preset,
+    pub api: Option<OpenAiApi>,
     pub name: String,
     pub base_url: BaseUrl,
     pub api_key_sealed: Option<Vec<u8>>,
@@ -85,8 +88,8 @@ impl KeyState {
 }
 
 impl Provider {
-    /// A new, enabled connection without a key. Validates the name and that the preset exists
-    /// for the kind.
+    /// A new, enabled connection without a key, on the preset's default API
+    /// ([`OpenAiApi::default_for`]). Validates the name and that the preset exists for the kind.
     pub fn create(
         user_id: UserId,
         kind: ProviderKind,
@@ -106,6 +109,7 @@ impl Provider {
             user_id,
             kind,
             preset,
+            api: OpenAiApi::default_for(kind, preset),
             name: provider_name(name)?,
             base_url,
             api_key_sealed: None,
@@ -122,6 +126,7 @@ impl Provider {
             user_id: parts.user_id,
             kind: parts.kind,
             preset: parts.preset,
+            api: parts.api,
             name: parts.name,
             base_url: parts.base_url,
             api_key_sealed: parts.api_key_sealed,
@@ -133,6 +138,26 @@ impl Provider {
 
     pub fn with_name(mut self, name: &str) -> DomainResult<Self> {
         self.name = provider_name(name)?;
+        Ok(self)
+    }
+
+    /// Switches the OpenAI API its answers use. Only `openai` connections have one, and only the
+    /// `openai` and `custom` presets may use Responses ([`OpenAiApi::fits`]).
+    pub fn with_api(mut self, api: OpenAiApi) -> DomainResult<Self> {
+        if self.kind == ProviderKind::Anthropic {
+            return Err(DomainError::validation(
+                "Anthropic connections use the Messages API; there is no API to choose.",
+            )
+            .with_field("api"));
+        }
+        if !api.fits(self.kind, self.preset) {
+            return Err(DomainError::validation(format!(
+                "The {} preset uses Chat Completions.",
+                self.preset
+            ))
+            .with_field("api"));
+        }
+        self.api = Some(api);
         Ok(self)
     }
 
@@ -181,6 +206,7 @@ impl Provider {
             provider_id: self.id,
             kind: self.kind,
             preset: self.preset,
+            api: self.api,
             base_url: self.base_url.clone(),
             api_key,
             network,
@@ -201,6 +227,11 @@ impl Provider {
 
     pub fn preset(&self) -> Preset {
         self.preset
+    }
+
+    /// The OpenAI API of an `openai` connection; `None` for `anthropic` ones.
+    pub fn api(&self) -> Option<OpenAiApi> {
+        self.api
     }
 
     pub fn name(&self) -> &str {
@@ -332,7 +363,12 @@ impl Model {
 
     /// The locked flags of this model on `provider`.
     pub fn locks(&self, provider: &Provider) -> Locks {
-        Locks::new(provider.kind(), provider.preset(), &self.remote_id)
+        Locks::new(
+            provider.kind(),
+            provider.preset(),
+            provider.api(),
+            &self.remote_id,
+        )
     }
 
     /// What the model can do once overrides and locks apply.
@@ -461,6 +497,72 @@ mod tests {
             error.to_string(),
             "The ollama preset does not exist for anthropic connections."
         );
+    }
+
+    #[test]
+    fn takes_the_preset_default_api_and_checks_a_chosen_one() {
+        let openai = Provider::create(
+            user(),
+            ProviderKind::OpenAi,
+            Preset::OpenAi,
+            "OpenAI",
+            url("https://api.openai.com/v1"),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(openai.api(), Some(OpenAiApi::Responses));
+        let chat = openai.with_api(OpenAiApi::ChatCompletions).unwrap();
+        assert_eq!(chat.api(), Some(OpenAiApi::ChatCompletions));
+        assert_eq!(
+            chat.target(None, NetworkScope::Public).api,
+            Some(OpenAiApi::ChatCompletions)
+        );
+
+        let custom = Provider::create(
+            user(),
+            ProviderKind::OpenAi,
+            Preset::Custom,
+            "Gateway",
+            url("https://gateway.example.com/v1"),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(custom.api(), Some(OpenAiApi::ChatCompletions));
+        assert_eq!(
+            custom.with_api(OpenAiApi::Responses).unwrap().api(),
+            Some(OpenAiApi::Responses)
+        );
+
+        let ollama = Provider::create(
+            user(),
+            ProviderKind::OpenAi,
+            Preset::Ollama,
+            "Local",
+            url("http://localhost:11434/v1"),
+            now(),
+        )
+        .unwrap();
+        let error = ollama.with_api(OpenAiApi::Responses).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "The ollama preset uses Chat Completions."
+        );
+        assert!(matches!(
+            error,
+            DomainError::Validation { field: Some(ref field), .. } if field == "api"
+        ));
+
+        let claude = Provider::create(
+            user(),
+            ProviderKind::Anthropic,
+            Preset::Anthropic,
+            "Claude",
+            url("https://api.anthropic.com"),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(claude.api(), None);
+        assert!(claude.with_api(OpenAiApi::ChatCompletions).is_err());
     }
 
     #[test]

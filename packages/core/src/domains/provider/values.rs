@@ -6,7 +6,7 @@ use std::str::FromStr;
 /// The wire protocol of a provider connection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ProviderKind {
-    /// Chat Completions, `POST {base}/chat/completions`.
+    /// OpenAI-compatible: Chat Completions or the Responses API ([`OpenAiApi`]).
     OpenAi,
     /// Messages API, `POST {base}/v1/messages`.
     Anthropic,
@@ -108,6 +108,70 @@ impl FromStr for Preset {
         Self::ALL
             .into_iter()
             .find(|preset| preset.as_str() == value)
+            .ok_or_else(|| value.to_owned())
+    }
+}
+
+/// Which OpenAI API the answers of an `openai` connection use (`providers.api`). The model list is
+/// `GET {base}/models` with either.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OpenAiApi {
+    /// Chat Completions, `POST {base}/chat/completions`, data-only SSE.
+    ChatCompletions,
+    /// The Responses API, `POST {base}/responses` with `store: false`, typed SSE events.
+    Responses,
+}
+
+impl OpenAiApi {
+    pub const ALL: [Self; 2] = [Self::ChatCompletions, Self::Responses];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+
+    /// The API a new connection gets when the user picks none: Responses for the `openai`
+    /// preset (OpenAI's newest models call tools and summarize their reasoning only there),
+    /// Chat Completions for every other preset of the `openai` kind (the one endpoint every
+    /// compatible server serves), and none for `anthropic` connections.
+    pub fn default_for(kind: ProviderKind, preset: Preset) -> Option<Self> {
+        match (kind, preset) {
+            (ProviderKind::Anthropic, _) => None,
+            (ProviderKind::OpenAi, Preset::OpenAi) => Some(Self::Responses),
+            (ProviderKind::OpenAi, _) => Some(Self::ChatCompletions),
+        }
+    }
+
+    /// Whether a connection of `kind` and `preset` may use this API: Chat Completions on every
+    /// `openai` connection; Responses on the `openai` and `custom` presets only (Gemini's
+    /// compatibility endpoint documents no Responses API, and the OpenRouter and Ollama
+    /// dialects are tuned to Chat Completions).
+    pub fn fits(self, kind: ProviderKind, preset: Preset) -> bool {
+        match (kind, self) {
+            (ProviderKind::Anthropic, _) => false,
+            (ProviderKind::OpenAi, Self::ChatCompletions) => true,
+            (ProviderKind::OpenAi, Self::Responses) => {
+                matches!(preset, Preset::OpenAi | Preset::Custom)
+            }
+        }
+    }
+}
+
+impl fmt::Display for OpenAiApi {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for OpenAiApi {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|api| api.as_str() == value)
             .ok_or_else(|| value.to_owned())
     }
 }
@@ -260,6 +324,58 @@ mod tests {
         ];
         for (kind, preset, dialect) in cases {
             assert_eq!(Dialect::new(kind, preset), dialect, "{kind} {preset}");
+        }
+    }
+
+    #[test]
+    fn round_trips_openai_apis() {
+        for api in OpenAiApi::ALL {
+            assert_eq!(api.as_str().parse::<OpenAiApi>(), Ok(api));
+        }
+        assert!("completions".parse::<OpenAiApi>().is_err());
+    }
+
+    #[test]
+    fn defaults_the_openai_preset_to_responses_only() {
+        assert_eq!(
+            OpenAiApi::default_for(ProviderKind::OpenAi, Preset::OpenAi),
+            Some(OpenAiApi::Responses)
+        );
+        for preset in [
+            Preset::Gemini,
+            Preset::OpenRouter,
+            Preset::Ollama,
+            Preset::Custom,
+        ] {
+            assert_eq!(
+                OpenAiApi::default_for(ProviderKind::OpenAi, preset),
+                Some(OpenAiApi::ChatCompletions),
+                "{preset}"
+            );
+        }
+        for preset in [Preset::Anthropic, Preset::Custom] {
+            assert_eq!(
+                OpenAiApi::default_for(ProviderKind::Anthropic, preset),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn lets_the_openai_and_custom_presets_choose_responses() {
+        let chooses: Vec<_> = Preset::ALL
+            .into_iter()
+            .filter(|preset| OpenAiApi::Responses.fits(ProviderKind::OpenAi, *preset))
+            .collect();
+        assert_eq!(chooses, [Preset::OpenAi, Preset::Custom]);
+        for preset in Preset::ALL {
+            assert!(
+                OpenAiApi::ChatCompletions.fits(ProviderKind::OpenAi, preset),
+                "{preset}"
+            );
+        }
+        for api in OpenAiApi::ALL {
+            assert!(!api.fits(ProviderKind::Anthropic, Preset::Custom));
         }
     }
 

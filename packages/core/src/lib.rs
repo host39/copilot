@@ -37,9 +37,9 @@ pub use crate::domains::project::{
 pub use crate::domains::provider::{
     ANTHROPIC_VERSION, Capabilities, Capability, CapabilityOverrides, DetectedModel, Dialect,
     KeyChange, KeyState, Lock, Locks, Model, ModelParts, ModelQuery, ModelRepository, ModelService,
-    ModelUpdate, ModelView, NewProvider, Preset, Provider, ProviderDetails, ProviderKind,
-    ProviderParts, ProviderRepository, ProviderService, ProviderUpdate, ProviderUsage, SyncReport,
-    reasoning_off_with_tools,
+    ModelUpdate, ModelView, NewProvider, OpenAiApi, Preset, Provider, ProviderDetails,
+    ProviderKind, ProviderParts, ProviderRepository, ProviderService, ProviderUpdate,
+    ProviderUsage, SyncReport, reasoning_off_with_tools,
 };
 pub use crate::domains::schedule::{
     CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RUN_DELETED,

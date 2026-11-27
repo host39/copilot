@@ -2,6 +2,7 @@
   {
     "items": [
       {
+        "api": "chat_completions",
         "baseUrl": "https://openrouter.ai/api/v1",
         "createdAt": "2026-11-26T12:00:00.123456Z",
         "enabled": true,

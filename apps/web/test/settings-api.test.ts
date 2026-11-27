@@ -103,6 +103,7 @@ const provider = {
   id: ID,
   kind: "openai",
   preset: "openai",
+  api: "responses",
   name: "OpenAI",
   baseUrl: "https://api.openai.com/v1",
   enabled: true,

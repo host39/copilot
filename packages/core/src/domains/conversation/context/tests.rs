@@ -9,7 +9,7 @@ use crate::domains::chat::{
 };
 use crate::domains::conversation::lowering::UNFINISHED;
 use crate::domains::file::{FileOwner, MediaType, StoredFileParts};
-use crate::domains::provider::{CapabilityOverrides, ModelParts, ProviderKind};
+use crate::domains::provider::{CapabilityOverrides, ModelParts, OpenAiApi, ProviderKind};
 use crate::domains::schedule::CronRule;
 use crate::domains::tool::{EffectiveTool, ToolAlias, ToolMode};
 use crate::ports::llm_gateway::{LlmMessage, LlmPart, LlmRequest};
@@ -783,6 +783,16 @@ fn reasoning_is_fixed_per_turn_and_off_with_tools_where_needed() {
     });
     assert_eq!(setup.build().reasoning, Some(ReasoningLevel::High));
     setup.server_tool("search");
+    assert_eq!(
+        setup.build().reasoning,
+        Some(ReasoningLevel::High),
+        "the Responses API reasons with tools"
+    );
+    setup.provider = setup
+        .provider
+        .clone()
+        .with_api(OpenAiApi::ChatCompletions)
+        .unwrap();
     let context = setup.build();
     assert_eq!(context.reasoning, Some(ReasoningLevel::Off));
     assert_eq!(

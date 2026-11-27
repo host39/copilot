@@ -17,7 +17,7 @@ use crate::records::{CapabilitiesRecord, OverridesRecord};
 use crate::repositories::store::{PgStore, failed, int, invalid, json, record, text, uint};
 
 const PROVIDER_COLUMNS: &str = "created_at, updated_at, id, user_id, enabled, kind, preset, \
-     name, base_url, api_key_sealed";
+     name, base_url, api_key_sealed, api";
 
 #[derive(sqlx::FromRow)]
 struct ProviderRow {
@@ -31,6 +31,7 @@ struct ProviderRow {
     name: String,
     base_url: String,
     api_key_sealed: Option<Vec<u8>>,
+    api: Option<String>,
 }
 
 impl TryFrom<ProviderRow> for Provider {
@@ -42,6 +43,11 @@ impl TryFrom<ProviderRow> for Provider {
             user_id: UserId::new(row.user_id),
             kind: text(&row.kind, "database.providers.kind.invalid")?,
             preset: text(&row.preset, "database.providers.preset.invalid")?,
+            api: row
+                .api
+                .as_deref()
+                .map(|api| text(api, "database.providers.api.invalid"))
+                .transpose()?,
             name: row.name,
             base_url: BaseUrl::restore(&row.base_url)?,
             api_key_sealed: row.api_key_sealed,
@@ -128,7 +134,8 @@ impl ProviderRepository for PgStore {
     async fn insert(&self, provider: &Provider) -> DomainResult<()> {
         sqlx::query(
             "INSERT INTO providers (created_at, updated_at, id, user_id, enabled, kind, preset, \
-             name, base_url, api_key_sealed) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             name, base_url, api_key_sealed, api) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(provider.created_at())
         .bind(provider.updated_at())
@@ -140,6 +147,7 @@ impl ProviderRepository for PgStore {
         .bind(provider.name())
         .bind(provider.base_url().as_str())
         .bind(provider.api_key_sealed())
+        .bind(provider.api().map(|api| api.as_str()))
         .execute(self.pool())
         .await
         .map_err(failed("database.providers.insert.failed"))?;
@@ -149,7 +157,7 @@ impl ProviderRepository for PgStore {
     async fn update(&self, provider: &Provider) -> DomainResult<()> {
         sqlx::query(
             "UPDATE providers SET updated_at = $3, enabled = $4, name = $5, base_url = $6, \
-             api_key_sealed = $7 WHERE id = $1 AND user_id = $2",
+             api_key_sealed = $7, api = $8 WHERE id = $1 AND user_id = $2",
         )
         .bind(provider.id().uuid())
         .bind(provider.user_id().uuid())
@@ -158,6 +166,7 @@ impl ProviderRepository for PgStore {
         .bind(provider.name())
         .bind(provider.base_url().as_str())
         .bind(provider.api_key_sealed())
+        .bind(provider.api().map(|api| api.as_str()))
         .execute(self.pool())
         .await
         .map_err(failed("database.providers.update.failed"))?;

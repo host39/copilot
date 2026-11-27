@@ -34,6 +34,7 @@ assert {
   res.status: eq 201
   res.body.data.id: isString
   res.body.data.name: eq "Bruno Gateway"
+  res.body.data.api: eq chat_completions
   res.body.data.key: eq set
   res.body.data.enabled: eq true
 }
@@ -42,5 +43,6 @@ docs {
   **Endpoint:** `POST /api/providers`
 
   **This test verifies:** a connection is created with a sealed key that the answer reports as
-  `set`, never as its value; its id is stored as `providerId`.
+  `set`, never as its value, on Chat Completions (the `custom` preset's default API); its id is
+  stored as `providerId`.
 }

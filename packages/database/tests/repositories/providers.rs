@@ -1,7 +1,8 @@
 use copilot_core::{
-    CapabilityOverrides, Chat, ChatRepository, ModelId, ModelQuery, ModelRepository,
-    ProviderRepository, ProviderUsage, SyncReport, UserId,
+    CapabilityOverrides, Chat, ChatRepository, ModelId, ModelQuery, ModelRepository, OpenAiApi,
+    ProviderId, ProviderRepository, ProviderUsage, SyncReport, UserId,
 };
+use copilot_database::operations::migrate::MIGRATOR;
 use copilot_database::{DbPool, PgStore};
 use uuid::Uuid;
 
@@ -72,9 +73,12 @@ async fn connections_round_trip_and_stay_with_their_owner(pool: DbPool) {
             .is_empty()
     );
 
+    assert_eq!(saved.api(), Some(OpenAiApi::ChatCompletions));
     let changed = saved
         .clone()
         .with_name("Renamed")
+        .unwrap()
+        .with_api(OpenAiApi::Responses)
         .unwrap()
         .with_key(None)
         .with_enabled(false)
@@ -412,4 +416,120 @@ async fn usage_counts_the_owner_rows_that_name_one_of_the_connection_models(pool
         ProviderUsage::default(),
         "another user's counts never include the owner's rows"
     );
+}
+
+/// The migration that added `providers.api`.
+const API_MIGRATION: i64 = 20_261_127_200_831;
+
+/// A connection row as the schema before [`API_MIGRATION`] stored it, with one model whose
+/// detected capabilities have `tools` off; their ids.
+async fn old_connection(
+    store: &PgStore,
+    owner: UserId,
+    kind: &str,
+    preset: &str,
+    model: &str,
+) -> ProviderId {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO providers (created_at, updated_at, id, user_id, kind, preset, name, base_url) \
+         VALUES ($1, $1, $2, $3, $4, $5, 'Old', 'https://api.example.com/v1')",
+    )
+    .bind(at(0))
+    .bind(id)
+    .bind(owner.uuid())
+    .bind(kind)
+    .bind(preset)
+    .execute(store.pool())
+    .await
+    .expect("provider inserted");
+    sqlx::query(
+        "INSERT INTO models (created_at, updated_at, id, user_id, provider_id, enabled, \
+         remote_id, display_name, capabilities) VALUES ($1, $1, $2, $3, $4, true, $5, $5, $6)",
+    )
+    .bind(at(0))
+    .bind(Uuid::now_v7())
+    .bind(owner.uuid())
+    .bind(id)
+    .bind(model)
+    .bind(serde_json::json!({
+        "v": 1, "vision": false, "pdf": true, "tools": false, "audio_in": false,
+        "audio_out": false, "reasoning": false, "reasoning_levels": [], "default_reasoning": null,
+    }))
+    .execute(store.pool())
+    .await
+    .expect("model inserted");
+    ProviderId::new(id)
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn the_api_migration_moves_openai_preset_connections_to_responses(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let previous = MIGRATOR
+        .iter()
+        .filter(|migration| {
+            migration.migration_type.is_up_migration() && migration.version < API_MIGRATION
+        })
+        .map(|migration| migration.version)
+        .max()
+        .expect("migrations before it");
+    MIGRATOR
+        .undo(store.pool(), previous)
+        .await
+        .expect("the down migration reverts it");
+
+    let openai = old_connection(&store, owner, "openai", "openai", "GPT-6.1-sol").await;
+    let older = old_connection(&store, owner, "openai", "openai", "gpt-5.6-terra").await;
+    let custom = old_connection(&store, owner, "openai", "custom", "gpt-6.1-sol").await;
+    let claude = old_connection(&store, owner, "anthropic", "anthropic", "claude").await;
+    MIGRATOR.run(store.pool()).await.expect("it applies again");
+
+    let api = |id: ProviderId| {
+        let store = &store;
+        async move {
+            ProviderRepository::get(store, owner, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .api()
+        }
+    };
+    assert_eq!(api(openai).await, Some(OpenAiApi::Responses));
+    assert_eq!(api(older).await, Some(OpenAiApi::Responses));
+    assert_eq!(api(custom).await, Some(OpenAiApi::ChatCompletions));
+    assert_eq!(api(claude).await, None);
+
+    let tools = |id: ProviderId| {
+        let store = &store;
+        async move {
+            ModelRepository::list(store, owner, ModelQuery::provider(id))
+                .await
+                .unwrap()[0]
+                .capabilities()
+                .tools
+        }
+    };
+    assert!(
+        tools(openai).await,
+        "the gpt-6 lock no longer applies there"
+    );
+    assert!(!tools(older).await, "other models keep what was detected");
+    assert!(!tools(custom).await, "other presets keep what was detected");
+
+    for (kind, api) in [("anthropic", Some("responses")), ("openai", None)] {
+        let refused = sqlx::query(
+            "INSERT INTO providers (created_at, updated_at, id, user_id, kind, preset, name, \
+             base_url, api) VALUES ($1, $1, $2, $3, $4, 'custom', 'Bad', 'https://x.example', $5)",
+        )
+        .bind(at(0))
+        .bind(Uuid::now_v7())
+        .bind(owner.uuid())
+        .bind(kind)
+        .bind(api)
+        .execute(store.pool())
+        .await;
+        assert!(refused.is_err(), "{kind} with {api:?}");
+    }
 }

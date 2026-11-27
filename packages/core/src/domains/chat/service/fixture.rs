@@ -109,6 +109,7 @@ pub(super) async fn model(f: &Fixture, caller: &Actor) -> (ModelId, ProviderId) 
             NewProvider {
                 kind: ProviderKind::OpenAi,
                 preset: Preset::OpenAi,
+                api: None,
                 name: "OpenAI".to_owned(),
                 base_url: None,
                 api_key: Some("sk-1".to_owned()),

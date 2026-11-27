@@ -3,11 +3,12 @@
 //! Sources, in order (`docs/design/copilot.md`, Providers and Models): provider-reported
 //! metadata; preset defaults (PDF on for the `openai` and `openrouter` presets); otherwise text
 //! plus `tools`, everything else off until the user enables it. Locked flags are forced off and
-//! cannot be overridden. There is no curated model-family table beyond the locks below.
+//! cannot be overridden; detected capabilities are stored before locks, so a lock that depends on
+//! the connection's API lifts as soon as the API changes. There is no curated model-family table beyond the locks below.
 
 use std::fmt;
 
-use crate::domains::provider::values::{Preset, ProviderKind};
+use crate::domains::provider::values::{OpenAiApi, Preset, ProviderKind};
 use crate::ports::llm_gateway::RemoteModel;
 use crate::shared::reasoning::ReasoningLevel;
 
@@ -213,12 +214,25 @@ pub struct Lock {
 pub struct Locks(Vec<Lock>);
 
 impl Locks {
-    /// `audio_in` and `audio_out` on `anthropic` connections; `tools` on `gpt-6*` models under
-    /// the `openai` preset (tool calling there needs the Responses API, a later adapter).
-    pub fn new(kind: ProviderKind, preset: Preset, remote_id: &str) -> Self {
+    /// `audio_in` and `audio_out` on `anthropic` connections and on connections that use the
+    /// Responses API (it takes and returns no audio yet); `tools` on `gpt-6*` models under the
+    /// `openai` preset while it uses Chat Completions (tool calling there needs Responses).
+    pub fn new(
+        kind: ProviderKind,
+        preset: Preset,
+        api: Option<OpenAiApi>,
+        remote_id: &str,
+    ) -> Self {
         let mut locks = Vec::new();
-        if kind == ProviderKind::Anthropic {
-            let reason = "Claude models do not take or return audio.";
+        let audio = match (kind, api) {
+            (ProviderKind::Anthropic, _) => Some("Claude models do not take or return audio."),
+            (_, Some(OpenAiApi::Responses)) => Some(
+                "The Responses API takes and returns no audio yet: use Chat Completions for \
+                 audio models.",
+            ),
+            _ => None,
+        };
+        if let Some(reason) = audio {
             locks.push(Lock {
                 capability: Capability::AudioIn,
                 reason,
@@ -228,10 +242,13 @@ impl Locks {
                 reason,
             });
         }
-        if preset == Preset::OpenAi && remote_id.to_ascii_lowercase().starts_with("gpt-6") {
+        if preset == Preset::OpenAi
+            && api == Some(OpenAiApi::ChatCompletions)
+            && remote_id.to_ascii_lowercase().starts_with("gpt-6")
+        {
             locks.push(Lock {
                 capability: Capability::Tools,
-                reason: "Tool use on this model needs the Responses adapter.",
+                reason: "Tool use on this model needs the Responses API.",
             });
         }
         Self(locks)
@@ -251,9 +268,10 @@ impl Locks {
 }
 
 /// Whether the `openai` preset must send `reasoning_effort: none` whenever tools are in the
-/// request (GPT-5.4 and later 5.x models on Chat Completions). The picker says so.
-pub fn reasoning_off_with_tools(preset: Preset, remote_id: &str) -> bool {
-    if preset != Preset::OpenAi {
+/// request (GPT-5.4 and later 5.x models on Chat Completions; the Responses API reasons with
+/// tools). The picker says so.
+pub fn reasoning_off_with_tools(preset: Preset, api: Option<OpenAiApi>, remote_id: &str) -> bool {
+    if preset != Preset::OpenAi || api != Some(OpenAiApi::ChatCompletions) {
         return false;
     }
     let id = remote_id.to_ascii_lowercase();
@@ -388,31 +406,75 @@ mod tests {
         let locks = Locks::new(
             ProviderKind::Anthropic,
             Preset::Anthropic,
+            None,
             "claude-opus-5-5",
         );
         assert!(locks.contains(Capability::AudioIn));
         assert!(locks.contains(Capability::AudioOut));
         assert!(!locks.contains(Capability::Tools));
-        let custom = Locks::new(ProviderKind::Anthropic, Preset::Custom, "anything");
+        let custom = Locks::new(ProviderKind::Anthropic, Preset::Custom, None, "anything");
         assert!(custom.contains(Capability::AudioIn));
-        let openai = Locks::new(ProviderKind::OpenAi, Preset::OpenAi, "gpt-audio-2");
+        let openai = Locks::new(
+            ProviderKind::OpenAi,
+            Preset::OpenAi,
+            Some(OpenAiApi::ChatCompletions),
+            "gpt-audio-2",
+        );
         assert!(!openai.contains(Capability::AudioIn));
     }
 
     #[test]
-    fn locks_tools_on_gpt_6_under_the_openai_preset_only() {
-        let locks = Locks::new(ProviderKind::OpenAi, Preset::OpenAi, "GPT-6.1-sol");
+    fn locks_audio_on_the_responses_api() {
+        for preset in [Preset::OpenAi, Preset::Custom] {
+            let locks = Locks::new(
+                ProviderKind::OpenAi,
+                preset,
+                Some(OpenAiApi::Responses),
+                "gpt-audio-2",
+            );
+            assert!(locks.contains(Capability::AudioIn), "{preset}");
+            assert!(locks.contains(Capability::AudioOut), "{preset}");
+            assert_eq!(
+                locks.get(Capability::AudioIn).map(|lock| lock.reason),
+                Some(
+                    "The Responses API takes and returns no audio yet: use Chat Completions for \
+                     audio models."
+                )
+            );
+            assert!(!locks.contains(Capability::Tools), "{preset}");
+        }
+    }
+
+    #[test]
+    fn locks_tools_on_gpt_6_under_the_openai_preset_on_chat_completions_only() {
+        let chat = Some(OpenAiApi::ChatCompletions);
+        let locks = Locks::new(ProviderKind::OpenAi, Preset::OpenAi, chat, "GPT-6.1-sol");
         assert_eq!(
             locks.get(Capability::Tools).map(|lock| lock.reason),
-            Some("Tool use on this model needs the Responses adapter.")
+            Some("Tool use on this model needs the Responses API.")
         );
         assert!(
-            !Locks::new(ProviderKind::OpenAi, Preset::OpenRouter, "gpt-6-astra")
+            !Locks::new(
+                ProviderKind::OpenAi,
+                Preset::OpenRouter,
+                chat,
+                "gpt-6-astra"
+            )
+            .contains(Capability::Tools)
+        );
+        assert!(
+            !Locks::new(ProviderKind::OpenAi, Preset::OpenAi, chat, "gpt-5.6-terra")
                 .contains(Capability::Tools)
         );
         assert!(
-            !Locks::new(ProviderKind::OpenAi, Preset::OpenAi, "gpt-5.6-terra")
-                .contains(Capability::Tools)
+            !Locks::new(
+                ProviderKind::OpenAi,
+                Preset::OpenAi,
+                Some(OpenAiApi::Responses),
+                "gpt-6.1-sol"
+            )
+            .contains(Capability::Tools),
+            "the Responses API calls tools on every model"
         );
     }
 
@@ -429,7 +491,7 @@ mod tests {
             reasoning: Some(true),
             ..CapabilityOverrides::default()
         };
-        let locks = Locks::new(ProviderKind::Anthropic, Preset::Anthropic, "claude");
+        let locks = Locks::new(ProviderKind::Anthropic, Preset::Anthropic, None, "claude");
         let effective = Capabilities::effective(&detected, &overrides, &locks);
         assert!(effective.vision);
         assert!(!effective.tools);
@@ -466,12 +528,17 @@ mod tests {
             (Preset::OpenAi, "gpt-4.1", false),
             (Preset::OpenRouter, "gpt-5.6-terra", false),
         ];
+        let chat = Some(OpenAiApi::ChatCompletions);
         for (preset, id, expected) in cases {
             assert_eq!(
-                reasoning_off_with_tools(preset, id),
+                reasoning_off_with_tools(preset, chat, id),
                 expected,
                 "{preset} {id}"
             );
         }
+        assert!(
+            !reasoning_off_with_tools(Preset::OpenAi, Some(OpenAiApi::Responses), "gpt-5.6-terra"),
+            "the Responses API reasons with tools"
+        );
     }
 }

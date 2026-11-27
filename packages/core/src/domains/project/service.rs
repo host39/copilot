@@ -238,6 +238,7 @@ mod tests {
                 NewProvider {
                     kind: ProviderKind::OpenAi,
                     preset: Preset::OpenAi,
+                    api: None,
                     name: "OpenAI".to_owned(),
                     base_url: None,
                     api_key: Some("sk".to_owned()),

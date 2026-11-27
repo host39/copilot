@@ -137,7 +137,8 @@ fn fixture_with(limits: FileLimits) -> Fixture {
 }
 
 impl Fixture {
-    /// An enabled OpenAI model `gpt-test` (tool use on unless `reported` says otherwise).
+    /// An enabled OpenAI model `gpt-test` on Chat Completions (tool use on unless `reported`
+    /// says otherwise; audio can be turned on).
     async fn model(&self, reported: ReportedCapabilities) -> ModelId {
         let provider = self
             .providers
@@ -146,6 +147,7 @@ impl Fixture {
                 NewProvider {
                     kind: ProviderKind::OpenAi,
                     preset: Preset::OpenAi,
+                    api: Some(crate::domains::provider::OpenAiApi::ChatCompletions),
                     name: "OpenAI".to_owned(),
                     base_url: None,
                     api_key: Some("sk-1".to_owned()),
