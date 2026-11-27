@@ -6,11 +6,11 @@ Accepted
 
 ## Context
 
-The template keeps the layout and tooling of our TypeScript starter (Hono API, React web, shared packages) but replaces the API with Rust. Each TypeScript building block needs a Rust counterpart that keeps the same responsibilities, so the architecture, rules, and skills carry over.
+The RustInit template, which Copilot started from, keeps the layout and tooling of our TypeScript starter (Hono API, React web, shared packages) but replaces the API with Rust. Each TypeScript building block needs a Rust counterpart that keeps the same responsibilities, so the architecture, rules, and skills carry over.
 
 ## Decision
 
-| Concern | TypeScript starter | This template |
+| Concern | TypeScript starter | RustInit and Copilot |
 | --- | --- | --- |
 | HTTP framework | Hono | axum on Tokio |
 | Middleware | Hono middleware | axum `from_fn` middleware + `tower-http` CORS |

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-11-27): built as decided through roadmap Phase 6, with the changes recorded below (Gemini, the fake model server, voice, and the native shells). The owner's review of the spec and this ADR (roadmap P0.3) is still open; anything it changes comes as an amendment here or a new ADR.
 
 ## Context
 
@@ -19,7 +19,7 @@ A six-lens review (UX, architecture, security, protocols, footprint, delivery) o
 
 ### Identity Comes From lib-rustauth
 
-- Copilot does not build users, passwords, sessions, roles, user administration, login throttling, or the setup token. It uses lib-rustauth (`host39/lib-rustauth`), the owner's shared authentication library, as a Cargo git dependency pinned by commit until `v0.1.0` is tagged.
+- Copilot does not build users, passwords, sessions, roles, user administration, login throttling, or the setup token. It uses lib-rustauth (`host39/lib-rustauth`), the owner's shared authentication library, as a Cargo git dependency pinned by commit: the `v0.1.0` release commit, until that tag is pushed and the pin becomes `tag = "v0.1.0"`.
 - rustauth's router is mounted under `/api` (`/auth/*`, `/admin/users*`), and its guard protects every other `/api` route. Its migrations create the `auth` schema and run before Copilot's; Copilot tables reference `auth.users (id)` with `ON DELETE CASCADE`.
 - `copilot-core` never depends on a rustauth crate. It has its own `UserId` and an `Actor { user_id, is_admin }` value that `apps/api` builds from rustauth's `AuthUser` (`is_admin` means the role `administrator`). `apps/api` maps `AuthError` into `DomainError`.
 - Personal instructions are Copilot data, in a Copilot table `user_settings`.
@@ -34,7 +34,7 @@ A six-lens review (UX, architecture, security, protocols, footprint, delivery) o
 ### Provider Protocols
 
 - Two wire protocols in v1: OpenAI-compatible Chat Completions (OpenAI, OpenRouter, Ollama, vLLM, LM Studio, llama.cpp, Groq, Together, Gemini) and the Anthropic Messages API. A connection has a kind and a preset; the preset fixes the request dialect.
-- Gemini goes through Google's OpenAI-compatible endpoint, gated by a spike. If the spike fails, a native adapter targets the Interactions API, not the legacy `generateContent`.
+- Gemini goes through Google's OpenAI-compatible endpoint (the spike's outcome, below). A native adapter, if a live check ever needs one, targets the Interactions API, not the legacy `generateContent`.
 - The OpenAI Responses API is a later kind; until then, models that need it for tool calling have tool use locked off.
 - Messages are stored as provider-neutral parts plus a separate, verbatim provider state (thinking blocks and signatures, reasoning details). Provider state is replayed only to the same connection, for the current turn or when the turn's context fingerprint matches. Each turn's system prompt and tool list are snapshotted, so settings changes apply from the next user message and never break Anthropic's preserved-thinking prefix check.
 
@@ -44,7 +44,7 @@ Spike outcome (roadmap P2.B.5, 2026-11-27): **no native Gemini adapter in v1.** 
 
 - **What the spike checked.** No Gemini key was available, so the spike ran on wiremock fixtures shaped after Google's documentation (`packages/providers/tests/openai.rs`, the Gemini spike section): a streamed tool call over two turns with its thought signature replayed; parallel calls where only the first call of the step is signed; sequential steps where every signature of the current turn goes back; results sent after the model turn in call order, never interleaved; the system and tool roles; images as base64 data URLs; `input_audio` WAV; `reasoning_effort`.
 - **Why it passes.** The adapter keeps every extra field of a tool call on the `gemini` dialect (Google's pages do not show the field path inside `tool_calls`; the fixtures use `extra_content.google.thought_signature`), so the round trip does not depend on one path. Core replays that state only to the same model on the same connection. A step that carries no signature (an answer rebuilt from its parts, for example after a model switch) gets Google's documented stand-in, `skip_thought_signature_validator`, on its first call, so foreign history does not fail the signature check.
-- **What stays open.** Google calls its OpenAI compatibility "still in beta". PDF `file` parts are not documented there (core keeps `pdf` off for the `gemini` preset unless the user turns it on). Thought summaries are not requested: Google documents them only through `extra_body.google.thinking_config.include_thoughts`, which cannot be combined with `reasoning_effort`, so Gemini reasoning text is not shown in v1. Gemini 3 and 4 cannot turn reasoning off, so the `off` level works only on 2.5 models. A call without an `id` cannot carry its signature, because replay state is keyed by call id.
+- **What stays open.** Google calls its OpenAI compatibility "still in beta". PDF `file` parts are not documented there; the `gemini` preset nevertheless starts with `vision`, `pdf`, and `reasoning` on (changed in P6.1: the listing reports no metadata, and every current Gemini model reads images and PDFs and thinks), and the P3.4 live check should confirm the PDF part along with the tool loop. Audio input goes as `input_audio` (P4.1); audio output stays off by default because the endpoint documents none, but it is not locked. Thought summaries are not requested: Google documents them only through `extra_body.google.thinking_config.include_thoughts`, which cannot be combined with `reasoning_effort`, so Gemini reasoning text is not shown in v1. Gemini 3 and 4 cannot turn reasoning off, so the `off` level works only on 2.5 models. A call without an `id` cannot carry its signature, because replay state is keyed by call id.
 - **Live check.** The P3.4 owner checkpoint runs one Gemini 3 or 4 tool loop over two turns. If it fails the signature check (400 "missing a `thought_signature`"), or if thought summaries become a requirement, the native adapter targets the Interactions API with `store: false`, not the legacy `generateContent`.
 
 ### Tools Through MCP
@@ -65,18 +65,29 @@ Spike outcome (roadmap P2.B.5, 2026-11-27): **no native Gemini adapter in v1.** 
 
 ### Voice Only Where Native
 
-- A microphone appears only for models that accept audio input, and spoken replies only for models that return audio. Claude models get no voice controls. Speech and transcription endpoints, live voice, and voice for text-only models are later work and need the owner's opt-in.
+- A microphone appears only for models that accept audio input, and spoken replies only for models that return audio. Claude models get no voice controls (their audio flags are locked off). Speech and transcription endpoints, live voice, and voice for text-only models are later work and need the owner's opt-in.
+- **As built (P4.1, P4.2).** The browser records through an AudioWorklet and encodes 16 kHz mono PCM16 WAV in TypeScript (no codec library, no server-side transcoding); a clip stops at 5 minutes and is uploaded as a chat file, so it is previewed, counted against the storage quota, and sent as an `input_audio` part. Spoken replies stream as `audio.delta` events and play through Web Audio; when the answer ends, the server saves the streamed PCM16 as a 24 kHz WAV chat file on every exit and keeps the transcript as the message text, and later turns send only the transcript. Audio a model cannot take is replaced by a notice, like any other unsupported part.
+- **Why:** WAV needs no encoder dependency in the browser or the server and every audio-capable chat API accepts it; saving the reply as a file reuses the file limits, downloads, and deletion rules instead of a second storage path.
 
 ### Native Shells
 
 - The Linux and Android apps are Tauri v2 shells around the same web bundle. They call the API through `tauri-plugin-http`, which avoids CORS, mixed content, and Android cleartext limits. The web bundle is also installable as a web app.
 - `apps/web` may depend on `@tauri-apps/api`, `@tauri-apps/plugin-http`, `react-markdown`, `remark-gfm`, and `@tanstack/react-query`, an exception to the rule that it imports only `@copilot/contracts`.
+- **As built (P5.1 to P5.3, P6.1).** The shell lives in `apps/native`, outside the Cargo workspace, so `make check` never needs WebKitGTK. The server URL is entered on a Connect screen and stored on the device (plain `http` to a public host needs consent). The capability grants the HTTP plugin, the opener for `http`, `https`, and `mailto` links, and one app command, `save_file`, which saves downloads through the system's save dialog (the dialog and file system plugins expose no command to the web view). A navigation guard keeps the web view on the bundle's origin and opens other links in the system browser, and the web view's permission requests are answered with the microphone only. CI builds the `.deb`, the AppImage (pinned Ubuntu 24.04, glibc 2.39), and an arm64 APK as workflow artifacts; tags are release-signed with one keystore from repository secrets, other builds with the runner's debug key. There is no app store distribution in v1.
+- **Why:** one interface to build and test, the smallest native surface that covers downloads and the microphone, and no Tauri code in `make check`.
 
 ### Install and Storage
 
 - **Postgres is kept** for v1: the template's database layer, readonly role, tests, and CI are built on it, and streaming writes plus the scheduler need concurrent writers. The schema stays portable (ids from Rust, no enum types, no triggers or `LISTEN/NOTIFY`) so a SQLite adapter can be added later behind the same ports.
 - **File bytes live in Postgres**, so one `pg_dump` is the whole backup and deletes are transactional.
 - One image holds the `server` and `migrate` binaries and the web bundle. The API serves the SPA from the same origin and lives under `/api`. A compose file runs Postgres, a one-off migrate service, and the server.
+- **As built (P1.7, P6.1).** The image is distroless (`cc-debian12`, `nonroot`) with binaries from a `dist` profile (fat LTO, one codegen unit, stripped) and a precompressed bundle. `migrate` connects as the database owner and creates the server's role `copilot_server`, which may change rows but no schema, so the running server never holds the owner's password. Measured sizes are in [docs/footprint.md](../footprint.md).
+
+### Fake Model Server for Development and CI
+
+- `tools/fake-llm` (added in P4.3 at the owner's request) is a dev-only workspace binary that speaks both wire protocols (OpenAI-compatible and Anthropic, streamed or whole) and serves an MCP server at `/mcp` (both eras). Keywords in the newest user message choose its behavior: errors with provider-shaped bodies, a broken stream, reasoning, tool calls, refusals, and audio. `make smoke` and CI drive the real API over HTTP against it (both provider kinds, a streamed reply, a provider error, an approved MCP tool call), and `make fake-llm` lets a person click through every chat path without a key.
+- No Copilot crate depends on it and it depends on none (`make boundaries`), so it never reaches the image.
+- **Why:** wiremock fixtures test each adapter in isolation, but only a whole server exercises the API, the run registry, the outbound client policy, and the web app together; a fake that follows the real APIs' rules (for example, refusing a tool call that is not answered right away) catches what fixtures shaped by the same author miss. It does not replace live checks with real keys (roadmap P3.4).
 
 ### Security Baseline
 
@@ -91,15 +102,15 @@ Spike outcome (roadmap P2.B.5, 2026-11-27): **no native Gemini adapter in v1.** 
 
 - One context concept and one tool code path for every provider.
 - No in-memory state that matters across a restart: approvals, schedules, and messages are all persisted.
-- A self-hoster runs one image, one Postgres volume, and two secrets.
+- A self-hoster runs one image, one Postgres volume, and three secrets (`SECRET_KEY`, the database owner's password, and the server role's).
 - The interfaces that parallel work depends on are fixed before tracks start.
 - Identity is shared with the owner's other apps: one implementation to review and test, and later sign-in methods arrive through a version bump.
 
 ### Negative
 
 - PDFs cannot be read by self-hosted models in v1.
-- Gemini depends on Google's OpenAI compatibility layer, which Google calls beta: no thought summaries in v1, PDFs undocumented there, and the signature round trip proven on fixtures until the P3.4 live check.
-- Large files in Postgres make the database larger and load whole files into memory (bounded by the upload limit).
+- Gemini depends on Google's OpenAI compatibility layer, which Google calls beta: no thought summaries in v1, PDFs undocumented there, and the signature round trip and the PDF and audio parts proven on fixtures until the P3.4 live check.
+- Large files in Postgres make the database larger, and an upload is held in memory while it is checked and stored (bounded by the upload limit and the upload slots); downloads stream in 512 KiB pieces.
 - One process caps scale; serverless hosting is not possible.
 - Users in a household each add their own provider keys until shared connections arrive.
 - Copilot depends on a second repository: a change to identity is made in lib-rustauth first, then Copilot bumps its pinned commit or tag. Until lib-rustauth's steps land, the Copilot steps that need them wait (see the roadmap's Track R).

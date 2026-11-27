@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-This repository is a starter template used to bootstrap new full-stack projects. Even though it ships with only health-check endpoints, every project that grows out of it should share the same architecture so engineers can move between codebases without re-learning where logic lives.
+Copilot started from the RustInit starter template, which ships only health-check endpoints so that every project grown from it shares the same architecture, and engineers can move between codebases without re-learning where logic lives. Copilot keeps that architecture for its own domains.
 
 We follow a clean / domain-driven layering where business logic is independent of frameworks (axum, Rsbuild) and infrastructure (sqlx, Postgres). Dependencies point inward: adapters depend on the domain, never the reverse.
 
@@ -79,7 +79,7 @@ Suppose you are adding a `Widget` domain (the `/add-domain` skill has the detail
 
 ### Positive
 
-- Consistent structure across every project bootstrapped from this template.
+- Consistent structure across every project bootstrapped from the RustInit template, Copilot included.
 - Business logic is unit-testable without a database or HTTP server.
 - Swapping infrastructure (a different database driver or auth provider) is localized to adapter crates.
 
@@ -90,7 +90,7 @@ Suppose you are adding a `Widget` domain (the `/add-domain` skill has the detail
 
 ### Neutral
 
-- The template ships health-only apps; the structure exists before the first real domain, by design.
+- The template shipped health-only apps, so the structure existed before the first real domain; Copilot's domains (settings, providers, projects, files, tools, schedules, chats, and the conversation engine) were added into it.
 - API shapes are defined separately from domain entities and mapped at the boundary.
 
 ## References
