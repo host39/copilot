@@ -1,0 +1,26 @@
+meta {
+  name: 07-10 Other User Get Chat
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}` as user B
+
+  **This test verifies:** user B gets `404` for user A's chat, never its instructions.
+}

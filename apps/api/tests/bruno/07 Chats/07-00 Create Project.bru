@@ -1,0 +1,38 @@
+meta {
+  name: 07-00 Create Project
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/projects
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Chats"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("chatProjectId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.instructions: isEmpty
+}
+
+docs {
+  **Endpoint:** `POST /api/projects`
+
+  **This test verifies:** a project for the chats of this folder (`chatProjectId`).
+}

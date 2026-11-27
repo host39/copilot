@@ -1,0 +1,26 @@
+meta {
+  name: 07-07 Next Page
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/chats?limit=1&cursor={{chatCursor}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items[0].id: eq {{chatId}}
+}
+
+docs {
+  **Endpoint:** `GET /api/chats?limit=1&cursor={next}`
+
+  **This test verifies:** the cursor continues after the last chat of the previous page.
+}

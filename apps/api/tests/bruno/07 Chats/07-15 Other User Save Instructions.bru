@@ -1,0 +1,26 @@
+meta {
+  name: 07-15 Other User Save Instructions
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/save-instructions
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/save-instructions` as user B
+
+  **This test verifies:** user B cannot write user A's instructions into A's project.
+}

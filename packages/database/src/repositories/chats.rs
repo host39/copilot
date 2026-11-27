@@ -1,15 +1,15 @@
 //! `ChatRepository`, `MessageRepository`, and `TurnContextRepository` on Postgres (`chats`,
 //! `chat_tool_servers`, `chat_tool_approvals`, `messages`, `turn_contexts`). The walking skeleton
-//! (P1.9) writes what a turn needs; roadmap step P2.A writes the chat list, search, and the tail
-//! changes, and P3.1 decisions and startup recovery.
+//! (P1.9) wrote what a turn needs and roadmap step P2.A the chat list, search, and the tail
+//! changes; P3.1 writes decisions and startup recovery.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    ApprovedTool, BuiltinTool, CallDecision, Chat, ChatId, ChatParts, ChatQuery, ChatRepository,
-    ChatSummary, ContextHash, DomainError, DomainResult, Message, MessageId, MessageParts,
-    MessageRepository, ModelId, Page, Part, ProjectId, ProviderId, ReasoningLevel, ScheduleId,
-    SearchHit, ServerOverride, SnapshotFile, SnapshotTool, ToolServerId, TurnContext,
+    ApprovedTool, BuiltinTool, CallDecision, Chat, ChatCursor, ChatId, ChatParts, ChatQuery,
+    ChatRepository, ChatSummary, ContextHash, DomainError, DomainResult, Message, MessageId,
+    MessageParts, MessageRepository, ModelId, Page, Part, ProjectId, ProviderId, ReasoningLevel,
+    ScheduleId, SearchHit, ServerOverride, SnapshotFile, SnapshotTool, ToolServerId, TurnContext,
     TurnContextRepository, Usage, UserId,
 };
 use serde_json::Value;
@@ -32,6 +32,24 @@ const CHAT_COLUMNS: &str = "c.created_at, c.updated_at, c.last_read_at, c.id, c.
        ORDER BY a.tool_server_id, a.tool_name) AS approval_ids, \
      ARRAY(SELECT a.tool_name FROM chat_tool_approvals a WHERE a.chat_id = c.id \
        ORDER BY a.tool_server_id, a.tool_name) AS approval_names";
+
+/// A chat list row: the chat with its sidebar flags. `unread`: changed since the user last
+/// opened it. `awaiting_approval`: its latest assistant message waits for a tool decision (the
+/// partial index on open messages finds the candidates).
+const SUMMARY_COLUMNS: &str = "(c.last_read_at IS NULL OR c.updated_at > c.last_read_at) \
+     AS unread, \
+     EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = c.id AND m.user_id = c.user_id \
+       AND m.status = 'awaiting_approval' AND m.role = 'assistant' \
+       AND NOT EXISTS (SELECT 1 FROM messages later WHERE later.chat_id = m.chat_id \
+         AND later.role = 'assistant' AND later.seq > m.seq)) AS awaiting_approval";
+
+#[derive(sqlx::FromRow)]
+struct SummaryRow {
+    #[sqlx(flatten)]
+    chat: ChatRow,
+    unread: bool,
+    awaiting_approval: bool,
+}
 
 /// A chat with its tool overrides and approvals, each as parallel arrays.
 #[derive(sqlx::FromRow)]
@@ -156,8 +174,52 @@ async fn join_rows(tx: &mut Transaction<'_, Postgres>, chat: &Chat) -> DomainRes
 
 #[async_trait]
 impl ChatRepository for PgStore {
-    async fn list(&self, _user: UserId, _query: ChatQuery) -> DomainResult<Page<ChatSummary>> {
-        pending("ChatRepository::list")
+    async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>> {
+        let sql = format!(
+            "SELECT {CHAT_COLUMNS}, {SUMMARY_COLUMNS} FROM chats c \
+             WHERE c.user_id = $1 \
+             AND ($2::uuid IS NULL OR c.project_id = $2) \
+             AND ($3::uuid IS NULL OR c.schedule_id = $3) \
+             AND ($4::boolean IS NULL OR c.pinned = $4) \
+             AND ($5::boolean IS NULL OR (c.schedule_id IS NOT NULL) = $5) \
+             AND ($6::timestamptz IS NULL OR (c.updated_at, c.id) < ($6, $7::uuid)) \
+             ORDER BY c.updated_at DESC, c.id DESC LIMIT $8"
+        );
+        let limit = query.limit as usize;
+        let rows: Vec<SummaryRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(user.uuid())
+            .bind(query.project.map(ProjectId::uuid))
+            .bind(query.schedule.map(ScheduleId::uuid))
+            .bind(query.pinned)
+            .bind(query.scheduled)
+            .bind(query.cursor.map(|cursor| cursor.updated_at))
+            .bind(query.cursor.map(|cursor| cursor.id.uuid()))
+            // One more than the page, to know whether another page follows.
+            .bind(i64::from(query.limit) + 1)
+            .fetch_all(self.pool())
+            .await
+            .map_err(failed("database.chats.list.failed"))?;
+        let more = rows.len() > limit;
+        let items = rows
+            .into_iter()
+            .take(limit)
+            .map(|row| {
+                Ok(ChatSummary {
+                    chat: Chat::try_from(row.chat)?,
+                    unread: row.unread,
+                    awaiting_approval: row.awaiting_approval,
+                })
+            })
+            .collect::<DomainResult<Vec<_>>>()?;
+        let next = if more {
+            items.last().map(|last| ChatCursor {
+                updated_at: last.chat.updated_at(),
+                id: last.chat.id(),
+            })
+        } else {
+            None
+        };
+        Ok(Page { items, next })
     }
 
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>> {
@@ -403,6 +465,42 @@ async fn touch(
     Ok(())
 }
 
+/// Inserts `message` (the next `seq`), inside `tx`.
+async fn insert(
+    tx: &mut Transaction<'_, Postgres>,
+    user: UserId,
+    message: &Message,
+    key: &'static str,
+) -> DomainResult<()> {
+    let stored = Stored::new(message);
+    sqlx::query(
+        "INSERT INTO messages (created_at, updated_at, id, user_id, chat_id, model_id, \
+         provider_id, role, status, finish_reason, context_hash, parts, provider_state, \
+         usage, error, text_content) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+    )
+    .bind(message.created_at())
+    .bind(message.updated_at())
+    .bind(message.id().uuid())
+    .bind(user.uuid())
+    .bind(message.chat_id().uuid())
+    .bind(message.model_id().map(ModelId::uuid))
+    .bind(message.provider_id().map(ProviderId::uuid))
+    .bind(message.role().as_str())
+    .bind(message.status().as_str())
+    .bind(message.finish_reason().map(|reason| reason.as_str()))
+    .bind(message.context_hash().map(|hash| hash.as_bytes().to_vec()))
+    .bind(json(stored.parts))
+    .bind(stored.provider_state.map(json))
+    .bind(stored.usage.map(json))
+    .bind(message.error())
+    .bind(message.text_content())
+    .execute(&mut **tx)
+    .await
+    .map_err(failed(key))?;
+    Ok(())
+}
+
 #[async_trait]
 impl MessageRepository for PgStore {
     async fn history(&self, user: UserId, chat: ChatId) -> DomainResult<Vec<Message>> {
@@ -421,41 +519,11 @@ impl MessageRepository for PgStore {
 
     async fn append(&self, user: UserId, message: &Message) -> DomainResult<()> {
         owned(user, message)?;
-        let stored = Stored::new(message);
-        let mut tx = self
-            .pool()
-            .begin()
-            .await
-            .map_err(failed("database.messages.append.failed"))?;
-        sqlx::query(
-            "INSERT INTO messages (created_at, updated_at, id, user_id, chat_id, model_id, \
-             provider_id, role, status, finish_reason, context_hash, parts, provider_state, \
-             usage, error, text_content) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
-        )
-        .bind(message.created_at())
-        .bind(message.updated_at())
-        .bind(message.id().uuid())
-        .bind(user.uuid())
-        .bind(message.chat_id().uuid())
-        .bind(message.model_id().map(ModelId::uuid))
-        .bind(message.provider_id().map(ProviderId::uuid))
-        .bind(message.role().as_str())
-        .bind(message.status().as_str())
-        .bind(message.finish_reason().map(|reason| reason.as_str()))
-        .bind(message.context_hash().map(|hash| hash.as_bytes().to_vec()))
-        .bind(json(stored.parts))
-        .bind(stored.provider_state.map(json))
-        .bind(stored.usage.map(json))
-        .bind(message.error())
-        .bind(message.text_content())
-        .execute(&mut *tx)
-        .await
-        .map_err(failed("database.messages.append.failed"))?;
+        let key = "database.messages.append.failed";
+        let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        insert(&mut tx, user, message, key).await?;
         touch(&mut tx, user, message.chat_id(), message.updated_at()).await?;
-        tx.commit()
-            .await
-            .map_err(failed("database.messages.append.failed"))
+        tx.commit().await.map_err(failed(key))
     }
 
     async fn update(&self, user: UserId, message: &Message) -> DomainResult<()> {
@@ -498,21 +566,54 @@ impl MessageRepository for PgStore {
 
     async fn replace_tail(
         &self,
-        _user: UserId,
-        _chat: ChatId,
-        _from: MessageId,
-        _message: &Message,
+        user: UserId,
+        chat: ChatId,
+        from: MessageId,
+        message: &Message,
     ) -> DomainResult<()> {
-        pending("MessageRepository::replace_tail")
+        owned(user, message)?;
+        let key = "database.messages.replace-tail.failed";
+        let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        // An unknown `from` matches nothing (`seq >= NULL`), so only the append happens.
+        sqlx::query(
+            "DELETE FROM messages WHERE chat_id = $1 AND user_id = $2 AND seq >= \
+             (SELECT seq FROM messages WHERE id = $3 AND chat_id = $1 AND user_id = $2)",
+        )
+        .bind(chat.uuid())
+        .bind(user.uuid())
+        .bind(from.uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed(key))?;
+        insert(&mut tx, user, message, key).await?;
+        touch(&mut tx, user, message.chat_id(), message.updated_at()).await?;
+        tx.commit().await.map_err(failed(key))
     }
 
     async fn delete_after(
         &self,
-        _user: UserId,
-        _chat: ChatId,
-        _after: MessageId,
+        user: UserId,
+        chat: ChatId,
+        after: MessageId,
     ) -> DomainResult<u64> {
-        pending("MessageRepository::delete_after")
+        let key = "database.messages.delete-after.failed";
+        let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        let deleted = sqlx::query(
+            "DELETE FROM messages WHERE chat_id = $1 AND user_id = $2 AND seq > \
+             (SELECT seq FROM messages WHERE id = $3 AND chat_id = $1 AND user_id = $2)",
+        )
+        .bind(chat.uuid())
+        .bind(user.uuid())
+        .bind(after.uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed(key))?
+        .rows_affected();
+        if deleted > 0 {
+            touch(&mut tx, user, chat, self.now()).await?;
+        }
+        tx.commit().await.map_err(failed(key))?;
+        Ok(deleted)
     }
 
     async fn decide(

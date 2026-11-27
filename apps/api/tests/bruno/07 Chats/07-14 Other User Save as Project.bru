@@ -1,0 +1,26 @@
+meta {
+  name: 07-14 Other User Save as Project
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{standaloneChatId}}/save-as-project
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/save-as-project` as user B
+
+  **This test verifies:** user B cannot turn user A's chat into a project.
+}

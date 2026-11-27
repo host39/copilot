@@ -1,0 +1,26 @@
+meta {
+  name: 07-27 Get Deleted Chat
+  type: http
+  seq: 28
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}`
+
+  **This test verifies:** a deleted chat is gone.
+}

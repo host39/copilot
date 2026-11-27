@@ -1,0 +1,40 @@
+meta {
+  name: 07-03 Update Chat
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "title": "  Bruno Chat  ",
+    "pinned": true,
+    "reasoning": null,
+    "builtinTools": ["schedules"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.title: eq "Bruno Chat"
+  res.body.data.pinned: eq true
+  res.body.data.reasoning: isNull
+  res.body.data.builtinTools[0]: eq schedules
+  res.body.data.instructions: eq "Bruno secret plan."
+}
+
+docs {
+  **Endpoint:** `PATCH /api/chats/{id}`
+
+  **This test verifies:** a rename (trimmed), pinning, and `null` clearing the reasoning level;
+  fields left out stay.
+}

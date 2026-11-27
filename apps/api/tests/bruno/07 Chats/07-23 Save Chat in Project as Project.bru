@@ -1,0 +1,26 @@
+meta {
+  name: 07-23 Save Chat in Project as Project
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/save-as-project
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 422
+  res.body.code: eq CHAT_IN_PROJECT
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/save-as-project`
+
+  **This test verifies:** a chat already in a project cannot be saved as one.
+}

@@ -1,0 +1,11 @@
+meta {
+  name: 07 Chats
+  seq: 8
+}
+
+docs {
+  `/api/chats`: chats are created, listed (filters and the cursor), changed, read, saved to a
+  project, and deleted by their owner, while user B (`otherToken`) gets `404` for user A's chats in
+  paths and A's project in queries and bodies. Bruno has no model provider, so these chats hold no
+  messages; the route tests on Postgres cover answered chats, unread flags, and edits.
+}

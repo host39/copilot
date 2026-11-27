@@ -1,0 +1,35 @@
+meta {
+  name: 07-02 List Project Chats
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/chats?projectId={{chatProjectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items[0].id: eq {{chatId}}
+  res.body.items[0].unread: eq false
+  res.body.items[0].awaitingApproval: eq false
+  res.body.next: isNull
+}
+
+tests {
+  test("lists only the project's chat", function () {
+    expect(res.body.items.length).to.equal(1);
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/chats?projectId={id}`
+
+  **This test verifies:** the project filter, the sidebar flags, and a last page without `next`.
+}

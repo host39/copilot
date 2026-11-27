@@ -1,0 +1,26 @@
+meta {
+  name: 07-12 Other User Mark Read
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/read
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/read` as user B
+
+  **This test verifies:** user B cannot change user A's read state.
+}

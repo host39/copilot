@@ -4,11 +4,12 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use copilot_contracts::{
-    ApprovedTool, ChatResponse, ChatStreamEvent, MessagePartDto, MessageResponse, ResultContent,
-    ToolOverride,
+    ApprovedTool, ChatResponse, ChatStreamEvent, ChatSummaryResponse, MessagePartDto,
+    MessageResponse, ResultContent, ToolOverride,
 };
 use copilot_core::{
-    CallId, Chat, Message, MessageId, Part, ResultContent as CoreContent, ToolServerId, TurnEvent,
+    CallId, Chat, ChatSummary, Message, MessageId, Part, ResultContent as CoreContent,
+    ToolServerId, TurnEvent,
 };
 use serde_json::Value;
 
@@ -49,6 +50,23 @@ pub fn chat(chat: &Chat) -> ChatResponse {
         pinned: chat.pinned(),
         voice_replies: chat.voice_replies(),
         last_read_at: chat.last_read_at(),
+        created_at: chat.created_at(),
+        updated_at: chat.updated_at(),
+    }
+}
+
+/// A row of the sidebar or the Scheduled list.
+pub fn summary(row: &ChatSummary) -> ChatSummaryResponse {
+    let chat = &row.chat;
+    ChatSummaryResponse {
+        id: chat.id().uuid(),
+        project_id: chat.project_id().map(|id| id.uuid()),
+        model_id: chat.model_id().map(|id| id.uuid()),
+        schedule_id: chat.schedule_id().map(|id| id.uuid()),
+        title: chat.title().to_owned(),
+        pinned: chat.pinned(),
+        unread: row.unread,
+        awaiting_approval: row.awaiting_approval,
         created_at: chat.created_at(),
         updated_at: chat.updated_at(),
     }

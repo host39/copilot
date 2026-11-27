@@ -1,0 +1,27 @@
+meta {
+  name: 07-05 List Pinned Chats
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/chats?pinned=true&scheduled=false&limit=1
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items[0].id: eq {{chatId}}
+  res.body.items[0].title: eq "Bruno Chat"
+}
+
+docs {
+  **Endpoint:** `GET /api/chats?pinned=true&scheduled=false&limit=1`
+
+  **This test verifies:** the pinned and scheduled filters combine with the page size.
+}

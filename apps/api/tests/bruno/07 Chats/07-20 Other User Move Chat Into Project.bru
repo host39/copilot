@@ -1,0 +1,32 @@
+meta {
+  name: 07-20 Other User Move Chat Into Project
+  type: http
+  seq: 21
+}
+
+patch {
+  url: {{baseUrl}}/api/chats/{{otherChatId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "projectId": "{{chatProjectId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/chats/{id}` as user B, with user A's project id in the body
+
+  **This test verifies:** user B cannot move a chat into user A's project.
+}

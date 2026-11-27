@@ -1,0 +1,32 @@
+meta {
+  name: 07-11 Other User Update Chat
+  type: http
+  seq: 12
+}
+
+patch {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "title": "Taken"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/chats/{id}` as user B
+
+  **This test verifies:** user B cannot rename user A's chat.
+}

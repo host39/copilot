@@ -1,0 +1,26 @@
+meta {
+  name: 07-16 Other User Delete Chat
+  type: http
+  seq: 17
+}
+
+delete {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `DELETE /api/chats/{id}` as user B
+
+  **This test verifies:** user B cannot delete user A's chat.
+}

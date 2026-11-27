@@ -5,9 +5,9 @@ use uuid::Uuid;
 
 use crate::{NOW, at, model, store, user};
 
-/// A schedule of `owner` on `model` (`ScheduleRepository::insert` is P2.A's), enabled with a
-/// next run time or already turned off.
-async fn schedule(store: &PgStore, owner: UserId, model: Uuid, enabled: bool) -> Uuid {
+/// A schedule of `owner` on `model` written with SQL, enabled with a next run time or already
+/// turned off.
+pub async fn schedule(store: &PgStore, owner: UserId, model: Uuid, enabled: bool) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO schedules (created_at, updated_at, next_run_at, id, user_id, model_id, \
