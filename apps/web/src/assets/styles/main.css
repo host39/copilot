@@ -96,6 +96,16 @@ body {
     @apply flex min-h-14 items-center gap-3 px-4 py-3 hover:bg-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent;
   }
 
+  /* A signed-in screen's frame outside Settings (projects, search, a chat); pages set the width. */
+  .screen {
+    @apply mx-auto w-full px-4 py-6 sm:px-8;
+  }
+
+  /* A square icon button in a toolbar or a row (menus, row actions). */
+  .icon-button {
+    @apply flex size-10 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60;
+  }
+
   .nav-item {
     @apply flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-raised aria-[current=page]:bg-raised aria-[current=page]:font-medium;
   }

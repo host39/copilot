@@ -317,13 +317,14 @@ describe("the chat screens", () => {
     ).toBe("One\n\nTwo");
   });
 
-  test("the new chat screen offers the enabled models", () => {
+  test("the new chat screen starts with the first enabled model and no project", () => {
     const html = render(path.home, [
       [["models"], [model(MODEL, "GPT"), model("0196f6a4-7c1e-7d2a-9b3c-4d5e6f708102", "Other")]],
     ]);
     expect(html).toContain("New Chat");
-    expect(html).toContain("Mock / GPT");
-    expect(html).toContain("Mock / Other");
+    expect(html).toContain("Model: </span>");
+    expect(html).toContain(">GPT</span>");
+    expect(html).toContain("No project");
   });
 
   test("without models it points to the first-run setup and the provider settings", () => {

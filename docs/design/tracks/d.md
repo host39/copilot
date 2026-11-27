@@ -18,7 +18,7 @@ Part 1: Settings (account, devices, providers and models, tool servers, users) a
 
 Part 2:
 
-- [ ] P2.D.6 Projects and files with the capacity bar.
+- [x] P2.D.6 Projects and files with the capacity bar. Request helpers `api/routes/projects.ts`, `files.ts` (list, include, move, delete, download as a blob with the token, and uploads), and the chat list, update, delete, read, save-as-project, and save-instructions helpers in `chats.ts`; query keys for projects, files, and chat lists. `/projects` lists projects (icon, pin, instructions); `/projects/new` creates one (name, one emoji, instructions, with core's rules); a project's page has the heading with Pin, Rename, and Delete, a composer that starts a chat in the project (the shared `StartChat` draft: the project's default model, else the latest chat's model, else the first enabled one, with its reasoning level), the project's chats a page at a time, and a side panel (a tab on phones) with Instructions, Files, Default model and reasoning, and Tools (servers and the built-in Schedules tools), each saving only what changed. Files: the capacity bar (included tokens against the default model's window, by core's rule: warn past 80%, blocked past 100% with the three largest included files named, a note when there is no model or no window), each file's kind, pages, size, and tokens, the Include in context switch, download, move to another project, and delete; uploads by picking or dropping several files, each with a progress bar, a warning when an upload crosses 80% or 100%, and the server's message when it fails. The model picker (`components/ModelPicker`) is a sheet with the models grouped by connection, capability icons, and the reasoning levels each model offers. Tests: `test/projects.test.tsx` (every request helper, uploads with progress through a fake `XMLHttpRequest` including errors, sign-out, network failures, and aborts, the capacity rules, file details, the upload reducer, the project forms, the model picker's rules, and the screens).
 - [ ] P2.D.7 Sidebar and chat list.
 - [ ] P2.D.8 Search.
 - [ ] P2.D.9 Non-streaming chat view.
@@ -39,4 +39,4 @@ None.
 
 ## Interface-Change Requests
 
-None.
+- `apps/web/src/api/client.ts` (frozen): an upload progress callback in `RequestOptions`, sent through an `XMLHttpRequest` transport in browsers. Until then `api/routes/files.ts` builds browser uploads with `XMLHttpRequest` itself (the configured server, the bearer token, a request id, the same `ApiError`, and the sign-out on a rejected token), and native builds upload through the client's transport without byte progress. With the change, `files.ts` keeps only the call.

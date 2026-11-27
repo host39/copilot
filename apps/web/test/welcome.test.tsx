@@ -290,7 +290,7 @@ describe("the setup screens", () => {
     const html = render(<HomePage />, { pathname: path.home, state: { modelId: OTHER } }, [
       [["models"], [model(MODEL, "First", true), model(OTHER, "Second", true)]],
     ]);
-    const options = html.match(/<option[^>]*>/g) ?? [];
-    expect(options.find((option) => option.includes('selected=""'))).toContain(OTHER);
+    expect(html).toContain(">Second</span>");
+    expect(html).not.toContain(">First</span>");
   });
 });

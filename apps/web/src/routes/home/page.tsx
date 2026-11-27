@@ -1,89 +1,78 @@
 import { useQuery } from "@tanstack/react-query";
-import { describeError } from "@web/api/errors";
-import { createChat } from "@web/api/routes/chats";
-import { fetchModels } from "@web/api/routes/models";
-import { Composer } from "@web/components/Chat/Composer";
-import { FormAlert } from "@web/components/Form/FormAlert";
+import { keys } from "@web/api/routes/keys";
+import { fetchProjects } from "@web/api/routes/projects";
+import { StartChat } from "@web/components/Chat/StartChat";
 import { PageTitle } from "@web/components/Layout/PageTitle";
-import type { ChatState } from "@web/routes/chat/page";
-import path, { link } from "@web/routes/path";
+import { projectLabel } from "@web/routes/project/forms";
 import type { StartState } from "@web/routes/welcome/setup";
-import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useId } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
 
-/** New chat: the default screen. Pick a model and send the first message. */
+/** The search parameter that puts the new chat into a project (the sidebar's `+` per project). */
+export const PROJECT_PARAM = "project";
+
+/** The new chat screen for `projectId` (`/?project=<id>`). */
+export function newChatLink(projectId: string): string {
+  return `/?${new URLSearchParams({ [PROJECT_PARAM]: projectId })}`;
+}
+
+/**
+ * New chat: the default screen. The draft holds the project, the model, and the reasoning level;
+ * the first message creates the chat.
+ */
 export default function HomePage() {
-  const models = useQuery({
-    queryKey: ["models"],
-    queryFn: ({ signal }) => fetchModels(signal),
+  const [params, setParams] = useSearchParams();
+  const projectId = params.get(PROJECT_PARAM) ?? "";
+  const projects = useQuery({
+    queryKey: keys.projectList({}),
+    queryFn: ({ signal }) => fetchProjects({}, signal),
   });
   // The first-run setup opens this screen with the model it turned on.
   const setup = useLocation().state as StartState | null;
-  const [chosen, setChosen] = useState(setup?.modelId ?? "");
-  const [alert, setAlert] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const navigate = useNavigate();
-  const list = models.data ?? [];
-  const modelId = list.some((model) => model.id === chosen) ? chosen : (list[0]?.id ?? "");
+  const project = projects.data?.find((item) => item.id === projectId) ?? null;
+  const id = useId();
 
-  async function start(text: string): Promise<boolean> {
-    setBusy(true);
-    setAlert(null);
-    try {
-      const chat = await createChat({ modelId });
-      const state: ChatState = { text };
-      navigate(link.chat(chat.id), { state });
-      return true;
-    } catch (error) {
-      setAlert(describeError(error).message);
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }
+  const choose = (
+    <div className="flex items-center gap-2">
+      <label htmlFor={id} className="sr-only">
+        Project
+      </label>
+      <select
+        id={id}
+        value={project?.id ?? ""}
+        disabled={!projects.isSuccess}
+        onChange={(event) =>
+          setParams(event.target.value ? { [PROJECT_PARAM]: event.target.value } : {}, {
+            replace: true,
+          })
+        }
+        className="min-h-10 max-w-56 truncate rounded-lg border border-line bg-canvas px-2 text-sm"
+      >
+        <option value="">No project</option>
+        {(projects.data ?? []).map((item) => (
+          <option key={item.id} value={item.id}>
+            {projectLabel(item)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 
   return (
-    <section className="mx-auto flex h-full w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-8">
+    <section className="screen flex h-full max-w-3xl flex-col gap-6">
       <PageTitle page="New Chat" />
-      <h1 className="text-xl font-semibold tracking-tight">New Chat</h1>
-      <FormAlert>
-        {alert ?? (models.isError ? describeError(models.error).message : null)}
-      </FormAlert>
-      {models.isSuccess && list.length === 0 ? (
-        <p className="text-sm text-muted">
-          No models yet.{" "}
-          <Link to={path.welcome} className="text-link">
-            Add a provider
-          </Link>{" "}
-          or turn on models in{" "}
-          <Link to={path.providers} className="text-link">
-            Settings
-          </Link>{" "}
-          to start a chat.
-        </p>
-      ) : (
-        <div className="mt-auto space-y-3">
-          <div>
-            <label className="field-label" htmlFor="model">
-              Model
-            </label>
-            <select
-              id="model"
-              className="field-input"
-              value={modelId}
-              disabled={!models.isSuccess}
-              onChange={(event) => setChosen(event.target.value)}
-            >
-              {list.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {`${model.providerName} / ${model.displayName}`}
-                </option>
-              ))}
-            </select>
-          </div>
-          <Composer onSend={start} busy={busy} disabled={modelId === ""} />
-        </div>
-      )}
+      <h1 className="text-xl font-semibold tracking-tight">
+        {project ? `New Chat in ${project.name}` : "New Chat"}
+      </h1>
+      <div className="mt-auto">
+        <StartChat
+          key={project?.id ?? "standalone"}
+          project={project}
+          preferred={setup?.modelId}
+          placeholder={project ? `Start a chat in ${project.name}` : undefined}
+          extra={choose}
+        />
+      </div>
     </section>
   );
 }
