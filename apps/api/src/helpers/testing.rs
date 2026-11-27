@@ -268,7 +268,7 @@ pub async fn model(app: &Router, token: &str, server: &wiremock::MockServer) -> 
         .to_owned()
 }
 
-/// A tool server of `user` written with SQL (its routes come with a later step); its id.
+/// A tool server of `user` written with SQL, without credentials or tools; its id.
 pub async fn tool_server(db: &DbPool, user: &str, slug: &str) -> String {
     let id = uuid::Uuid::now_v7();
     sqlx::query(

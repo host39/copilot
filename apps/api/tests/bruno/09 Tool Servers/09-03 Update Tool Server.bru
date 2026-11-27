@@ -1,0 +1,38 @@
+meta {
+  name: 09-03 Update Tool Server
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Docs Renamed",
+    "approval": "auto",
+    "enabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.name: eq "Bruno Docs Renamed"
+  res.body.data.approval: eq auto
+  res.body.data.enabled: eq false
+  res.body.data.slug: eq brunodocs
+  res.body.data.credentials: eq set
+}
+
+docs {
+  **Endpoint:** `PATCH /api/tool-servers/{id}`
+
+  **This test verifies:** settings change; the slug and the credentials stay.
+}

@@ -1,0 +1,12 @@
+meta {
+  name: 09 Tool Servers
+  seq: 10
+}
+
+docs {
+  `/api/tool-servers`: a server is registered (its credentials never come back), listed,
+  changed, moved to a new URL (which drops the credentials and asks for a review), reviewed, and
+  deleted, which takes it out of the project that enabled it. User B (`otherToken`) gets `404` for
+  user A's server in paths and in bodies. Without a reachable MCP server Bruno cannot list tools,
+  so tool modes are checked by the route tests on Postgres.
+}

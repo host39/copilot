@@ -1,0 +1,26 @@
+meta {
+  name: 09-18 Get Deleted Tool Server
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/tool-servers/{id}`
+
+  **This test verifies:** a deleted server is gone.
+}

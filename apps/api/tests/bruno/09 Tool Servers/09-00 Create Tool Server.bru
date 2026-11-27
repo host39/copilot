@@ -1,0 +1,55 @@
+meta {
+  name: 09-00 Create Tool Server
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Docs",
+    "url": "https://mcp.invalid/mcp",
+    "bearer": "bruno-secret-token",
+    "headers": { "X-Team": "bruno-secret-team" }
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("toolServerId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.name: eq "Bruno Docs"
+  res.body.data.slug: eq brunodocs
+  res.body.data.approval: eq ask
+  res.body.data.credentials: eq set
+  res.body.data.tools: isNull
+  res.body.data.reviewRequired: eq false
+  res.body.data.enabled: eq true
+}
+
+tests {
+  test("never returns the credentials", function () {
+    expect(JSON.stringify(res.body)).to.not.include("bruno-secret");
+  });
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers`
+
+  **This test verifies:** a server is registered with the slug derived from its name, asking by
+  default, without tools until a test; the token and header values never come back
+  (`toolServerId`).
+}

@@ -1,0 +1,33 @@
+meta {
+  name: 09-02 List Tool Servers
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/tool-servers
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+tests {
+  test("lists the server with its credentials set", function () {
+    const server = res.body.items.find((item) => item.id === bru.getVar("toolServerId"));
+    expect(server.credentials).to.equal("set");
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/tool-servers`
+
+  **This test verifies:** the list holds the server.
+}

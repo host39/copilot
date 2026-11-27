@@ -1,0 +1,35 @@
+meta {
+  name: 09-01 Taken Slug
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Other",
+    "slug": "brunodocs",
+    "url": "https://mcp.invalid/other"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq slug
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers`
+
+  **This test verifies:** a slug the user already has is refused.
+}

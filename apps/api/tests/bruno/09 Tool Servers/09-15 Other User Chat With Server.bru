@@ -1,0 +1,32 @@
+meta {
+  name: 09-15 Other User Chat With Server
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/chats
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "toolOverrides": [{ "serverId": "{{toolServerId}}", "enabled": true }]
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats` as user B, with user A's server id in the body
+
+  **This test verifies:** user B cannot add user A's server to a chat.
+}

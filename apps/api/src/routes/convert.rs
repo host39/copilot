@@ -66,6 +66,8 @@ both_ways!(
     dto::Preset,
     [OpenAi, Anthropic, Gemini, OpenRouter, Ollama, Custom]
 );
+both_ways!(core::ApprovalMode, dto::ApprovalMode, [Ask, Auto]);
+both_ways!(core::ToolMode, dto::ToolMode, [Off, Ask, Auto]);
 out!(core::KeyState, dto::KeyState, [Missing, Set, Unreadable]);
 out!(core::Role, dto::Role, [User, Assistant, Tool]);
 out!(
@@ -237,5 +239,17 @@ mod tests {
             serde_json::to_value(core::Capability::AudioIn.to_dto()).unwrap(),
             "audioIn"
         );
+        for mode in [
+            core::ToolMode::Off,
+            core::ToolMode::Ask,
+            core::ToolMode::Auto,
+        ] {
+            assert_eq!(mode.to_dto().to_core(), mode);
+            assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
+        }
+        for mode in [core::ApprovalMode::Ask, core::ApprovalMode::Auto] {
+            assert_eq!(mode.to_dto().to_core(), mode);
+            assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
+        }
     }
 }

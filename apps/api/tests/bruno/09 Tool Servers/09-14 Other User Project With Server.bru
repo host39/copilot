@@ -1,0 +1,33 @@
+meta {
+  name: 09-14 Other User Project With Server
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/api/projects
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "name": "Taken",
+    "toolServerIds": ["{{toolServerId}}"]
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/projects` as user B, with user A's server id in the body
+
+  **This test verifies:** user B cannot enable user A's server in a project.
+}

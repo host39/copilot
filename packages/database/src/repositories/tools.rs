@@ -1,12 +1,14 @@
-//! `ToolServerRepository` on Postgres (`tool_servers`). The walking skeleton reads servers and
-//! inserts them; roadmap step P2.A writes `update`, `delete`, and `save_listing`.
+//! `ToolServerRepository` on Postgres (`tool_servers`). Deleting a server cascades to its
+//! `project_tool_servers`, `chat_tool_servers`, and `chat_tool_approvals` rows. Only the user's
+//! review clears `tools_review_required`: a listing saved while a settings write was in flight
+//! keeps the flag it set, so a changed tool list always asks until the user has seen it.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    BaseUrl, DomainError, DomainResult, Slug, ToolListing, ToolServer, ToolServerId,
+    BaseUrl, DomainError, DomainResult, Slug, ToolCache, ToolListing, ToolServer, ToolServerId,
     ToolServerParts, ToolServerRepository, UserId,
 };
 use serde_json::Value;
@@ -14,7 +16,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::records::{ToolCacheRecord, modes, to_modes};
-use crate::repositories::store::{PgStore, failed, invalid, json, pending, record, text};
+use crate::repositories::store::{PgStore, failed, invalid, json, record, text};
 
 const COLUMNS: &str = "created_at, updated_at, tools_fetched_at, id, user_id, enabled, \
      tools_review_required, name, slug, url, approval, headers_sealed, protocol_version, \
@@ -129,22 +131,77 @@ impl ToolServerRepository for PgStore {
         Ok(())
     }
 
-    async fn update(&self, _server: &ToolServer) -> DomainResult<()> {
-        pending("ToolServerRepository::update")
+    async fn update(&self, server: &ToolServer) -> DomainResult<()> {
+        // A listing saved since `server` was read (its `tools_fetched_at` moved) wins: it keeps
+        // its review flag, and its protocol version while the URL stays the same.
+        sqlx::query(
+            "UPDATE tool_servers SET updated_at = $3, enabled = $4, name = $5, url = $6, \
+             approval = $7, headers_sealed = $8, tool_modes = $9, \
+             tools_review_required = $10 \
+               OR (tools_review_required AND tools_fetched_at IS DISTINCT FROM $11), \
+             protocol_version = CASE \
+               WHEN tools_fetched_at IS DISTINCT FROM $11 AND url = $6 THEN protocol_version \
+               ELSE $12 END \
+             WHERE id = $1 AND user_id = $2",
+        )
+        .bind(server.id().uuid())
+        .bind(server.user_id().uuid())
+        .bind(server.updated_at())
+        .bind(server.enabled())
+        .bind(server.name())
+        .bind(server.url().as_str())
+        .bind(server.approval().as_str())
+        .bind(server.headers_sealed())
+        .bind(json(modes(server.tool_modes())))
+        .bind(server.review_required())
+        .bind(server.cache().map(|cache| cache.fetched_at))
+        .bind(server.protocol_version())
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.tool-servers.update.failed"))?;
+        Ok(())
     }
 
-    async fn delete(&self, _user: UserId, _id: ToolServerId) -> DomainResult<bool> {
-        pending("ToolServerRepository::delete")
+    async fn delete(&self, user: UserId, id: ToolServerId) -> DomainResult<bool> {
+        let deleted = sqlx::query("DELETE FROM tool_servers WHERE id = $1 AND user_id = $2")
+            .bind(id.uuid())
+            .bind(user.uuid())
+            .execute(self.pool())
+            .await
+            .map_err(failed("database.tool-servers.delete.failed"))?
+            .rows_affected();
+        Ok(deleted > 0)
     }
 
     async fn save_listing(
         &self,
-        _user: UserId,
-        _id: ToolServerId,
-        _listing: &ToolListing,
-        _review_required: bool,
-        _at: DateTime<Utc>,
+        user: UserId,
+        id: ToolServerId,
+        listing: &ToolListing,
+        review_required: bool,
+        at: DateTime<Utc>,
     ) -> DomainResult<()> {
-        pending("ToolServerRepository::save_listing")
+        let record = ToolCacheRecord::from(&ToolCache {
+            tools: listing.tools.clone(),
+            ttl: listing.ttl,
+            fetched_at: at,
+        });
+        // Never clears the review flag: a URL change or another listing may have set it since
+        // the caller read the server.
+        sqlx::query(
+            "UPDATE tool_servers SET tools_cached = $3, tools_fetched_at = $4, \
+             protocol_version = $5, tools_review_required = tools_review_required OR $6 \
+             WHERE id = $1 AND user_id = $2",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .bind(json(record))
+        .bind(at)
+        .bind(&listing.protocol_version)
+        .bind(review_required)
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.tool-servers.save-listing.failed"))?;
+        Ok(())
     }
 }

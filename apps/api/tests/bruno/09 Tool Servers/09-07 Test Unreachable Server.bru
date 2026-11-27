@@ -1,0 +1,27 @@
+meta {
+  name: 09-07 Test Unreachable Server
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}/test
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 502
+  res.body.code: isString
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/test`
+
+  **This test verifies:** a test that cannot list the tools is a `502` with the error body (no MCP
+  adapter is wired yet, and `.invalid` hosts never resolve).
+}

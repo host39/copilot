@@ -1,0 +1,26 @@
+meta {
+  name: 09-08 Other User Get Tool Server
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/tool-servers/{id}` as user B
+
+  **This test verifies:** user B gets `404` for user A's server.
+}

@@ -1,0 +1,32 @@
+meta {
+  name: 09-09 Other User Update Tool Server
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "url": "https://attacker.invalid/mcp"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/tool-servers/{id}` as user B
+
+  **This test verifies:** user B cannot change user A's server or its credentials.
+}

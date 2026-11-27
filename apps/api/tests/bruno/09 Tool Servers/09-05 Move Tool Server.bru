@@ -1,0 +1,36 @@
+meta {
+  name: 09-05 Move Tool Server
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "url": "https://other.invalid/mcp"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.url: eq https://other.invalid/mcp
+  res.body.data.credentials: eq missing
+  res.body.data.reviewRequired: eq true
+  res.body.data.protocolVersion: isNull
+}
+
+docs {
+  **Endpoint:** `PATCH /api/tool-servers/{id}`
+
+  **This test verifies:** a URL on another origin drops the credentials, so a token never reaches
+  a host it was not entered for, and every tool asks until a review.
+}

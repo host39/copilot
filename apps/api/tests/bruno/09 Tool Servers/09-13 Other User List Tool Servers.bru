@@ -1,0 +1,33 @@
+meta {
+  name: 09-13 Other User List Tool Servers
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/api/tool-servers
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+tests {
+  test("never lists user A's server", function () {
+    const ids = res.body.items.map((server) => server.id);
+    expect(ids).to.not.include(bru.getVar("toolServerId"));
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/tool-servers` as user B
+
+  **This test verifies:** user B's list holds none of user A's servers.
+}

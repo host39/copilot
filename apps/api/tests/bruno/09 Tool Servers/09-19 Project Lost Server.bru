@@ -1,0 +1,26 @@
+meta {
+  name: 09-19 Project Lost Server
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/api/projects/{{toolProjectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.toolServerIds: isEmpty
+}
+
+docs {
+  **Endpoint:** `GET /api/projects/{id}`
+
+  **This test verifies:** the project no longer enables the deleted server.
+}

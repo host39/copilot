@@ -1,0 +1,26 @@
+meta {
+  name: 09-10 Other User Test Tool Server
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}/test
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/test` as user B
+
+  **This test verifies:** user B cannot make user A's server connect.
+}

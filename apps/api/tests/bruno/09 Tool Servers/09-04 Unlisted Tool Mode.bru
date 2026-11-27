@@ -1,0 +1,33 @@
+meta {
+  name: 09-04 Unlisted Tool Mode
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "toolModes": { "search": "auto" }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq toolModes
+}
+
+docs {
+  **Endpoint:** `PATCH /api/tool-servers/{id}`
+
+  **This test verifies:** a mode for a tool the server never listed is refused.
+}

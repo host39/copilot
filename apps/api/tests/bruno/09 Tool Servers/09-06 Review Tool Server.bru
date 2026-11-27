@@ -1,0 +1,26 @@
+meta {
+  name: 09-06 Review Tool Server
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{toolServerId}}/review
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.reviewRequired: eq false
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/review`
+
+  **This test verifies:** the owner accepts the change.
+}
