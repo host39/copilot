@@ -1,11 +1,14 @@
-//! LLM provider adapters: the OpenAI-compatible Chat Completions and Anthropic Messages wire
-//! protocols over `reqwest`, with SSE parsing by `sse-stream`. [`Gateway`] implements the
+//! LLM provider adapters: the OpenAI-compatible Chat Completions and Responses APIs and the
+//! Anthropic Messages wire protocol over `reqwest`, with SSE parsing by `sse-stream`. [`Gateway`] implements the
 //! `LlmGateway` port of `copilot-core`, which roadmap step P1.3 froze.
 //!
-//! Status: OpenAI-compatible connections stream text, reasoning (`reasoning`,
+//! Status: OpenAI-compatible connections on Chat Completions stream text, reasoning (`reasoning`,
 //! `reasoning_content`, OpenRouter `reasoning_details`), tool calls, and spoken replies; send
 //! tools, tool results, images, PDFs, and `input_audio`; replay provider state per dialect; and
-//! list models with what the provider reports. Anthropic connections stream text, adaptive
+//! list models with what the provider reports. Connections on the Responses API (`store: false`)
+//! stream text, reasoning summaries (and raw reasoning text from servers that send it), function
+//! calls, and refusals; send tools, tool results with images, images, and PDFs; and replay an
+//! answer's output items, encrypted reasoning included. Anthropic connections stream text, adaptive
 //! thinking (summarized), and tool calls; send tools, tool results, images, and PDFs with cache
 //! breakpoints; replay the answer's content blocks (thinking signatures and `redacted_thinking`
 //! included); report refusals with their `stop_details`; and list models with their reported
@@ -30,6 +33,7 @@ mod anthropic;
 mod gateway;
 mod http;
 mod openai;
+mod responses;
 mod schema;
 mod sse;
 

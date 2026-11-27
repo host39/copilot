@@ -19,6 +19,8 @@ pub mod cursor;
 pub(crate) mod flows;
 
 #[cfg(test)]
+mod responses;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 pub(crate) mod tools;

@@ -164,7 +164,7 @@ request POST /auth/register \
   "{\"username\":\"phone\",\"password\":\"$PASSWORD\",\"displayName\":\"Phone\",\"setupToken\":\"$SETUP_TOKEN\"}"
 token="$(jq -er .data.token <<<"$body")"
 request POST /providers \
-  "{\"kind\":\"openai\",\"preset\":\"openai\",\"name\":\"Fake OpenAI\",\"baseUrl\":\"$FAKE/v1\",\"apiKey\":\"$FAKE_KEY\"}"
+  "{\"kind\":\"openai\",\"preset\":\"openai\",\"api\":\"chat_completions\",\"name\":\"Fake OpenAI\",\"baseUrl\":\"$FAKE/v1\",\"apiKey\":\"$FAKE_KEY\"}"
 provider="$(jq -er .data.id <<<"$body")"
 request POST "/providers/$provider/refresh"
 request GET "/providers/$provider/models"

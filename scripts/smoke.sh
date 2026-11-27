@@ -218,14 +218,16 @@ expect 201 "register with the setup token"
 token="$(field .data.token)"
 pass "registered the administrator with the setup token"
 
-# connect <kind> <preset> <name> <base URL>: adds a connection, refreshes it, enables
-# fake-chat, and sets $model to fake-chat's id.
+# connect <kind> <preset> <name> <base URL> [api]: adds a connection (on `api` when given),
+# refreshes it, enables fake-chat, and sets $model to fake-chat's id.
 model=""
 connect() {
-  local kind="$1" preset="$2" name="$3" base="$4" provider
+  local kind="$1" preset="$2" name="$3" base="$4" api="${5:-}" provider choice=""
+  [[ -n "$api" ]] && choice=",\"api\":\"$api\""
   request POST /providers \
-    "{\"kind\":\"$kind\",\"preset\":\"$preset\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"}"
+    "{\"kind\":\"$kind\",\"preset\":\"$preset\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"$choice}"
   expect 201 "add the $kind connection"
+  [[ -z "$api" || "$(field .data.api)" == "$api" ]] || fail "the connection should use $api: $body"
   provider="$(field .data.id)"
   request POST "/providers/$provider/refresh"
   expect 200 "refresh the $kind models"
@@ -277,9 +279,9 @@ chat() {
 
 # --- 2. OpenAI-compatible ---------------------------------------------------------------------
 
-# The `openai` preset with the fake's base URL, so Copilot asks for streamed usage
-# (`stream_options.include_usage`) and the fake sends it, as OpenAI does.
-connect openai openai "Fake OpenAI" "$FAKE/v1"
+# The `openai` preset with the fake's base URL on Chat Completions, so Copilot asks for streamed
+# usage (`stream_options.include_usage`) and the fake sends it, as OpenAI does.
+connect openai openai "Fake OpenAI" "$FAKE/v1" chat_completions
 openai_model="$model"
 chat openai
 
