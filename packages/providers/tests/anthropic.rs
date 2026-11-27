@@ -25,6 +25,7 @@ fn provider(base: &str, preset: Preset, key: Option<&str>) -> ProviderTarget {
         provider_id: ProviderId::generate(),
         kind: ProviderKind::Anthropic,
         preset,
+        api: None,
         base_url: BaseUrl::parse(base, NetworkScope::Private).expect("a loopback URL"),
         api_key: key.map(Secret::new),
         network: NetworkScope::Private,

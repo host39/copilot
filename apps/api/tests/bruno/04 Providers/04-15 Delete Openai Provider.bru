@@ -1,0 +1,26 @@
+meta {
+  name: 04-15 Delete Openai Provider
+  type: http
+  seq: 16
+}
+
+delete {
+  url: {{baseUrl}}/api/providers/{{openaiProviderId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/providers/{id}`
+
+  **This test verifies:** the `openai` preset connection of the previous request is deleted again,
+  so later folders see only their own connections.
+}

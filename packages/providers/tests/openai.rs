@@ -5,9 +5,9 @@
 use bytes::Bytes;
 use copilot_core::{
     AudioOut, BaseUrl, CallId, Dialect, DomainResult, FinishReason, LlmEvent, LlmGateway,
-    LlmMessage, LlmPart, LlmRequest, ModelTarget, NetworkScope, Preset, ProviderId, ProviderKind,
-    ProviderTarget, ReasoningLevel, Refusal, RemoteModel, ReportedCapabilities, Role, Secret,
-    ToolAlias, ToolContent, ToolSpec, Usage,
+    LlmMessage, LlmPart, LlmRequest, ModelTarget, NetworkScope, OpenAiApi, Preset, ProviderId,
+    ProviderKind, ProviderTarget, ReasoningLevel, Refusal, RemoteModel, ReportedCapabilities, Role,
+    Secret, ToolAlias, ToolContent, ToolSpec, Usage,
 };
 use copilot_providers::{Gateway, UNSUPPORTED};
 use copilot_security::{Purpose, clients};
@@ -27,6 +27,7 @@ fn provider(server: &MockServer, preset: Preset, key: Option<&str>) -> ProviderT
         provider_id: ProviderId::generate(),
         kind: ProviderKind::OpenAi,
         preset,
+        api: Some(OpenAiApi::ChatCompletions),
         base_url: BaseUrl::parse(&format!("{}/v1", server.uri()), NetworkScope::Private)
             .expect("a loopback URL"),
         api_key: key.map(Secret::new),

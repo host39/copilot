@@ -33,7 +33,8 @@ pub struct ModelView {
     pub capabilities: Capabilities,
     /// Flags the UI shows without a toggle.
     pub locks: Locks,
-    /// The `openai` preset sends `reasoning_effort: none` whenever tools are on.
+    /// The `openai` preset on Chat Completions sends `reasoning_effort: none` whenever tools are
+    /// on.
     pub reasoning_off_with_tools: bool,
 }
 
@@ -44,6 +45,7 @@ impl ModelView {
             locks: model.locks(provider),
             reasoning_off_with_tools: reasoning_off_with_tools(
                 provider.preset(),
+                provider.api(),
                 model.remote_id(),
             ),
             provider_name: provider.name().to_owned(),
@@ -265,6 +267,7 @@ mod tests {
                 NewProvider {
                     kind,
                     preset,
+                    api: None,
                     name: name.to_owned(),
                     base_url: match preset {
                         Preset::Custom | Preset::Ollama => {
@@ -388,9 +391,27 @@ mod tests {
             vec![remote_model("gpt-5.6-terra"), remote_model("gpt-6.1-sol")],
         )
         .await;
+        // The `openai` preset starts on the Responses API: tools with reasoning, no audio.
+        let terra = model(&f, &caller, &openai, "gpt-5.6-terra").await;
+        assert!(!terra.reasoning_off_with_tools);
+        assert!(terra.capabilities.tools);
+        assert!(terra.locks.contains(Capability::AudioIn));
+        let sol = model(&f, &caller, &openai, "gpt-6.1-sol").await;
+        assert!(!sol.locks.contains(Capability::Tools));
+        assert!(sol.capabilities.tools);
+
+        let changes = ProviderUpdate {
+            api: Some(crate::domains::provider::values::OpenAiApi::ChatCompletions),
+            ..ProviderUpdate::default()
+        };
+        f.providers
+            .update(&caller, openai.id(), changes)
+            .await
+            .unwrap();
         let terra = model(&f, &caller, &openai, "gpt-5.6-terra").await;
         assert!(terra.reasoning_off_with_tools);
         assert!(terra.capabilities.tools);
+        assert!(!terra.locks.contains(Capability::AudioIn));
         let sol = model(&f, &caller, &openai, "gpt-6.1-sol").await;
         assert!(sol.locks.contains(Capability::Tools));
         assert!(!sol.capabilities.tools);

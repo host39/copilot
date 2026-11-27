@@ -26,14 +26,15 @@ use copilot_contracts::{
     Decision, DecisionScope, DecisionsRequest, DetailsResponse, ErrorResponse, FileResponse,
     FinishReason, HealthResponse, KeyState, ListResponse, MessagePartDto, MessageResponse,
     MessageStatus, ModelResponse, MoveFileRequest, OnAsk, PageResponse, PartKind, Preset,
-    ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderDetailsResponse,
-    ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse, ReasoningLevel, RefreshResponse,
-    Refusal, ResultContent, Role, RunStatus, ScheduleListQuery, SchedulePreviewRequest,
-    SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse, SearchHitResponse, SearchQuery,
-    SendMessageRequest, ServerTool, SettingsResponse, StreamQuery, ToolChanges, ToolMode,
-    ToolOverride, ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest,
-    UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest,
-    UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
+    ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderApi,
+    ProviderDetailsResponse, ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse,
+    ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role, RunStatus, ScheduleListQuery,
+    SchedulePreviewRequest, SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse,
+    SearchHitResponse, SearchQuery, SendMessageRequest, ServerTool, SettingsResponse, StreamQuery,
+    ToolChanges, ToolMode, ToolOverride, ToolServerResponse, ToolStatus, ToolTestResponse,
+    UpdateChatRequest, UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest,
+    UpdateProviderRequest, UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest,
+    Usage, UserEvent,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -208,6 +209,7 @@ fn provider() -> ProviderResponse {
         id: id(1),
         kind: ProviderKind::OpenAi,
         preset: Preset::OpenRouter,
+        api: Some(ProviderApi::ChatCompletions),
         name: "OpenRouter".to_owned(),
         base_url: "https://openrouter.ai/api/v1".to_owned(),
         enabled: true,
@@ -221,6 +223,10 @@ fn providers(fixtures: &mut Fixtures) {
     fixtures.types(
         "ProviderKind",
         &[ProviderKind::OpenAi, ProviderKind::Anthropic],
+    );
+    fixtures.types(
+        "ProviderApi",
+        &[ProviderApi::ChatCompletions, ProviderApi::Responses],
     );
     fixtures.types(
         "Preset",
@@ -248,7 +254,15 @@ fn providers(fixtures: &mut Fixtures) {
         unavailable: 0,
         enabled: 2,
     };
-    fixtures.types("ProviderResponse", &[provider()]);
+    let claude = ProviderResponse {
+        kind: ProviderKind::Anthropic,
+        preset: Preset::Anthropic,
+        api: None,
+        name: "Anthropic".to_owned(),
+        base_url: "https://api.anthropic.com".to_owned(),
+        ..provider()
+    };
+    fixtures.types("ProviderResponse", &[provider(), claude]);
     fixtures.types("ProviderUsage", &[usage]);
     fixtures.types("ProviderDetailsResponse", std::slice::from_ref(&details));
     fixtures.types("RefreshResponse", &[refresh]);
@@ -258,6 +272,7 @@ fn providers(fixtures: &mut Fixtures) {
             CreateProviderRequest {
                 kind: ProviderKind::OpenAi,
                 preset: Preset::Custom,
+                api: Some(ProviderApi::Responses),
                 name: "Local".to_owned(),
                 base_url: Some("http://192.168.1.20:8000/v1".to_owned()),
                 api_key: Some("sk-sample".to_owned()),
@@ -265,6 +280,7 @@ fn providers(fixtures: &mut Fixtures) {
             CreateProviderRequest {
                 kind: ProviderKind::Anthropic,
                 preset: Preset::Anthropic,
+                api: None,
                 name: "Anthropic".to_owned(),
                 base_url: None,
                 api_key: None,
@@ -276,6 +292,7 @@ fn providers(fixtures: &mut Fixtures) {
         &[
             UpdateProviderRequest {
                 name: Some("Renamed".to_owned()),
+                api: Some(ProviderApi::ChatCompletions),
                 base_url: Some("https://api.example.com/v1".to_owned()),
                 api_key: Some("sk-new".to_owned()),
                 enabled: Some(false),

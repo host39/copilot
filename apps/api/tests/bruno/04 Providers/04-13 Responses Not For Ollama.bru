@@ -1,0 +1,38 @@
+meta {
+  name: 04-13 Responses Not For Ollama
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/providers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "kind": "openai",
+    "preset": "ollama",
+    "api": "responses",
+    "name": "Bruno Ollama",
+    "baseUrl": "https://ollama.example.com/v1"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq api
+}
+
+docs {
+  **Endpoint:** `POST /api/providers`
+
+  **This test verifies:** only the `openai` and `custom` presets may use the Responses API; any
+  other preset is refused with the failing field `api`, and nothing is created.
+}

@@ -152,6 +152,12 @@ When generated contract files conflict, rerun `make contracts`; never merge them
   - [x] Mobile: a headless Chromium (Playwright) test at a 390x844 phone viewport against the server and the fake model server: sign in, the drawer, a streamed answer, an approved tool card, and closing a dialog the way Android's back does.
   - Owner parts (not ticked by agents): the P3.4 live checks (a Gemini 3 or 4 two-turn tool loop and a WAV clip; a native adapter only if that fails), the P5.4 device checklist on Linux and a phone, the Android `applicationId`, keystore, and its four secrets, a `main` branch as the default branch, the `v0.1.0` tag (cloud sessions cannot push tags), making the `ghcr.io/host39/copilot` package public once, and the lib-rustauth `v0.1.0` tag on GitHub (then the pin switches to `tag = "v0.1.0"`).
 
+## Phase 7: After v0.1
+
+Steps after the v0.1 feature set, each a whole feature with its own tests, docs, and CHANGELOG entry. Two agents may work on Phase 7 steps at once on the same branch; each step keeps a tracks file.
+
+- [ ] P7.1 OpenAI Responses API adapter in `copilot-providers` (tool calling and reasoning summaries on OpenAI's newest models), with a per-connection API choice (`providers.api`), the Responses wire format in `tools/fake-llm`, and a Responses connection in `scripts/smoke.sh`: [`tracks/p7-1.md`](./tracks/p7-1.md).
+
 ## Notes for the Developer
 
 - **Migration policy** (matches AGENTS.md, ADR-002, and `.claude/settings.json`): assistants may write migrations and run `make migrate`. Agents verify schema work on CI's fresh database and on `#[sqlx::test]` databases, never by waiting for the developer.

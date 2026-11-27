@@ -3,6 +3,7 @@
 // `packages/contracts/src/` pin, with timestamps as chrono writes them.
 
 import {
+  createProviderRequestSchema,
   createToolServerRequestSchema,
   fileBodySchema,
   modelListBodySchema,
@@ -13,6 +14,7 @@ import {
   toolServerBodySchema,
   updateModelRequestSchema,
   updateProjectRequestSchema,
+  updateProviderRequestSchema,
   updateToolServerRequestSchema,
 } from "@contracts/index";
 import { describe, expect, test } from "@rstest/core";
@@ -43,6 +45,7 @@ describe("responses", () => {
         id: ID,
         kind: "openai",
         preset: "openrouter",
+        api: "chat_completions",
         name: "OpenRouter",
         baseUrl: "https://openrouter.ai/api/v1",
         enabled: true,
@@ -53,7 +56,30 @@ describe("responses", () => {
       },
     });
     expect(data.key).toBe("unreadable");
+    expect(data.api).toBe("chat_completions");
     expect(data.usage.chats).toBe(3);
+  });
+
+  test("an OpenAI connection names its API; an Anthropic one has none", () => {
+    expect(
+      createProviderRequestSchema.parse({
+        kind: "openai",
+        preset: "custom",
+        api: "responses",
+        name: "G",
+      }).api
+    ).toBe("responses");
+    expect(() =>
+      createProviderRequestSchema.parse({
+        kind: "openai",
+        preset: "openai",
+        api: "completions",
+        name: "O",
+      })
+    ).toThrow();
+    expect(updateProviderRequestSchema.parse({ api: "chat_completions" }).api).toBe(
+      "chat_completions"
+    );
   });
 
   test("models with locks and overrides", () => {

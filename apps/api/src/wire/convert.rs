@@ -62,6 +62,11 @@ both_ways!(
 both_ways!(core::BuiltinTool, dto::BuiltinTool, [Schedules]);
 both_ways!(core::ProviderKind, dto::ProviderKind, [OpenAi, Anthropic]);
 both_ways!(
+    core::OpenAiApi,
+    dto::ProviderApi,
+    [ChatCompletions, Responses]
+);
+both_ways!(
     core::Preset,
     dto::Preset,
     [OpenAi, Anthropic, Gemini, OpenRouter, Ollama, Custom]
@@ -219,6 +224,14 @@ impl ToCore for dto::CapabilityOverrides {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_apis_keep_their_names_on_the_wire() {
+        for api in core::OpenAiApi::ALL {
+            assert_eq!(api.to_dto().to_core(), api);
+            assert_eq!(serde_json::to_value(api.to_dto()).unwrap(), api.as_str());
+        }
+    }
 
     #[test]
     fn enums_keep_their_meaning_on_the_wire() {

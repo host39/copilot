@@ -62,8 +62,8 @@ pub use crate::project::{
     UpdateProjectRequest,
 };
 pub use crate::provider::{
-    CreateProviderRequest, Preset, ProviderDetailsResponse, ProviderKind, ProviderResponse,
-    ProviderUsage, RefreshResponse, UpdateProviderRequest,
+    CreateProviderRequest, Preset, ProviderApi, ProviderDetailsResponse, ProviderKind,
+    ProviderResponse, ProviderUsage, RefreshResponse, UpdateProviderRequest,
 };
 pub use crate::schedule::{
     CreateScheduleRequest, CreatedBy, OnAsk, RunStatus, ScheduleListQuery, SchedulePreviewRequest,

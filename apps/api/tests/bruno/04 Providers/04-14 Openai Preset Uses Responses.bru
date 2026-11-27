@@ -1,0 +1,42 @@
+meta {
+  name: 04-14 Openai Preset Uses Responses
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/api/providers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "kind": "openai",
+    "preset": "openai",
+    "name": "Bruno OpenAI"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("openaiProviderId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.api: eq responses
+  res.body.data.baseUrl: eq "https://api.openai.com/v1"
+}
+
+docs {
+  **Endpoint:** `POST /api/providers`
+
+  **This test verifies:** an `openai` preset connection without a chosen API uses the Responses
+  API; its id is stored as `openaiProviderId` for the next request.
+}

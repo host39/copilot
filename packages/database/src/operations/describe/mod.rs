@@ -23,7 +23,7 @@ pub struct TableDoc {
 pub const SCHEMA_TABLES: &[TableDoc] = &[
     TableDoc {
         name: "providers",
-        summary: "A user's connection to a model provider (kind, preset, name).",
+        summary: "A user's connection to a model provider (kind, preset, API, name).",
         omitted_columns: &[
             OmittedColumn {
                 name: "base_url",

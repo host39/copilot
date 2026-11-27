@@ -55,6 +55,7 @@ import type { Preset } from "@contracts/generated/Preset";
 import type { ProjectDetailsResponse } from "@contracts/generated/ProjectDetailsResponse";
 import type { ProjectListQuery } from "@contracts/generated/ProjectListQuery";
 import type { ProjectResponse } from "@contracts/generated/ProjectResponse";
+import type { ProviderApi } from "@contracts/generated/ProviderApi";
 import type { ProviderDetailsResponse } from "@contracts/generated/ProviderDetailsResponse";
 import type { ProviderKind } from "@contracts/generated/ProviderKind";
 import type { ProviderResponse } from "@contracts/generated/ProviderResponse";
@@ -139,6 +140,7 @@ export type { Preset } from "@contracts/generated/Preset";
 export type { ProjectDetailsResponse } from "@contracts/generated/ProjectDetailsResponse";
 export type { ProjectListQuery } from "@contracts/generated/ProjectListQuery";
 export type { ProjectResponse } from "@contracts/generated/ProjectResponse";
+export type { ProviderApi } from "@contracts/generated/ProviderApi";
 export type { ProviderDetailsResponse } from "@contracts/generated/ProviderDetailsResponse";
 export type { ProviderKind } from "@contracts/generated/ProviderKind";
 export type { ProviderResponse } from "@contracts/generated/ProviderResponse";
@@ -261,6 +263,11 @@ export const updateSettingsRequestSchema = z.object({
 
 export const providerKindSchema = z.enum(["openai", "anthropic"]) satisfies z.ZodType<ProviderKind>;
 
+export const providerApiSchema = z.enum([
+  "chat_completions",
+  "responses",
+]) satisfies z.ZodType<ProviderApi>;
+
 export const presetSchema = z.enum([
   "openai",
   "anthropic",
@@ -274,6 +281,7 @@ export const providerResponseSchema = z.object({
   id,
   kind: providerKindSchema,
   preset: presetSchema,
+  api: providerApiSchema.nullable(),
   name: z.string(),
   baseUrl: z.string(),
   enabled: z.boolean(),
@@ -295,6 +303,7 @@ export const providerDetailsResponseSchema = providerResponseSchema.extend({
 export const createProviderRequestSchema = z.object({
   kind: providerKindSchema,
   preset: presetSchema,
+  api: providerApiSchema.optional(),
   name: z.string(),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
@@ -302,6 +311,7 @@ export const createProviderRequestSchema = z.object({
 
 export const updateProviderRequestSchema = z.object({
   name: z.string().optional(),
+  api: providerApiSchema.optional(),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   enabled: z.boolean().optional(),

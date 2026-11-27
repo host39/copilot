@@ -17,6 +17,7 @@ auth:bearer {
 body:json {
   {
     "name": "Bruno Renamed",
+    "api": "responses",
     "baseUrl": "https://other.example.com/v1"
   }
 }
@@ -26,11 +27,13 @@ assert {
   res.body.data.name: eq "Bruno Renamed"
   res.body.data.baseUrl: eq "https://other.example.com/v1"
   res.body.data.key: eq missing
+  res.body.data.api: eq responses
 }
 
 docs {
   **Endpoint:** `PATCH /api/providers/{id}`
 
   **This test verifies:** a base URL with another origin clears the stored key, so the key never
-  goes to a host it was not entered for.
+  goes to a host it was not entered for, and a `custom` connection can switch to the Responses
+  API.
 }

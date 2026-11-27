@@ -1,5 +1,6 @@
 [
   {
+    "api": "chat_completions",
     "apiKey": "sk-new",
     "baseUrl": "https://api.example.com/v1",
     "enabled": false,

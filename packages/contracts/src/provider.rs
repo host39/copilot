@@ -15,7 +15,7 @@ use crate::shared::{KeyState, redacted};
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
-    /// Chat Completions, `POST {base}/chat/completions`.
+    /// OpenAI-compatible: Chat Completions or the Responses API ([`ProviderApi`]).
     OpenAi,
     /// Messages API, `POST {base}/v1/messages`.
     Anthropic,
@@ -36,6 +36,18 @@ pub enum Preset {
     Custom,
 }
 
+/// Which OpenAI API the answers of an `openai` connection use. The model list is
+/// `GET {base}/models` with either.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApi {
+    /// `POST {base}/chat/completions`.
+    ChatCompletions,
+    /// `POST {base}/responses` with `store: false`. Only the `openai` and `custom` presets.
+    Responses,
+}
+
 /// A provider connection (list items, and the base of [`ProviderDetailsResponse`]).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
@@ -44,6 +56,8 @@ pub struct ProviderResponse {
     pub id: Uuid,
     pub kind: ProviderKind,
     pub preset: Preset,
+    /// `null` for `anthropic` connections.
+    pub api: Option<ProviderApi>,
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
@@ -82,6 +96,10 @@ pub struct ProviderDetailsResponse {
 pub struct CreateProviderRequest {
     pub kind: ProviderKind,
     pub preset: Preset,
+    /// `openai` connections only. Default: `responses` for the `openai` preset,
+    /// `chat_completions` for the others; `responses` fits the `openai` and `custom` presets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<ProviderApi>,
     pub name: String,
     /// Default: the preset's base URL (`custom` needs one). `https`, or `http` for a private host
     /// the server allows.
@@ -98,6 +116,7 @@ impl fmt::Debug for CreateProviderRequest {
             .debug_struct("CreateProviderRequest")
             .field("kind", &self.kind)
             .field("preset", &self.preset)
+            .field("api", &self.api)
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("api_key", &redacted(self.api_key.as_ref()))
@@ -113,6 +132,10 @@ impl fmt::Debug for CreateProviderRequest {
 pub struct UpdateProviderRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Switches the API of an `openai` connection (`responses` on the `openai` and `custom`
+    /// presets only). Stored answers rebuild from their parts on the other API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<ProviderApi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// A new key; an empty string clears the stored one.
@@ -127,6 +150,7 @@ impl fmt::Debug for UpdateProviderRequest {
         formatter
             .debug_struct("UpdateProviderRequest")
             .field("name", &self.name)
+            .field("api", &self.api)
             .field("base_url", &self.base_url)
             .field("api_key", &redacted(self.api_key.as_ref()))
             .field("enabled", &self.enabled)
@@ -162,6 +186,7 @@ mod tests {
             id: Uuid::nil(),
             kind: ProviderKind::OpenAi,
             preset: Preset::OpenRouter,
+            api: Some(ProviderApi::ChatCompletions),
             name: "OpenRouter".to_owned(),
             base_url: "https://openrouter.ai/api/v1".to_owned(),
             enabled: true,
@@ -187,6 +212,7 @@ mod tests {
                 "id": "00000000-0000-0000-0000-000000000000",
                 "kind": "openai",
                 "preset": "openrouter",
+                "api": "chat_completions",
                 "name": "OpenRouter",
                 "baseUrl": "https://openrouter.ai/api/v1",
                 "enabled": true,
@@ -212,8 +238,35 @@ mod tests {
         }))
         .expect("valid body");
         assert_eq!(request.kind, ProviderKind::Anthropic);
+        assert_eq!(request.api, None);
         assert_eq!(request.base_url, None);
         assert_eq!(request.api_key.as_deref(), Some("sk-ant-secret"));
+    }
+
+    #[test]
+    fn names_the_openai_apis_in_snake_case() {
+        let request: CreateProviderRequest = serde_json::from_value(serde_json::json!({
+            "kind": "openai",
+            "preset": "custom",
+            "api": "responses",
+            "name": "Gateway",
+        }))
+        .expect("valid body");
+        assert_eq!(request.api, Some(ProviderApi::Responses));
+        assert_eq!(
+            serde_json::to_value(ProviderApi::ChatCompletions).expect("serializes"),
+            "chat_completions"
+        );
+        let claude = ProviderResponse {
+            kind: ProviderKind::Anthropic,
+            api: None,
+            ..provider()
+        };
+        assert_eq!(
+            serde_json::to_value(&claude).expect("serializes")["api"],
+            serde_json::Value::Null,
+            "anthropic connections report no API"
+        );
     }
 
     #[test]
@@ -221,6 +274,7 @@ mod tests {
         let create = CreateProviderRequest {
             kind: ProviderKind::OpenAi,
             preset: Preset::OpenAi,
+            api: None,
             name: "OpenAI".to_owned(),
             base_url: None,
             api_key: Some("sk-secret".to_owned()),

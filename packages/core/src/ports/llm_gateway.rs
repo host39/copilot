@@ -1,7 +1,7 @@
 //! Model provider port.
 //!
-//! `copilot-providers` implements [`LlmGateway`] for the OpenAI-compatible and Anthropic wire
-//! protocols. Core builds every target and every request (`conversation::context`), so adapters
+//! `copilot-providers` implements [`LlmGateway`] for the OpenAI-compatible (Chat Completions and
+//! Responses) and Anthropic wire protocols. Core builds every target and every request (`conversation::context`), so adapters
 //! never read the database or the cipher, and never decide what a model sees. The port is frozen
 //! from P1.3 on (`docs/design/roadmap.md`, Freeze List).
 
@@ -12,7 +12,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::domains::chat::{FinishReason, Role, Usage};
-use crate::domains::provider::{Dialect, Preset, ProviderKind};
+use crate::domains::provider::{Dialect, OpenAiApi, Preset, ProviderKind};
 use crate::domains::tool::ToolSpec;
 use crate::ports::tool_host::ToolContent;
 use crate::shared::base_url::BaseUrl;
@@ -40,12 +40,14 @@ pub trait LlmGateway: Send + Sync {
 
 /// Everything an adapter needs to reach a provider connection. `network` picks the outbound
 /// client (public-only or private-allowed); a plain `http` `base_url` (`!is_https()`) takes the
-/// plaintext client, whose resolver admits only `net::is_allowed_plaintext` addresses.
+/// plaintext client, whose resolver admits only `net::is_allowed_plaintext` addresses. `api`
+/// picks the endpoint of an `openai` connection's answers (`None` for `anthropic` ones).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderTarget {
     pub provider_id: ProviderId,
     pub kind: ProviderKind,
     pub preset: Preset,
+    pub api: Option<OpenAiApi>,
     pub base_url: BaseUrl,
     pub api_key: Option<Secret>,
     pub network: NetworkScope,

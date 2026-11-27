@@ -4,12 +4,12 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::domains::provider::capabilities::{Capabilities, Locks};
+use crate::domains::provider::capabilities::Capabilities;
 use crate::domains::provider::entities::{KeyState, Provider};
 use crate::domains::provider::ports::{
     DetectedModel, ModelQuery, ModelRepository, ProviderRepository, ProviderUsage, SyncReport,
 };
-use crate::domains::provider::values::{Preset, ProviderKind};
+use crate::domains::provider::values::{OpenAiApi, Preset, ProviderKind};
 use crate::domains::schedule::{MODEL_REMOVED, ScheduleRepository};
 use crate::ports::clock::Clock;
 use crate::ports::llm_gateway::{LlmGateway, ProviderTarget};
@@ -29,6 +29,8 @@ use crate::shared::secret::REDACTED;
 pub struct NewProvider {
     pub kind: ProviderKind,
     pub preset: Preset,
+    /// `None` takes the preset's default (`OpenAiApi::default_for`).
+    pub api: Option<OpenAiApi>,
     pub name: String,
     /// `None` takes the preset's base URL (`custom` requires one).
     pub base_url: Option<String>,
@@ -42,6 +44,7 @@ impl fmt::Debug for NewProvider {
             .debug_struct("NewProvider")
             .field("kind", &self.kind)
             .field("preset", &self.preset)
+            .field("api", &self.api)
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| REDACTED))
@@ -53,6 +56,9 @@ impl fmt::Debug for NewProvider {
 #[derive(Clone, Debug, Default)]
 pub struct ProviderUpdate {
     pub name: Option<String>,
+    /// Switches the OpenAI API (`openai` connections; Responses on the `openai` and `custom`
+    /// presets only).
+    pub api: Option<OpenAiApi>,
     pub base_url: Option<String>,
     pub api_key: Option<KeyChange>,
     pub enabled: Option<bool>,
@@ -146,7 +152,7 @@ impl ProviderService {
                 );
             }
         };
-        let provider = Provider::create(
+        let mut provider = Provider::create(
             actor.user_id,
             input.kind,
             input.preset,
@@ -154,6 +160,9 @@ impl ProviderService {
             base_url,
             self.clock.now(),
         )?;
+        if let Some(api) = input.api {
+            provider = provider.with_api(api)?;
+        }
         let sealed = self.seal(&provider, input.api_key.as_deref())?;
         let provider = provider.with_key(sealed);
         self.providers.insert(&provider).await?;
@@ -171,6 +180,9 @@ impl ProviderService {
         let mut provider = self.load(actor, id).await?;
         if let Some(name) = &changes.name {
             provider = provider.with_name(name)?;
+        }
+        if let Some(api) = changes.api {
+            provider = provider.with_api(api)?;
         }
         let mut key = changes.api_key;
         if let Some(text) = &changes.base_url {
@@ -218,7 +230,8 @@ impl ProviderService {
     }
 
     /// Lists the provider's models (this is also the connection test), applies capability
-    /// defaults and locks, and stores the result. New models are enabled automatically when the
+    /// defaults, and stores the result (before locks: `Model::effective` applies them, so a lock
+    /// that follows the connection's API lifts when the API changes). New models are enabled automatically when the
     /// provider lists at most `MODEL_AUTO_ENABLE_MAX` models. A list of more than
     /// `MAX_MODELS_PER_PROVIDER` models, or a model id longer than `MODEL_ID_MAX_CHARS`, fails
     /// as a bad response and stores nothing; display names are cut to `NAME_MAX_CHARS`.
@@ -262,9 +275,7 @@ impl ProviderService {
                     remote.display_name =
                         remote.display_name.chars().take(NAME_MAX_CHARS).collect();
                 }
-                let locks = Locks::new(provider.kind(), provider.preset(), &remote.remote_id);
-                let capabilities =
-                    Capabilities::defaults(provider.preset(), &remote).locked(&locks);
+                let capabilities = Capabilities::defaults(provider.preset(), &remote);
                 Some(DetectedModel {
                     remote,
                     capabilities,
@@ -335,6 +346,7 @@ mod tests {
         let new = NewProvider {
             kind: ProviderKind::OpenAi,
             preset: Preset::OpenAi,
+            api: None,
             name: "OpenAI".to_owned(),
             base_url: None,
             api_key: Some("sk-live-TOPSECRET".to_owned()),
@@ -383,6 +395,7 @@ mod tests {
         NewProvider {
             kind: ProviderKind::OpenAi,
             preset: Preset::OpenAi,
+            api: None,
             name: "OpenAI".to_owned(),
             base_url: None,
             api_key: key.map(str::to_owned),
@@ -393,6 +406,7 @@ mod tests {
         NewProvider {
             kind: ProviderKind::OpenAi,
             preset: Preset::Ollama,
+            api: None,
             name: "Ollama".to_owned(),
             base_url: Some(url.to_owned()),
             api_key: None,
@@ -440,6 +454,7 @@ mod tests {
         let input = NewProvider {
             kind: ProviderKind::OpenAi,
             preset: Preset::Custom,
+            api: None,
             name: "Gateway".to_owned(),
             base_url: None,
             api_key: None,
@@ -740,8 +755,81 @@ mod tests {
             .unwrap();
         assert!(terra.capabilities().pdf, "openai preset turns PDF on");
         assert!(terra.capabilities().tools);
-        assert!(!sol.capabilities().tools, "gpt-6 tools are locked off");
+        assert!(sol.capabilities().tools, "detection is stored before locks");
+        assert!(
+            sol.effective(&provider).tools,
+            "the Responses API calls tools on gpt-6"
+        );
         assert!(terra.enabled() && sol.enabled());
+
+        // On Chat Completions the gpt-6 lock applies at once, and lifts again without a refresh.
+        let chat = f
+            .service
+            .update(
+                &caller,
+                provider.id(),
+                ProviderUpdate {
+                    api: Some(OpenAiApi::ChatCompletions),
+                    ..ProviderUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!sol.effective(&chat).tools, "gpt-6 tools are locked off");
+        assert!(terra.effective(&chat).tools);
+        let back = f
+            .service
+            .update(
+                &caller,
+                provider.id(),
+                ProviderUpdate {
+                    api: Some(OpenAiApi::Responses),
+                    ..ProviderUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(sol.effective(&back).tools);
+    }
+
+    #[tokio::test]
+    async fn creates_with_the_preset_api_or_a_chosen_one() {
+        let f = fixture(PrivateNetwork::Admins);
+        let caller = admin();
+        let openai = f.service.create(&caller, openai(None)).await.unwrap();
+        assert_eq!(openai.api(), Some(OpenAiApi::Responses));
+        let custom = NewProvider {
+            kind: ProviderKind::OpenAi,
+            preset: Preset::Custom,
+            api: Some(OpenAiApi::Responses),
+            name: "Gateway".to_owned(),
+            base_url: Some("https://gateway.example.com/v1".to_owned()),
+            api_key: None,
+        };
+        let custom = f.service.create(&caller, custom).await.unwrap();
+        assert_eq!(custom.api(), Some(OpenAiApi::Responses));
+        let stored = f.service.get(&caller, custom.id()).await.unwrap();
+        assert_eq!(stored.provider.api(), Some(OpenAiApi::Responses));
+
+        let refused = NewProvider {
+            api: Some(OpenAiApi::Responses),
+            ..ollama("http://127.0.0.1:11434/v1")
+        };
+        let error = f.service.create(&caller, refused).await.unwrap_err();
+        assert_eq!(validation_field(&error), Some("api"));
+        let switched = f
+            .service
+            .update(
+                &caller,
+                custom.id(),
+                ProviderUpdate {
+                    api: Some(OpenAiApi::ChatCompletions),
+                    ..ProviderUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(switched.api(), Some(OpenAiApi::ChatCompletions));
     }
 
     #[tokio::test]

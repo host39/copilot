@@ -21,4 +21,6 @@ pub use crate::domains::provider::ports::{
 pub use crate::domains::provider::service::{
     KeyChange, NewProvider, ProviderDetails, ProviderService, ProviderUpdate,
 };
-pub use crate::domains::provider::values::{ANTHROPIC_VERSION, Dialect, Preset, ProviderKind};
+pub use crate::domains::provider::values::{
+    ANTHROPIC_VERSION, Dialect, OpenAiApi, Preset, ProviderKind,
+};

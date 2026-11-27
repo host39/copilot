@@ -14,6 +14,7 @@ fn target(preset: Preset) -> ModelTarget {
             provider_id: ProviderId::generate(),
             kind: ProviderKind::OpenAi,
             preset,
+            api: Some(copilot_core::OpenAiApi::ChatCompletions),
             base_url: BaseUrl::parse("https://api.example.com/v1", NetworkScope::Public)
                 .expect("valid"),
             api_key: None,

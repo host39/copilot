@@ -313,7 +313,10 @@ fn reasoning(
     if !inputs.capabilities.reasoning {
         return None;
     }
-    if sends_tools && reasoning_off_with_tools(inputs.provider.preset(), inputs.model.remote_id()) {
+    let provider = inputs.provider;
+    if sends_tools
+        && reasoning_off_with_tools(provider.preset(), provider.api(), inputs.model.remote_id())
+    {
         return Some(ReasoningLevel::Off);
     }
     let levels = &inputs.capabilities.reasoning_levels;
