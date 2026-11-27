@@ -19,7 +19,7 @@ The first release, planned as `v0.1.0`. It has no predecessor, so there is nothi
 - **Voice:** push to talk (16 kHz WAV clips up to 5 minutes) for models that take audio, and spoken replies saved as WAV files for models that return audio. None for Claude models.
 - **Accounts:** lib-rustauth `v0.1.0` (pinned by commit): the first account is the administrator, registration is closed by default, sessions, lockout, and per-address limits.
 - **Apps:** the installable web app, a Linux app (`.deb` and AppImage, glibc 2.39 or newer), and an Android app (arm64 APK), attached to each GitHub Release with `SHA256SUMS`.
-- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`), the image `ghcr.io/host39/copilot:<version>` published on each release tag, and the self-hosting guide (reverse proxy, private network policy, Ollama, a stdio MCP server behind a bridge, upgrades, backups).
+- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`), the image `ghcr.io/host39/copilot:<version>` published on each release tag, `deploy/backup.sh` for nightly dumps with retention (with a crontab line and a systemd timer), and the self-hosting guide (reverse proxy, private network policy, Ollama, a stdio MCP server behind a bridge, upgrades, backups).
 
 ### Upgrade Notes
 

@@ -245,23 +245,58 @@ Stopping lets answers being written finish or save what they have (the compose f
 
 ## Backups
 
-One `pg_dump` of the `copilot` database is the whole backup, because file bytes live in Postgres. Keep `SECRET_KEY` with it, or the stored provider keys and tool server headers cannot be read after a restore.
+One `pg_dump` of the `copilot` database is the whole backup, because file bytes live in Postgres. Keep `SECRET_KEY` with it, or the stored provider keys and tool server headers cannot be read after a restore. A dump is consistent without stopping the server.
+
+[`deploy/backup.sh`](../deploy/backup.sh) writes one dump (`copilot-<UTC time>.dump`, readable by its owner only) into `backups/` next to `deploy/`, or into the directory you pass, checks it with `pg_restore --list` before keeping it, and deletes dumps older than `BACKUP_KEEP_DAYS` (14) days, never the newest one:
 
 ```bash
-docker compose -f deploy/compose.yml exec -T postgres pg_dump -U copilot -Fc copilot >copilot-$(date +%F).dump
+deploy/backup.sh                      # or: deploy/backup.sh /srv/backups/copilot
 ```
 
-Run it from cron (or a systemd timer) and copy the dumps off the machine. A dump is consistent without stopping the server. To restore, into this install or a fresh one with the same `deploy/.env`:
+The same by hand: `docker compose -f deploy/compose.yml exec -T postgres pg_dump -U copilot -Fc copilot >copilot-$(date +%F).dump`. Run the script every night and copy the directory off the machine (rsync, restic, or your backup tool), for example from root's crontab:
+
+```cron
+17 3 * * * cd /srv/copilot && deploy/backup.sh >>backups/backup.log 2>&1
+```
+
+or with a systemd timer:
+
+```ini
+# /etc/systemd/system/copilot-backup.service
+[Unit]
+Description=Copilot database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/copilot
+ExecStart=/srv/copilot/deploy/backup.sh
+
+# /etc/systemd/system/copilot-backup.timer
+[Unit]
+Description=Nightly Copilot database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Then `systemctl daemon-reload && systemctl enable --now copilot-backup.timer`; `journalctl -u copilot-backup` shows each run.
+
+To restore, into this install or a fresh one with the same `deploy/.env`:
 
 ```bash
 docker compose -f deploy/compose.yml stop copilot
-docker compose -f deploy/compose.yml up -d postgres
+docker compose -f deploy/compose.yml up -d --wait postgres
 docker compose -f deploy/compose.yml exec -T postgres \
-  pg_restore -U copilot -d copilot --clean --if-exists --no-owner --no-privileges <copilot-2026-11-27.dump
+  pg_restore -U copilot -d copilot --clean --if-exists --no-owner --no-privileges <backups/copilot-20261127T031700Z.dump
 docker compose -f deploy/compose.yml up -d
 ```
 
-The dump's grants are skipped (`--no-privileges`) because `up` runs `migrate`, which grants the server's role the restored tables again. Try a restore once before you need it.
+The dump's grants are skipped (`--no-privileges`) because `up` runs `migrate`, which creates the server's role if it is missing and grants it the restored tables again. CI runs this exact sequence on every image build: a backup with `deploy/backup.sh`, `down -v` to lose everything, the restore onto the empty database, and a sign-in that finds the data again. Try a restore of your own once before you need it.
 
 ## Logs
 

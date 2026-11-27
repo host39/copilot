@@ -2,7 +2,9 @@ name: Image
 
 # Builds the Copilot image and starts deploy/compose.yml (Postgres, migrate, server), then checks
 # that the server is ready, serves the web bundle, registers the first account, connects as the
-# unprivileged server role, and keys per-IP limits on the forwarded client address. Runs when
+# unprivileged server role, and keys per-IP limits on the forwarded client address. Then it runs
+# the documented upgrade order again on the same image (migrate must change nothing), and the
+# documented backup (deploy/backup.sh) and restore onto an empty volume. Runs when
 # the image's inputs change on main and claude/** branches, on version tags (tag pushes ignore
 # path filters), and on demand.
 #
@@ -102,6 +104,81 @@ jobs:
           done
           test "$limited" = yes
           test "$(status 198.51.100.8)" = 200
+
+      # The upgrade order of docs/self-hosting.md with nothing new to apply: migrate runs again
+      # and must change nothing, and the server comes back with the same data.
+      - name: Migrate again
+        run: |
+          set -euo pipefail
+          dc() { docker compose -f deploy/compose.yml "$@"; }
+          sql() { dc exec -T postgres psql -U copilot -d copilot -tAc "$1"; }
+          applied() {
+            sql "SELECT (SELECT count(*) FROM auth._sqlx_migrations) || '/' || (SELECT count(*) FROM public._sqlx_migrations) || '/' || (SELECT max(installed_on) FROM public._sqlx_migrations)"
+          }
+          before="$(applied)"
+          started="$(docker inspect -f '{{.State.StartedAt}}' copilot-migrate-1)"
+          dc stop copilot
+          dc up -d --no-build
+          test "$(docker inspect -f '{{.State.StartedAt}}' copilot-migrate-1)" != "$started"
+          test "$(docker inspect -f '{{.State.ExitCode}}' copilot-migrate-1)" = 0
+          test "$(applied)" = "$before"
+          dc logs --no-color migrate | grep -q 'database.migrate.applied'
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/health/ready >/dev/null && break
+            sleep 1
+          done
+          token="$(curl -sf -X POST http://127.0.0.1:3000/api/auth/login -H 'content-type: application/json' \
+            -d '{"username":"admin","password":"compose-smoke-password"}' | jq -er .data.token)"
+          curl -sf http://127.0.0.1:3000/api/auth/me -H "authorization: Bearer $token" | jq -e '.data.role == "administrator"'
+
+      # docs/self-hosting.md, "Backups": deploy/backup.sh writes the dump; then everything is lost
+      # (down -v), Postgres starts empty, the documented pg_restore runs, and `up` (whose migrate
+      # grants the server's role again) brings the server back with the data.
+      - name: Backup and restore
+        run: |
+          set -euo pipefail
+          dc() { docker compose -f deploy/compose.yml "$@"; }
+          sql() { dc exec -T postgres psql -U copilot -d copilot -tAc "$1"; }
+          base=http://127.0.0.1:3000
+          login() {
+            curl -sf -X POST "$base/api/auth/login" -H 'content-type: application/json' \
+              -d '{"username":"admin","password":"compose-smoke-password"}' | jq -er .data.token
+          }
+          token="$(login)"
+          curl -sf -X POST "$base/api/projects" -H "authorization: Bearer $token" \
+            -H 'content-type: application/json' -d '{"name":"Restore check"}' | jq -e '.data.id'
+
+          BACKUP_DIR="$RUNNER_TEMP/backups" sh deploy/backup.sh
+          dump="$(find "$RUNNER_TEMP/backups" -name 'copilot-*.dump' -type f)"
+          test "$(printf '%s\n' "$dump" | wc -l)" = 1
+          test "$(stat -c %a "$dump")" = 600
+
+          dc down -v
+          dc up -d --wait postgres
+          test "$(sql "SELECT count(*) FROM pg_roles WHERE rolname = 'copilot_server'")" = 0
+          dc exec -T postgres \
+            pg_restore -U copilot -d copilot --clean --if-exists --no-owner --no-privileges <"$dump"
+          dc up -d --no-build
+          for _ in $(seq 1 60); do
+            curl -sf "$base/health/ready" >/dev/null && break
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.ExitCode}}' copilot-migrate-1)" = 0
+
+          # The administrator signs in with the old password and finds the project, read by the
+          # server through copilot_server.
+          token="$(login)"
+          curl -sf "$base/api/auth/me" -H "authorization: Bearer $token" | jq -e '.data.role == "administrator"'
+          curl -sf "$base/api/projects" -H "authorization: Bearer $token" \
+            | jq -e '[.items[].name] | index("Restore check") != null'
+          # migrate granted the recreated server role every restored table again.
+          test "$(sql "SELECT count(*) FROM pg_stat_activity WHERE usename = 'copilot_server'")" -gt 0
+          missing="$(sql "SELECT string_agg(n.nspname || '.' || c.relname, ', ')
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p') AND n.nspname IN ('public', 'auth')
+              AND c.relname <> '_sqlx_migrations'
+              AND NOT has_table_privilege('copilot_server', c.oid, 'SELECT, INSERT, UPDATE, DELETE')")"
+          test -z "$missing" || { echo "::error::copilot_server cannot write: $missing"; exit 1; }
 
       # The image this run tested goes to the publish job: on version tags, and on manual runs,
       # which stop before pushing.
