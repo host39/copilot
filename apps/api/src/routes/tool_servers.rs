@@ -1,7 +1,8 @@
 //! `/api/tool-servers`: MCP tool servers, their tool modes, tests, and reviews (`ToolService`).
 //! Credentials go in and never come out: responses say whether they are stored. Deleting a
-//! server removes it from every project and chat (and their "Approve for this chat" rows). Tests
-//! reach the MCP adapter, which answers `502 ADAPTER_UNAVAILABLE` until P2.F wires it.
+//! server removes it from every project and chat (and their "Approve for this chat" rows). A test
+//! connects through the MCP adapter (`copilot-mcp`), lists the tools, stores them with the
+//! negotiated revision, and reports what changed; a failure is a `502` with the adapter's code.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -278,10 +279,14 @@ pub async fn review(
 mod tests {
     use axum::Router;
     use axum::http::{Method, StatusCode};
+    use copilot_core::PrivateNetwork;
     use copilot_database::DbPool;
     use serde_json::{Value, json};
 
-    use crate::helpers::testing::{TestResponse, live_app, other_user, register, request, send};
+    use crate::helpers::mcp_server::McpServer;
+    use crate::helpers::testing::{
+        TestResponse, config, live_app, live_app_with, other_user, register, request, send,
+    };
 
     async fn call(
         app: &Router,
@@ -458,7 +463,7 @@ mod tests {
             &token,
             Method::PATCH,
             &uri,
-            Some(json!({ "url": "https://other.example.com/mcp" })),
+            Some(json!({ "url": "https://other.invalid/mcp" })),
         )
         .await;
         let data = &moved.body["data"];
@@ -491,8 +496,11 @@ mod tests {
         assert_eq!(cleared.body["data"]["credentials"], "missing");
 
         let tested = call(&app, &token, Method::POST, &format!("{uri}/test"), None).await;
-        assert_eq!(tested.status, StatusCode::BAD_GATEWAY, "no MCP adapter yet");
-        assert_eq!(tested.body["code"], "ADAPTER_UNAVAILABLE");
+        assert_eq!(tested.status, StatusCode::BAD_GATEWAY, "{}", tested.body);
+        assert_eq!(
+            tested.body["code"], "TOOL_SERVER_UNREACHABLE",
+            "no such host"
+        );
 
         let deleted = call(&app, &token, Method::DELETE, &uri, None).await;
         assert_eq!(deleted.status, StatusCode::NO_CONTENT);
@@ -622,5 +630,142 @@ mod tests {
         )
         .await;
         assert_eq!(chat.body["data"]["toolOverrides"], json!([]));
+    }
+
+    fn tool(name: &str, description: &str) -> (String, String, Value) {
+        (
+            name.to_owned(),
+            description.to_owned(),
+            json!({ "type": "object", "properties": { "q": { "type": "string" } } }),
+        )
+    }
+
+    fn names(server: &Value) -> Vec<&str> {
+        server["tools"]
+            .as_array()
+            .expect("listed tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("a name"))
+            .collect()
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn testing_a_server_lists_its_tools_and_asks_again_after_a_change(pool: DbPool) {
+        let app = live_app(pool).await;
+        // The first account is the administrator, so it may reach the loopback server.
+        let token = register(&app, "admin").await;
+        for (legacy, revision) in [(true, "2025-11-25"), (false, "2026-07-28")] {
+            let mcp = McpServer::start(
+                legacy,
+                &[
+                    tool("search", "Search the docs."),
+                    tool("delete", "Delete a page."),
+                ],
+                Some("tok-1"),
+            )
+            .await;
+            let created = call(
+                &app,
+                &token,
+                Method::POST,
+                "/api/tool-servers",
+                Some(json!({ "name": "Docs", "url": mcp.url, "bearer": "tok-1" })),
+            )
+            .await;
+            assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+            let uri = format!(
+                "/api/tool-servers/{}",
+                created.body["data"]["id"].as_str().expect("an id")
+            );
+
+            let tested = call(&app, &token, Method::POST, &format!("{uri}/test"), None).await;
+            assert_eq!(tested.status, StatusCode::OK, "{}", tested.body);
+            let server = &tested.body["data"]["server"];
+            assert_eq!(names(server), ["search", "delete"]);
+            assert_eq!(server["protocolVersion"], revision);
+            assert_eq!(server["tools"][0]["description"], "Search the docs.");
+            assert!(server["toolsFetchedAt"].is_string());
+            assert_eq!(server["reviewRequired"], false, "a first list is no change");
+            assert_eq!(
+                tested.body["data"]["changes"],
+                json!({ "added": [], "removed": [], "changed": [] })
+            );
+            let moded = call(
+                &app,
+                &token,
+                Method::PATCH,
+                &uri,
+                Some(json!({ "toolModes": { "search": "auto" } })),
+            )
+            .await;
+            assert_eq!(moded.status, StatusCode::OK, "listed tools take modes");
+
+            mcp.set_tools(&[
+                tool("search", "Search the docs and the wiki."),
+                tool("create", "Create a page."),
+            ]);
+            let changed = call(&app, &token, Method::POST, &format!("{uri}/test"), None).await;
+            assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+            assert_eq!(
+                changed.body["data"]["changes"],
+                json!({ "added": ["create"], "removed": ["delete"], "changed": ["search"] })
+            );
+            let server = &changed.body["data"]["server"];
+            assert_eq!(names(server), ["search", "create"]);
+            assert_eq!(server["reviewRequired"], true, "every tool asks again");
+            let details = call(&app, &token, Method::GET, &uri, None).await;
+            assert_eq!(names(&details.body["data"]), ["search", "create"], "stored");
+            assert_eq!(details.body["data"]["reviewRequired"], true);
+
+            let reviewed = call(&app, &token, Method::POST, &format!("{uri}/review"), None).await;
+            assert_eq!(reviewed.body["data"]["reviewRequired"], false);
+            let again = call(&app, &token, Method::POST, &format!("{uri}/test"), None).await;
+            assert_eq!(
+                again.body["data"]["changes"],
+                json!({ "added": [], "removed": [], "changed": [] })
+            );
+            assert_eq!(again.body["data"]["server"]["reviewRequired"], false);
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn testing_reports_missing_credentials_and_refused_addresses(pool: DbPool) {
+        let app = live_app(pool.clone()).await;
+        let token = register(&app, "admin").await;
+        let mcp = McpServer::start(false, &[tool("search", "Search.")], Some("tok-1")).await;
+        let created = call(
+            &app,
+            &token,
+            Method::POST,
+            "/api/tool-servers",
+            Some(json!({ "name": "Docs", "url": mcp.url })),
+        )
+        .await;
+        let uri = format!(
+            "/api/tool-servers/{}",
+            created.body["data"]["id"].as_str().expect("an id")
+        );
+        let tested = call(&app, &token, Method::POST, &format!("{uri}/test"), None).await;
+        assert_eq!(tested.status, StatusCode::BAD_GATEWAY, "{}", tested.body);
+        assert_eq!(tested.body["code"], "TOOL_SERVER_AUTH");
+        assert_eq!(
+            tested.body["error"],
+            "The tool server requires sign-in. Add a bearer token or headers in its settings."
+        );
+        let details = call(&app, &token, Method::GET, &uri, None).await;
+        assert_eq!(details.body["data"]["tools"], Value::Null, "nothing stored");
+
+        // The same account on a server where nobody may reach private addresses: the stored
+        // loopback URL is refused before any request leaves.
+        let mut closed = config();
+        closed.private_network = PrivateNetwork::None;
+        let closed = live_app_with(pool, closed).await;
+        let before = mcp.requests();
+        let refused = call(&closed, &token, Method::POST, &format!("{uri}/test"), None).await;
+        assert_eq!(refused.status, StatusCode::BAD_GATEWAY, "{}", refused.body);
+        assert_eq!(refused.body["code"], "TOOL_SERVER_BLOCKED");
+        assert_eq!(mcp.requests(), before, "nothing reached the server");
     }
 }

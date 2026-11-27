@@ -74,7 +74,7 @@ pub async fn app_on(db: DbPool) -> Router {
 }
 
 /// The whole app on a throwaway database (`#[sqlx::test]`): migrated, rustauth on Postgres, and
-/// the real provider adapter on the hardened clients (tool servers stay unavailable).
+/// the real provider and MCP adapters on the hardened clients.
 pub async fn live_app(db: DbPool) -> Router {
     live_app_with(db, config()).await
 }
@@ -268,12 +268,13 @@ pub async fn model(app: &Router, token: &str, server: &wiremock::MockServer) -> 
         .to_owned()
 }
 
-/// A tool server of `user` written with SQL, without credentials or tools; its id.
+/// A tool server of `user` written with SQL, without credentials or tools; its id. Its host is
+/// under `.invalid`, so a turn that lists it fails at once and never reaches the network.
 pub async fn tool_server(db: &DbPool, user: &str, slug: &str) -> String {
     let id = uuid::Uuid::now_v7();
     sqlx::query(
         "INSERT INTO tool_servers (created_at, updated_at, id, user_id, name, slug, url) \
-         SELECT now(), now(), $1, id, 'Docs', $2, 'https://mcp.example.com' \
+         SELECT now(), now(), $1, id, 'Docs', $2, 'https://mcp.example.invalid' \
          FROM auth.users WHERE username = $3",
     )
     .bind(id)

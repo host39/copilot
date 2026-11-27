@@ -16,12 +16,13 @@ auth:bearer {
 
 assert {
   res.status: eq 502
-  res.body.code: isString
+  res.body.code: eq TOOL_SERVER_UNREACHABLE
+  res.body.error: eq "Could not connect to the tool server. Check its URL."
 }
 
 docs {
   **Endpoint:** `POST /api/tool-servers/{id}/test`
 
-  **This test verifies:** a test that cannot list the tools is a `502` with the error body (no MCP
-  adapter is wired yet, and `.invalid` hosts never resolve).
+  **This test verifies:** a test that cannot reach the server is a `502` with the MCP adapter's code
+  and a readable message (`.invalid` hosts never resolve).
 }

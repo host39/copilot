@@ -22,6 +22,7 @@ copilot-contracts = { workspace = true }
 copilot-core = { workspace = true }
 copilot-database = { workspace = true }
 copilot-logger = { workspace = true }
+copilot-mcp = { workspace = true }
 copilot-middleware = { workspace = true }
 copilot-providers = { workspace = true }
 copilot-security = { workspace = true }
@@ -43,6 +44,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+# An in-process MCP server for the tool server test route (`make test-db`).
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 # Checks the hash of Swagger UI's inline script against its Content-Security-Policy.
 sha2 = { workspace = true }
 # The real router and guard on in-memory fakes, for route tests without Postgres.

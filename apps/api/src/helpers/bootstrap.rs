@@ -12,6 +12,7 @@ use copilot_core::{
 };
 use copilot_database::{DbPool, Env, PgStore};
 use copilot_logger::LoggerOptions;
+use copilot_mcp::McpHost;
 use copilot_providers::Gateway;
 use copilot_security::{AesCipher, Purpose};
 use tokio::task::JoinHandle;
@@ -83,13 +84,14 @@ pub struct Adapters {
 
 impl Adapters {
     /// The model providers through `copilot-providers` on the hardened provider clients
-    /// (`copilot_security::clients(Purpose::Providers)`). Tool servers stay unavailable until
-    /// P2.F wires `copilot-mcp` on `clients(Purpose::Tools)`.
+    /// (`copilot_security::clients(Purpose::Providers)`), and the MCP tool servers through
+    /// `copilot-mcp` on the hardened tool clients (`clients(Purpose::Tools)`).
     pub fn create() -> Result<Self, BoxError> {
-        let clients = copilot_security::clients(Purpose::Providers)?;
+        let providers = copilot_security::clients(Purpose::Providers)?;
+        let tools = copilot_security::clients(Purpose::Tools)?;
         Ok(Self {
-            gateway: Arc::new(Gateway::new(clients)),
-            host: Arc::new(Unavailable),
+            gateway: Arc::new(Gateway::new(providers)),
+            host: Arc::new(McpHost::new(tools)),
         })
     }
 

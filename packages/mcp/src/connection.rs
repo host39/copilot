@@ -175,6 +175,7 @@ impl Connection {
             result = attempt(Lifecycle::Auto).await;
         }
         if let Err(failed) = &result
+            && first != Lifecycle::Legacy
             && failed.legacy_offered()
         {
             result = attempt(Lifecycle::Legacy).await;
