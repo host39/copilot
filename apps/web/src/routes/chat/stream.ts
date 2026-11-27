@@ -243,6 +243,23 @@ export function resume(run: Run, event: ChatStreamEvent): Run | null {
 }
 
 /**
+ * The run after a stream's next `event`. The first event of a turn's stream, or of an attach from
+ * the start (`after` is `null`), begins a fresh run; the first event of an attach after `after`
+ * resumes `run`. `null` when that stream belongs to another run.
+ */
+export function receive(
+  run: Run | null,
+  event: ChatStreamEvent,
+  after: number | null,
+  first: boolean
+): Run | null {
+  const current = run ?? emptyRun;
+  if (!first) return apply(current, event);
+  const base = after === null ? emptyRun : resume(current, event);
+  return base && apply(base, event);
+}
+
+/**
  * A run message's parts in their order: text and reasoning at their places, tool calls filling
  * the places between them (an answer's calls are never announced by place), then the rest.
  */

@@ -14,7 +14,7 @@ import { fetchModels } from "@web/api/routes/models";
 import { clearToken, setToken } from "@web/auth/token";
 import { MessageList, messageText } from "@web/components/Chat/MessageList";
 import ChatPage from "@web/routes/chat/page";
-import { applyEvent, emptyReply, type Reply } from "@web/routes/chat/reply";
+import { apply, emptyRun, view } from "@web/routes/chat/stream";
 import HomePage from "@web/routes/home/page";
 import path from "@web/routes/path";
 import { renderToString } from "react-dom/server";
@@ -171,65 +171,6 @@ afterEach(() => {
   resetTransport();
 });
 
-describe("the streamed reply", () => {
-  const run = (values: ChatStreamEvent[], from: Reply = emptyReply) =>
-    values.reduce(applyEvent, from);
-
-  test("collects the text of the assistant message until done", () => {
-    const reply = run(turn);
-    expect(reply).toEqual({
-      messageId: REPLY,
-      text: "Hello!",
-      status: "complete",
-      error: null,
-      done: true,
-    });
-    expect(run(turn.slice(0, 3)).done).toBe(false);
-  });
-
-  test("ignores deltas of other messages", () => {
-    const reply = run([
-      turn[0],
-      { type: "text.delta", seq: 2, messageId: CHAT, index: 0, text: "other" },
-      turn[2],
-    ] as ChatStreamEvent[]);
-    expect(reply.text).toBe("Hel");
-  });
-
-  test("shows a refusal's explanation instead of the partial answer", () => {
-    const reply = run([
-      turn[0],
-      turn[2],
-      {
-        type: "message.finished",
-        seq: 3,
-        messageId: REPLY,
-        status: "refused",
-        finishReason: "refusal",
-        refusal: { category: null, explanation: "I cannot help with that." },
-        usage: null,
-      },
-    ] as ChatStreamEvent[]);
-    expect(reply.text).toBe("I cannot help with that.");
-    expect(reply.status).toBe("refused");
-  });
-
-  test("keeps the run's error", () => {
-    const reply = run([
-      turn[0],
-      {
-        type: "error",
-        seq: 2,
-        message: "Key rejected: open provider settings.",
-        code: "PROVIDER_AUTH",
-      },
-      { type: "done", seq: 3 },
-    ] as ChatStreamEvent[]);
-    expect(reply.error).toBe("Key rejected: open provider settings.");
-    expect(reply.done).toBe(true);
-  });
-});
-
 describe("the chat API", () => {
   test("lists the picker's models", async () => {
     serve(() => json({ items: [model(MODEL, "GPT")], total: 1 }));
@@ -290,6 +231,15 @@ describe("the chat API", () => {
 
 describe("the chat screens", () => {
   test("model output is shown as text, never as HTML", () => {
+    const live = view(
+      [
+        turn[0],
+        { type: "text.delta", seq: 2, messageId: REPLY, index: 0, text: "<b>live</b>" },
+      ].reduce<ReturnType<typeof apply>>(
+        (run, event) => apply(run, event as ChatStreamEvent),
+        emptyRun
+      )
+    );
     const html = renderToString(
       <MessageList
         messages={[
@@ -298,10 +248,12 @@ describe("the chat screens", () => {
             "assistant",
             "<img src=x onerror=alert(1)>"
           ),
+          ...live,
         ]}
-        reply={{ ...emptyReply, messageId: REPLY, text: "<b>live</b>" }}
+        writing={new Set([REPLY])}
       />
     );
+    expect(html.replaceAll("<!-- -->", "")).toContain("&lt;b&gt;live&lt;/b&gt;");
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<b>");
     expect(html).toContain("&lt;img");

@@ -2,15 +2,17 @@ import type { ProjectResponse, ReasoningLevel } from "@copilot/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
 import { createChat, fetchChats } from "@web/api/routes/chats";
+import { uploadFile } from "@web/api/routes/files";
 import { keys } from "@web/api/routes/keys";
 import { fetchModels } from "@web/api/routes/models";
-import { Composer } from "@web/components/Chat/Composer";
+import { Composer, type Picked } from "@web/components/Chat/Composer";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { ModelPicker } from "@web/components/ModelPicker/ModelPicker";
 import { fitLevel, startModel } from "@web/components/ModelPicker/models";
 import type { ChatState } from "@web/routes/chat/page";
+import type { Attached } from "@web/routes/chat/turn";
 import path, { link } from "@web/routes/path";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 type StartChatProps = {
@@ -24,9 +26,33 @@ type StartChatProps = {
 };
 
 /**
+ * Uploads the picked files to the new chat in order, skipping those `done` already holds (a send
+ * that failed part way), and records each one there.
+ */
+async function uploadAll(
+  chatId: string,
+  picked: Picked[],
+  done: Map<string, Attached>
+): Promise<Attached[]> {
+  const sent: Attached[] = [];
+  for (const item of picked) {
+    let file = done.get(item.key);
+    if (!file) {
+      const saved = await uploadFile({ chatId }, item.file, item.name);
+      file = { fileId: saved.id, name: saved.name, mediaType: saved.mediaType };
+      done.set(item.key, file);
+    }
+    sent.push(file);
+  }
+  return sent;
+}
+
+/**
  * The new chat draft: a model (the project's default, else the model of the most recently updated
  * chat, else the first enabled one) and its reasoning level. The first send creates the chat with
- * the draft and opens it, which sends the message, so empty chats never exist.
+ * the draft, uploads the attached files to it, and opens it, which sends the message, so empty
+ * chats never exist. When an upload fails, sending again reuses the chat and the files already
+ * uploaded.
  */
 export function StartChat({ project, preferred, placeholder, extra }: StartChatProps) {
   const models = useQuery({ queryKey: keys.models, queryFn: ({ signal }) => fetchModels(signal) });
@@ -39,6 +65,8 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const client = useQueryClient();
+  // The chat and uploads of a first send that failed part way, reused when sending again.
+  const created = useRef<{ chatId: string; files: Map<string, Attached> } | null>(null);
 
   const list = models.data ?? [];
   const model = startModel(
@@ -50,19 +78,23 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
   );
   const reasoning = fitLevel(model, choice?.reasoning ?? null);
 
-  async function start(text: string): Promise<boolean> {
+  async function start(text: string, picked: Picked[]): Promise<boolean> {
     if (!model) return false;
     setBusy(true);
     setAlert(null);
     try {
-      const chat = await createChat({
-        modelId: model.id,
-        ...(project ? { projectId: project.id } : {}),
-        ...(reasoning !== null ? { reasoning } : {}),
-      });
-      void client.invalidateQueries({ queryKey: keys.chats });
-      const state: ChatState = { text };
-      navigate(link.chat(chat.id), { state });
+      if (!created.current) {
+        const chat = await createChat({
+          modelId: model.id,
+          ...(project ? { projectId: project.id } : {}),
+          ...(reasoning !== null ? { reasoning } : {}),
+        });
+        created.current = { chatId: chat.id, files: new Map() };
+        void client.invalidateQueries({ queryKey: keys.chats });
+      }
+      const { chatId, files } = created.current;
+      const state: ChatState = { text, files: await uploadAll(chatId, picked, files) };
+      navigate(link.chat(chatId), { state });
       return true;
     } catch (error) {
       setAlert(describeError(error).message);
@@ -103,7 +135,13 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
         />
         {extra}
       </div>
-      <Composer onSend={start} busy={busy} disabled={!model} placeholder={placeholder} />
+      <Composer
+        onSend={start}
+        busy={busy}
+        disabled={!model}
+        placeholder={placeholder}
+        capabilities={model?.capabilities}
+      />
     </div>
   );
 }
