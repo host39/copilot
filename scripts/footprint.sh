@@ -11,10 +11,11 @@
 # image in image.yml.
 set -euo pipefail
 
-# Budgets in bytes. The image is measured as `docker image inspect` reports it on the runner
-# (44.5 MB at P6.1); the first load was 152.8 kB gzip.
-SERVER_MAX=$((40 * 1024 * 1024))
-MIGRATE_MAX=$((30 * 1024 * 1024))
+# Budgets in bytes. Measured at P6.1: server 30,867,112 and migrate 7,181,744 (CI's release
+# profile), first load 152.8 kB gzip, and the image 44.5 MB as `docker image inspect` reports it
+# on the runner.
+SERVER_MAX=$((36 * 1024 * 1024))
+MIGRATE_MAX=$((9 * 1024 * 1024))
 WEB_FIRST_LOAD_MAX=$((170 * 1000))
 IMAGE_MAX=$((55 * 1000 * 1000))
 
