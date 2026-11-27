@@ -46,8 +46,8 @@ impl Scheduler {
         Self { state }
     }
 
-    /// Ticks until `shutdown` is cancelled: once at once, then every `SCHEDULER_TICK_SECS`. A
-    /// tick that takes longer delays the next one instead of bunching them up.
+    /// Ticks until `shutdown` is cancelled: right away, then every `SCHEDULER_TICK_SECS`. A tick
+    /// that takes longer delays the next one instead of bunching them up.
     pub fn start(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(SCHEDULER_TICK_SECS));

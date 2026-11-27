@@ -9,11 +9,13 @@ use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
 use copilot_database::DbPool;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::App;
 use crate::config::AppState;
+use crate::helpers::auth::testing::identity;
+use crate::helpers::bootstrap::Adapters;
 use crate::helpers::llm_server::LlmServer;
 use crate::helpers::scheduler::Scheduler;
 use crate::helpers::testing::{self, config, live, other_user, request, send};
@@ -21,6 +23,7 @@ use crate::routes::chats::flows::{
     attach, call, content, messages, new_chat, requested, say, setup, text,
 };
 use crate::routes::chats::tools::{answer, calls, completions, events, next, script};
+use crate::{App, AppDependencies, assemble};
 
 /// The app with a wiremock provider: the app, the first account's token, the model's id, and
 /// the provider to script.
@@ -101,6 +104,32 @@ async fn quiet(state: &AppState) {
 
 fn second() -> chrono::Duration {
     chrono::Duration::seconds(1)
+}
+
+#[tokio::test]
+async fn the_loop_stops_on_shutdown() {
+    let shutdown = CancellationToken::new();
+    let config = config();
+    let db = copilot_database::create_pool(&config.db);
+    let App { state, .. } = assemble(AppDependencies {
+        config,
+        db,
+        identity: identity().await,
+        adapters: Adapters::unavailable(),
+        shutdown: shutdown.clone(),
+    });
+    // The database is unreachable: the first tick fails, is logged, and the loop goes on.
+    let running = Scheduler::new(state).start(shutdown.clone());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !running.is_finished(),
+        "a failed tick does not end the loop"
+    );
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("the loop stops")
+        .expect("without a panic");
 }
 
 #[sqlx::test(migrations = false)]
