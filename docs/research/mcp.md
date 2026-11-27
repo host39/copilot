@@ -231,6 +231,8 @@ From [child_process.rs](https://github.com/modelcontextprotocol/rust-sdk/blob/rm
 - Incoming lines are capped at 16 MiB (`DEFAULT_MAX_LINE_LENGTH`).
 - The spec says stdio implementations "**SHOULD NOT** follow this specification [authorization], and instead retrieve credentials from the environment." ([Authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization))
 
+Outcome (P7.3, 2026-11-27): built-in stdio servers use the `transport-child-process` feature (two more crates in the server's graph, `process-wrap` and `nix`, no `aws-lc-rs`), but Copilot spawns the process itself with `process-wrap` (`ProcessGroup::leader`, `KillOnDrop`) and hands rmcp the child's stdout and stdin (`AsyncRwTransport::new_client`, with the line cap set to `MCP_RESPONSE_MAX_BYTES`). `TokioChildProcess::graceful_shutdown` stops waiting once the program exits on its own and never signals the rest of its process group, so a program's own children outlived it in a test; Copilot's stop closes stdin, sends `SIGTERM`, then `SIGKILL`, and kills the group afterwards. See `docs/design/tracks/p7-3.md`.
+
 ### OAuth Support (`auth` Feature, for v2)
 
 From [OAUTH_SUPPORT.md](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.12.0/docs/OAUTH_SUPPORT.md) and [auth.rs](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.12.0/crates/rmcp/src/transport/auth.rs):

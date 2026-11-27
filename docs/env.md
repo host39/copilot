@@ -33,6 +33,8 @@ Values are trimmed, and a blank value counts as unset. Invalid or missing variab
 | `MAX_STORAGE_MB_PER_USER` | No | `1024` | Total file storage per user, 1 to 1048576 |
 | `PUBLIC_URL` | No | none | The origin people reach the server at, for tool server sign-in with OAuth (the callback `<PUBLIC_URL>/api/oauth/callback` and the page it returns to, `<PUBLIC_URL>/oauth/done`): `https://host[:port]`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for development, without a path, query, or credentials. Unset: sign-in is off (`SIGN_IN_UNAVAILABLE`), and the sign-in routes answer `404`. See [Tool Server Sign-In](./self-hosting.md#tool-server-sign-in-oauth) |
 | `OAUTH_CLIENT_METADATA` | No | `true` | `true` or `false`: whether an `https` `PUBLIC_URL` serves `<PUBLIC_URL>/api/oauth/client` as Copilot's client id to authorization servers that accept Client ID Metadata Documents. `false` when they cannot reach this server (an install on a private network): Copilot then registers dynamically, or uses a client id entered for the server |
+| `MCP_STDIO_ENABLED` | No | `false` | `true` or `false`: whether administrators may add and run stdio tool servers, programs on this server that speak MCP over stdin and stdout. Each program runs without a shell and with only the environment variables entered for it; the setting and the owner's administrator role are checked again before every start. See [Local (stdio) MCP Servers](./self-hosting.md#local-stdio-mcp-servers) |
+| `MCP_STDIO_DIR` | With `MCP_STDIO_ENABLED=true` | none | Absolute path of the folder under which each stdio server gets its working directory (created owner-only on first use); the server's user must be able to write it. Required when stdio is on, else the server stops at start (`api.config.env.invalid MCP_STDIO_DIR`) |
 | `WEB_DIR` | No | none | Directory of the built web bundle (it must hold `index.html`). The server then serves it for every `GET` outside `/api` and `/health`, with `index.html` for client routes and the `.br` or `.gz` copy when one exists and the browser accepts it; the image sets `/app/web` |
 
 ## Database
@@ -106,6 +108,7 @@ The server starts only when lib-rustauth's `auth` migrations are applied (`migra
 | `AUTH_TRUSTED_PROXIES` | No | `172.31.239.1` | The compose network's gateway, which is where Docker's port proxy connects from |
 | `ALLOW_PRIVATE_NETWORK`, `AUTH_REGISTRATION_OPEN`, `AUTH_SETUP_TOKEN`, `LOG_LEVEL` | No | `admins`, `false`, generated, `info` | Passed through |
 | `PUBLIC_URL`, `OAUTH_CLIENT_METADATA` | No | unset, `true` | Passed through (tool server sign-in) |
+| `MCP_STDIO_ENABLED`, `MCP_STDIO_DIR` | No | `false`, unset | Passed through (stdio tool servers; the default image has no runtimes for them, see [the recipes](./self-hosting.md#local-stdio-mcp-servers)) |
 
 The compose file fixes `ENVIRONMENT=production`, `DB_SSL=false` (Postgres never leaves the compose network), and the database name and roles.
 

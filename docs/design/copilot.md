@@ -20,7 +20,7 @@ A lightweight, self-hosted chat client for any model provider. The backend store
 | --- | --- |
 | Retrieval-augmented generation and vector search | Project files go to the model as context, with a capacity bar. Later: provider-hosted embeddings plus `pgvector` |
 | Running code or plugins inside Copilot | Tools come from remote MCP servers |
-| stdio MCP servers | Run a stdio server in its own container behind a stdio-to-Streamable-HTTP bridge and register it by URL ([self-hosting guide](../self-hosting.md#local-stdio-mcp-servers)). The hardening rules for a later stdio mode are in [Security](#later-stdio-servers) |
+| stdio MCP servers | Run a stdio server in its own container behind a stdio-to-Streamable-HTTP bridge and register it by URL ([self-hosting guide](../self-hosting.md#local-stdio-mcp-servers)). Built-in stdio servers for administrators came after v0.1 (P7.3), off by default: see [stdio Servers](#stdio-servers) |
 | MCP OAuth | Bearer token or static headers. OAuth sign-in came after v0.1 (P7.2): see [Tool Server Sign-In](#tool-server-sign-in) |
 | Branching conversation trees | Editing a user message deletes the messages after it, after a confirmation |
 | PDF text extraction for models without PDF input | The PDF is replaced by a notice for that model. Later: a pure-Rust text extractor |
@@ -678,7 +678,8 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
 | Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204; `after`), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
 | Search | `GET /search?q=` (titles and message text; returns `chatId`, `chatTitle`, `messageId`, `snippet`) |
-| Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes`, `authMode`, and `oauthClient` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list), `POST /tool-servers/{id}/oauth/start` (the authorization URL), `DELETE /tool-servers/{id}/oauth` (sign out); public: `GET /oauth/callback` (finishes a sign-in, `303` to `/oauth/done`) and `GET /oauth/client` (the Client ID Metadata Document) |
+| Capabilities | `GET /capabilities`: what the server lets the caller do (`stdioServers`: `MCP_STDIO_ENABLED` is on and the caller is an administrator) |
+| Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes`, `authMode`, `oauthClient`, and a stdio server's `transport` and `stdio` program included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list), `POST /tool-servers/{id}/oauth/start` (the authorization URL), `DELETE /tool-servers/{id}/oauth` (sign out); public: `GET /oauth/callback` (finishes a sign-in, `303` to `/oauth/done`) and `GET /oauth/client` (the Client ID Metadata Document) |
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |
 | Events | `GET /events` (SSE) |
 | Docs | `GET /doc` (OpenAPI), `GET /ui` |
@@ -775,7 +776,7 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `tools_review_required` | `boolean` | not null, default false |
 | `name` | `text` | not null |
 | `slug` | `text` | not null; `^[a-z0-9]{1,12}$`; `UNIQUE (user_id, slug)`; immutable |
-| `url` | `text` | not null |
+| `url` | `text` | null only for a stdio server (P7.3 dropped `NOT NULL`) |
 | `approval` | `text` | not null, default `ask`; `ask` or `auto` |
 | `headers_sealed` | `bytea` | null; sealed JSON map of the bearer token and custom headers; only in `headers` mode |
 | `protocol_version` | `text` | null; negotiated MCP revision |
@@ -787,6 +788,11 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `oauth_client_id` | `text` | null; a pre-registered OAuth client id the user entered |
 | `oauth_client_secret_sealed` | `bytea` | null; its secret, sealed (needs `oauth_client_id`) |
 | `oauth_tokens_sealed` | `bytea` | null; the sealed sign-in: access and refresh tokens with the issuer, token endpoint, client, resource, and scope a refresh needs. Settings writes never store it and clear it only when the mode leaves `oauth` or the URL changes |
+| `transport` | `text` | not null, default `http`; `http` or `stdio`; fixed when the server is added (P7.3, appended like the columns below) |
+| `command` | `text` | null; a stdio server's absolute program path |
+| `env_sealed` | `bytea` | null; a stdio server's sealed JSON map of environment variables, its whole environment |
+| `cwd` | `text` | null; a stdio server's working directory, relative to `MCP_STDIO_DIR` |
+| `args` | `text[]` | null; a stdio server's arguments, each passed as it is. A `CHECK` (`tool_servers_transport_check_columns`) keeps an `http` server to `url` and a `stdio` server to `command`, `args`, `cwd` (and `env_sealed`) with `auth_mode` `none` |
 
 #### `oauth_flows`
 
@@ -969,7 +975,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Readonly Role
 
-`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, `tools_cached`, `oauth_client_id`, `oauth_client_secret_sealed`, and `oauth_tokens_sealed`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, `oauth_flows`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
+`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, `tools_cached`, `oauth_client_id`, `oauth_client_secret_sealed`, `oauth_tokens_sealed`, `command`, `args`, and `env_sealed`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, `oauth_flows`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
 
 ### Portability
 
@@ -1056,9 +1062,18 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 The SPA and the API share one origin, so CORS is a development convenience, not an access-control mechanism; bearer tokens protect user data. Native builds call the API through `tauri-plugin-http`, which is not subject to CORS, and the webview never calls the API with its own `fetch`, so no Tauri origins are added.
 
-### Later: stdio Servers
+### stdio Servers
 
-If stdio returns after v1, it needs all of these: columns `command` (program path), `args text[]`, `env_sealed`, `cwd`; spawn with `Command::new(command).args(args).env_clear().envs(listed).current_dir(<per-server dir>)`, never a shell; stderr piped into `mcp.stdio.stderr`; admin-only creation and use, only in the admin's own projects and chats; `MCP_STDIO_ENABLED` and admin status re-checked at spawn; the full command shown untruncated before saving; deployment docs recommend a low-privilege user or container.
+Added after v0.1 (P7.3), off by default. Decisions and their reasons: [tracks/p7-3.md](./tracks/p7-3.md); deployment recipes: [self-hosting guide](../self-hosting.md#local-stdio-mcp-servers).
+
+1. **Transport.** A tool server is `http` (a URL) or `stdio` (a program on the API host), fixed when it is added. A stdio server stores `command` (an absolute program path: the process has no `PATH`), `args` (`text[]`, each passed as it is), `env_sealed` (the sealed JSON map of the only environment variables it gets; responses show the names, never the values), and `cwd` (a relative path of plain names under `MCP_STDIO_DIR`, the server's id by default). It takes no URL, headers, or OAuth (`auth_mode` stays `none`). Limits: a path of 1,024 characters, 64 arguments of 4,096, 64 variables (names `[A-Za-z_][A-Za-z0-9_]*`), a directory of 255; no NUL characters.
+2. **Who.** Only an administrator adds a stdio server or changes its program, and only while `MCP_STDIO_ENABLED` is on (`FORBIDDEN` 403, `STDIO_DISABLED` 422). The owner may still rename, disable, or delete it. Servers belong to their owner, so a stdio server is only ever selectable in its administrator's own projects, chats, and schedules. `GET /capabilities` tells the web app whether to offer the stdio fields.
+3. **Use.** A turn lists and offers a stdio server's tools only when the caller may run it; `ToolService::endpoint` refuses it otherwise. Each stdio endpoint carries a `SpawnGate`: right before every start of the process, core reads `MCP_STDIO_ENABLED` and the owner's account as stored now (`Accounts::active`), so a demoted or disabled administrator's server stops starting at once, even within a run already under way.
+4. **Spawn.** `copilot-mcp` runs `Command::new(command).args(args).env_clear().envs(listed).current_dir(<MCP_STDIO_DIR>/<cwd>)` through rmcp's child-process transport and `process-wrap`, never a shell. The directory is created owner-only (`0700`) and refused when, with symbolic links resolved, it leaves `MCP_STDIO_DIR`. The process leads its own process group.
+5. **Lifetime.** One process per server per run, started on the first call (a test or a turn's listing starts one and ends it). It gets `MCP_STDIO_START_TIMEOUT_SECS` (30) to finish the MCP handshake, or it is killed. When the run's session closes, its stdin closes, then `SIGTERM`, then `SIGKILL`, 2 seconds apart, and the rest of its process group is killed; a dropped session kills the group at once. Each lifecycle attempt is a new process and passes the gate again. Lines on stdout are capped at `MCP_RESPONSE_MAX_BYTES`.
+6. **stderr** goes to `mcp.stdio.stderr` at `debug` (the program's own text may echo tool arguments, which never go to `info`), one event per line with control characters as spaces, lines cut to `STDIO_STDERR_LINE_MAX_BYTES` (1,024), at most `STDIO_STDERR_MAX_LINES` (200) per process, the rest read and counted (`mcp.stdio.stderr-dropped`). `mcp.stdio.started`, `mcp.stdio.stopped`, `mcp.stdio.start-failed`, `mcp.stdio.handshake-failed`, and `core.tools.stdio.refused` are logged at `info` or `warn` with the server id.
+7. **Review.** A changed program (command, arguments, sealed environment, or directory) counts as a new server, as a new URL does: the negotiated revision is forgotten, the tools are listed again before a turn offers them, and every tool asks until the review. The listing guard compares the program as it compares the URL. The web app shows the whole command, every argument, never truncated, while it is entered, in a confirmation before it is saved (the first test starts it), on the server's page, and on the review prompt.
+8. **Resources.** Copilot bounds how many processes run (one per stdio server per run; runs per user and scheduled runs are capped; a scheduled run ends after `SCHEDULED_RUN_MAX_SECS`) but not their CPU, memory, or child processes; the deployment does that (container `mem_limit`, `pids_limit`, `cpus`, or systemd `MemoryMax`, `TasksMax`, `CPUQuota`), and runs the server as a low-privilege user ([self-hosting guide](../self-hosting.md#local-stdio-mcp-servers)).
 
 ## Configuration
 
@@ -1075,6 +1090,8 @@ Template variables stay (`ENVIRONMENT`, `HOST`, `PORT`, `LOG_LEVEL`, `CORS_ALLOW
 | `WEB_DIR` | unset | Directory of the built web bundle to serve (must hold `index.html`); the image sets `/app/web` |
 | `PUBLIC_URL` | unset | The origin people reach the server at (`https`, or plain `http` on a loopback host only), for tool server sign-in: the callback and the page it returns to. Unset: sign-in is off (P7.2) |
 | `OAUTH_CLIENT_METADATA` | `true` | Whether an `https` `PUBLIC_URL` serves `<PUBLIC_URL>/api/oauth/client` as the client id to authorization servers that accept Client ID Metadata Documents; `false` when they cannot reach this server (P7.2) |
+| `MCP_STDIO_ENABLED` | `false` | Whether administrators may add and run stdio tool servers, programs on this server ([stdio Servers](#stdio-servers), P7.3) |
+| `MCP_STDIO_DIR` | unset | Absolute path under which each stdio server gets its working directory; required when `MCP_STDIO_ENABLED` is on (P7.3) |
 
 Identity variables are rustauth's, read by `AuthConfig::parse` in the composition root. Copilot documents them in the same two files:
 
@@ -1102,6 +1119,9 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `MCP_RESULT_MAX_BYTES` | 65536 |
 | `MCP_RESPONSE_MAX_BYTES` | 4194304 |
 | `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`, `MCP_LIST_MAX_PAGES`, `MCP_TOOLS_MAX` | 15 (one connection attempt), 30 (a whole listing), 5 (closing), 16, 512 (tools one server may list; more fails the listing with `TOOL_SERVER_TOO_LARGE`) |
+| `MCP_STDIO_START_TIMEOUT_SECS` | 30 (a stdio server's process, from its start to the end of the MCP handshake; a listing gets it on top of `MCP_LIST_TIMEOUT_SECS`) |
+| `STDIO_COMMAND_MAX_CHARS`, `STDIO_ARGS_MAX`, `STDIO_ARG_MAX_CHARS`, `STDIO_ENV_MAX`, `STDIO_ENV_NAME_MAX_CHARS`, `STDIO_ENV_VALUE_MAX_CHARS`, `STDIO_CWD_MAX_CHARS` | 1,024, 64, 4,096, 64, 128, 8,192, 255 |
+| `STDIO_STDERR_LINE_MAX_BYTES`, `STDIO_STDERR_MAX_LINES` | 1,024, 200 (per process; the rest of its stderr is read and counted) |
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
 | `SIGN_IN_FLOW_SECS`, `TOKEN_EXPIRY_SKEW_SECS` | 600 (a sign-in in progress), 60 (an access token this close to expiry is refreshed first) |

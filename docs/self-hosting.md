@@ -181,9 +181,104 @@ With the default `admins`, the administrator adds the Ollama connection; other p
 
 ## Local (stdio) MCP Servers
 
-Copilot talks to MCP servers over Streamable HTTP only: it never starts programs itself. Many MCP servers (most of those started with `npx` or `uvx`) speak stdio instead. Run such a server in a container of its own behind a bridge that turns stdio into Streamable HTTP, and register the bridge's URL as a tool server. The server then runs as the bridge's child process in that container, away from Copilot's process, its environment (`SECRET_KEY`, the database password), and its files.
+Many MCP servers (most of those started with `npx` or `uvx`) speak stdio rather than Streamable HTTP. There are two ways to use them:
 
-This example runs the reference memory server behind [supergateway](https://github.com/supercorp-ai/supergateway), whose `streamableHttp` output serves the MCP endpoint at `/mcp`:
+- **Built in** (since P7.3, off by default): an administrator registers the program itself, and Copilot starts it for each chat that uses it and ends it afterwards. The program runs on the Copilot server, as the server's user, so this is for programs you trust as much as Copilot itself.
+- **Behind a bridge**: the program runs in a container of its own behind a bridge that turns stdio into Streamable HTTP, and you register the bridge's URL like any remote server. This keeps the program away from Copilot's process, environment, and files, and needs no setting.
+
+### Built-In stdio Servers
+
+1. Make the program available where the server runs (see the two recipes below: the default image has no Node.js or Python).
+2. Set `MCP_STDIO_ENABLED=true` and `MCP_STDIO_DIR` to an absolute path the server's user may write, such as `/data/mcp`, and restart. Without `MCP_STDIO_DIR` the server refuses to start (`api.config.env.invalid MCP_STDIO_DIR`).
+3. As an administrator, open Settings, Tool servers, Add, choose **Program on this server**, and enter the program's absolute path, its arguments (one per line, passed exactly as written), the environment variables it needs (its API keys, for example), and optionally a working directory under `MCP_STDIO_DIR`. The whole command shows as you type and once more before Copilot saves it and starts it for the first test.
+
+What Copilot guarantees:
+
+- **No shell, no inherited environment.** The program runs as `Command::new(path).args(args).env_clear().envs(yours).current_dir(dir)`: arguments are never expanded or split, and the program gets only the variables you entered (stored encrypted under `SECRET_KEY`, never shown again), not `SECRET_KEY`, the database password, or `PATH`. That is why the path must be absolute.
+- **Its own directory.** Each server works in `<MCP_STDIO_DIR>/<working directory>` (its id when you leave it empty), created owner-only on first use; a path that leaves `MCP_STDIO_DIR`, also through a symbolic link, is refused.
+- **Administrators only, checked every time.** Only administrators add stdio servers or change their programs, and only while `MCP_STDIO_ENABLED` is on. Before every start of a program Copilot reads both again: turning the setting off, or demoting or disabling the administrator who owns the server, stops it from starting at once, even in a chat that is already running. A stdio server belongs to its administrator, so it is only ever offered in that administrator's own projects, chats, and schedules.
+- **Lifetime.** One process per server per chat turn (or test), started on the first call. It must finish the MCP handshake within 30 seconds or it is killed. When the turn ends, its stdin closes, then it gets `SIGTERM`, then `SIGKILL`, 2 seconds apart, and the rest of its process group is killed too, so helpers it started end with it.
+- **Logs.** The program's stderr goes to the server log as `mcp.stdio.stderr` at `debug` level (it may contain what the program was asked), at most 200 lines of 1 KiB per process; `mcp.stdio.started` and `mcp.stdio.stopped` are logged at `info`. Set `LOG_LEVEL=debug` while you set a program up.
+
+**Resource limits.** Copilot bounds how many programs run: one per stdio server per turn, turns are limited per user (`MAX_ACTIVE_RUNS_PER_USER`, 3) and scheduled runs overall (`MAX_SCHEDULED_RUNS`, 2), a scheduled run stops after 30 minutes, each tool call after 60 seconds, and each MCP message is capped at 4 MiB. It does not limit a program's CPU, memory, or child processes: the programs share the server's container or service. Limit that, for example in `deploy/compose.override.yml`:
+
+```yaml
+services:
+  copilot:
+    mem_limit: 1g
+    pids_limit: 256
+    cpus: 2
+```
+
+or, outside Docker, with `MemoryMax=`, `TasksMax=`, and `CPUQuota=` in the systemd unit below.
+
+#### Recipe: A Derived Image
+
+The Copilot image is distroless: it has no shell, package manager, Node.js, or Python. Build an image on top of it that adds the runtime and the server you need. This example adds Node.js and the reference memory server; pin the versions you have tested:
+
+```dockerfile
+# deploy/Dockerfile.mcp
+FROM node:22-bookworm-slim AS tools
+RUN npm install --global --prefix /opt/mcp @modelcontextprotocol/server-memory \
+    && mkdir -p /out/mcp-data
+
+# The Copilot image (Debian 12 glibc, like the stage above, so node runs unchanged).
+FROM ghcr.io/host39/copilot:0.1.0
+COPY --from=tools /usr/local/bin/node /usr/local/bin/node
+COPY --from=tools /opt/mcp /opt/mcp
+# MCP_STDIO_DIR, owned by the image's nonroot user (a new volume copies this ownership).
+COPY --from=tools --chown=65532:65532 /out/mcp-data /data/mcp
+ENV MCP_STDIO_ENABLED=true \
+    MCP_STDIO_DIR=/data/mcp
+```
+
+```yaml
+# deploy/compose.override.yml
+services:
+  copilot:
+    image: copilot-mcp:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.mcp
+    volumes:
+      - mcp-data:/data/mcp
+volumes:
+  mcp-data:
+```
+
+Then add the server with the program `/usr/local/bin/node` and the argument `/opt/mcp/lib/node_modules/@modelcontextprotocol/server-memory/dist/index.js`, and the variable `MEMORY_FILE_PATH=/data/mcp/memory.json` so its file outlives the container. npm's own launchers (`/opt/mcp/bin/...`) start with `#!/usr/bin/env node`, which does not exist in the image, so name the runtime and the script instead. Check that the runtime starts with `docker run --rm --entrypoint /usr/local/bin/node copilot-mcp:local --version`. A server that ships as one static binary needs only that binary copied in. Python servers need their interpreter and its standard library, so a bridge container is usually simpler for them.
+
+#### Recipe: The Server Outside Docker
+
+Run the `server` binary directly on a host where the programs are installed, as a user of its own. Copy the binaries out of the image (`docker create --name copilot-bin ghcr.io/host39/copilot:0.1.0`, then `docker cp copilot-bin:/usr/local/bin/server .`, the same for `migrate`, and `docker rm copilot-bin`) or build them with `cargo build --profile dist -p copilot-api -p copilot-database`, and serve the web bundle from `WEB_DIR` (`docker cp copilot-bin:/app/web ./web`). A systemd unit with the limits above:
+
+```ini
+# /etc/systemd/system/copilot.service
+[Service]
+User=copilot
+EnvironmentFile=/etc/copilot/copilot.env
+Environment=MCP_STDIO_ENABLED=true MCP_STDIO_DIR=/var/lib/copilot/mcp WEB_DIR=/opt/copilot/web
+StateDirectory=copilot
+ExecStart=/opt/copilot/server
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/copilot
+MemoryMax=1G
+TasksMax=256
+CPUQuota=200%
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Programs then run as `copilot` with what that user may read; `ProtectSystem=strict` leaves them only `/var/lib/copilot` to write.
+
+### Behind a Bridge
+
+The server runs as the bridge's child process in its own container, away from Copilot's process, its environment (`SECRET_KEY`, the database password), and its files. This example runs the reference memory server behind [supergateway](https://github.com/supercorp-ai/supergateway), whose `streamableHttp` output serves the MCP endpoint at `/mcp`:
 
 ```yaml
 # deploy/compose.override.yml

@@ -78,6 +78,10 @@ services:
       # sign-in with OAuth. Unset: sign-in is off.
       PUBLIC_URL: ${PUBLIC_URL:-}
       OAUTH_CLIENT_METADATA: ${OAUTH_CLIENT_METADATA:-true}
+      # stdio tool servers (programs this server starts): off unless set, and the image has no
+      # runtimes for them (docs/self-hosting.md, Local (stdio) MCP Servers).
+      MCP_STDIO_ENABLED: ${MCP_STDIO_ENABLED:-false}
+      MCP_STDIO_DIR: ${MCP_STDIO_DIR:-}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-11-27): built as decided through roadmap Phase 6, with the changes recorded below (Gemini, the fake model server, voice, and the native shells), and amended for the Phase 7 steps (the OpenAI Responses API in P7.1, MCP OAuth sign-in in P7.2). The owner's review of the spec and this ADR (roadmap P0.3) is still open; anything it changes comes as an amendment here or a new ADR.
+Accepted (2026-11-27): built as decided through roadmap Phase 6, with the changes recorded below (Gemini, the fake model server, voice, and the native shells), and amended for the Phase 7 steps (the OpenAI Responses API in P7.1, MCP OAuth sign-in in P7.2, built-in stdio servers in P7.3). The owner's review of the spec and this ADR (roadmap P0.3) is still open; anything it changes comes as an amendment here or a new ADR.
 
 ## Context
 
@@ -59,7 +59,7 @@ Added in P7.1 (2026-11-27), after v0.1, so OpenAI's newest models get tool calli
 ### Tools Through MCP
 
 - Tools come from remote MCP servers over Streamable HTTP through the official `rmcp` client, dual-era (2026-07-28 and 2025 servers). Copilot runs every tool call itself, for every provider; it does not use provider-hosted MCP connectors.
-- stdio servers are out of v1: a stdio server runs in its own container behind a bridge and is registered by URL. MCP OAuth was out of v1 and came in P7.2 (below).
+- stdio servers were out of v1 (a stdio server ran in its own container behind a bridge, registered by URL, which still works); built-in stdio servers for administrators came in P7.3 (below). MCP OAuth was out of v1 and came in P7.2 (below).
 - New servers default to `ask`; modes can be set per tool. Approvals are **persisted** on the message (`awaiting_approval`) and the run ends, so any device can answer and a restart loses nothing.
 
 ### MCP OAuth Sign-In
@@ -111,6 +111,17 @@ Added in P7.2 (2026-11-27), after v0.1, for remote MCP servers that require OAut
 - No Copilot crate depends on it and it depends on none (`make boundaries`), so it never reaches the image.
 - **Why:** wiremock fixtures test each adapter in isolation, but only a whole server exercises the API, the run registry, the outbound client policy, and the web app together; a fake that follows the real APIs' rules (for example, refusing a tool call that is not answered right away) catches what fixtures shaped by the same author miss. It does not replace live checks with real keys (roadmap P3.4).
 
+### Built-In stdio Servers
+
+Added in P7.3 (2026-11-27), after v0.1, under the hardening rules the spec carried since v1. The rules are in the spec's "stdio Servers"; the decisions with their reasons are in [tracks/p7-3.md](../design/tracks/p7-3.md).
+
+- **Off by default, administrators only, checked at every start.** `MCP_STDIO_ENABLED` (default `false`) and the administrator role gate adding and changing a program, and core hands the adapter a `SpawnGate` with each stdio endpoint that reads both again (the owner's account as stored now) right before every process starts, so a demotion takes effect within a running chat.
+- **No shell, no inherited environment.** The program is an absolute path run with its argument list, `env_clear()`, and only the variables the administrator entered (sealed like every other credential), in its own directory under `MCP_STDIO_DIR`. The process leads its own process group; closing the run's session stops it (stdin, `SIGTERM`, `SIGKILL`) and kills what is left of the group, and dropping the session kills the group at once.
+- **rmcp's child-process transport with `process-wrap`, process owned by Copilot.** The `transport-child-process` feature adds two crates (`process-wrap` and `nix`), no `aws-lc-rs`. Copilot spawns the process itself and hands rmcp its stdout and stdin, because rmcp's `TokioChildProcess` forgets the process group when the program exits on its own, which left the program's children running.
+- **The transport is fixed per server.** A stdio server has no URL, headers, or OAuth; the database `CHECK` keeps the two transports' columns apart. A changed program is reviewed again, as a changed URL is.
+- **Why:** many MCP servers only speak stdio, and the bridge container is extra setup; administrators who trust a program can now run it directly. The bridge stays the recommended way for programs that should not share the server's user and files.
+- **Accepted risk:** the program runs as the API's OS user, next to its files. The deployment limits it (a low-privilege user or container, `pids_limit`, memory and CPU limits); the default image ships no runtimes for it.
+
 ### Security Baseline
 
 - Authentication is always on and comes from lib-rustauth: no auth bypass setting. The first registration needs a setup token; administrators create other users unless registration is open.
@@ -140,7 +151,7 @@ Added in P7.2 (2026-11-27), after v0.1, for remote MCP servers that require OAut
 
 ### Neutral
 
-- stdio servers, live voice, and key rotation tooling are deferred, and the data model leaves room for each. The OpenAI Responses API came in P7.1 and MCP OAuth sign-in in P7.2.
+- Live voice and key rotation tooling are deferred, and the data model leaves room for each. The OpenAI Responses API came in P7.1, MCP OAuth sign-in in P7.2, and built-in stdio servers in P7.3.
 
 ## Alternatives Considered
 
