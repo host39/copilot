@@ -53,13 +53,15 @@ async function uploadAll(
 
 /**
  * The `POST /chats` body of the draft: only what differs from the defaults, so a chat in a project
- * keeps following the project's tools unless the draft changed them.
+ * keeps following the project's tools unless the draft changed them. `voiceReplies` is Speak
+ * replies, sent only when on.
  */
 export function draftBody(
   modelId: string,
   project: Pick<ProjectResponse, "id"> | null | undefined,
   reasoning: ReasoningLevel | null,
-  tools: ToolChoice
+  tools: ToolChoice,
+  voiceReplies = false
 ): CreateChatRequest {
   return {
     modelId,
@@ -67,6 +69,7 @@ export function draftBody(
     ...(reasoning !== null ? { reasoning } : {}),
     ...(tools.toolOverrides.length > 0 ? { toolOverrides: tools.toolOverrides } : {}),
     ...(tools.builtinTools !== null ? { builtinTools: tools.builtinTools } : {}),
+    ...(voiceReplies ? { voiceReplies: true } : {}),
   };
 }
 
@@ -92,6 +95,7 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
   const [tools, setTools] = useState<ToolChoice>({ toolOverrides: [], builtinTools: null });
   const [alert, setAlert] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [speak, setSpeak] = useState(false);
   const navigate = useNavigate();
   const client = useQueryClient();
   // The chat and uploads of a first send that failed part way, reused when sending again.
@@ -107,6 +111,8 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
   );
   const reasoning = fitLevel(model, choice?.reasoning ?? null);
   const toolsOff = toolsWarning(toolsOn(tools, project), model?.capabilities);
+  // Speak replies counts only for a model that answers with audio.
+  const voiceReplies = speak && Boolean(model?.capabilities.audioOut);
 
   async function start(text: string, picked: Picked[]): Promise<boolean> {
     if (!model) return false;
@@ -114,7 +120,7 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
     setAlert(null);
     try {
       if (!created.current) {
-        const chat = await createChat(draftBody(model.id, project, reasoning, tools));
+        const chat = await createChat(draftBody(model.id, project, reasoning, tools, voiceReplies));
         created.current = { chatId: chat.id, files: new Map() };
         void client.invalidateQueries({ queryKey: keys.chats });
       }
@@ -168,6 +174,7 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
         disabled={!model}
         placeholder={placeholder}
         capabilities={model?.capabilities}
+        speak={{ on: speak, onChange: setSpeak }}
         tools={
           <ToolsMenu
             servers={servers.data}

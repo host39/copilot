@@ -4,6 +4,7 @@ import type {
   ModelResponse,
   ProjectResponse,
   ToolServerResponse,
+  UpdateChatRequest,
 } from "@copilot/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
@@ -15,12 +16,14 @@ import { fetchProject } from "@web/api/routes/projects";
 import { fetchToolServers } from "@web/api/routes/tool-servers";
 import { Composer, type Picked, type Upload } from "@web/components/Chat/Composer";
 import { type ListActions, MessageList } from "@web/components/Chat/MessageList";
+import { VOICE_MESSAGE } from "@web/components/Chat/messages";
 import { ToolsMenu } from "@web/components/Chat/ToolsMenu";
 import { TOOLS_OFF_NOTE, toolsWarning } from "@web/components/Chat/tools";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import { MenuButton, useOwnHeader } from "@web/components/Layout/Shell";
 import { QueryState } from "@web/components/Settings/QueryState";
+import { useSpeaker } from "@web/hooks/useSpeaker";
 import { useChatSaved } from "@web/routes/chat/dialogs";
 import { ChatHeader } from "@web/routes/chat/header";
 import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
@@ -35,13 +38,26 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 /** What the new chat screen hands over: the first message, sent once on arrival. */
 export type ChatState = { text: string; files?: Attached[] };
 
-/** The files of a sent message, to send again with an edit. */
+/** The files of a sent message (attachments and recordings), to send again with an edit. */
 export function messageFiles(message: Pick<MessageResponse, "parts">): Attached[] {
-  return message.parts.flatMap((part) =>
-    part.type === "file"
-      ? [{ fileId: part.fileId, name: part.name, mediaType: part.mediaType }]
-      : []
-  );
+  return message.parts.flatMap((part) => {
+    if (part.type === "file") {
+      return [{ fileId: part.fileId, name: part.name, mediaType: part.mediaType }];
+    }
+    if (part.type === "audio") {
+      const mediaType = part.format === "mp3" ? "audio/mpeg" : "audio/wav";
+      return [{ fileId: part.fileId, name: VOICE_MESSAGE, mediaType }];
+    }
+    return [];
+  });
+}
+
+/** Whether the chat's answers come with spoken audio: Speak replies on, for a model with `audioOut`. */
+export function speaksReplies(
+  chat: Pick<ChatResponse, "voiceReplies"> | undefined,
+  model: Pick<ModelResponse, "capabilities"> | undefined
+): boolean {
+  return Boolean(chat?.voiceReplies && model?.capabilities.audioOut);
 }
 
 /** Sends the first message the new chat screen handed over, once. */
@@ -175,9 +191,26 @@ export function phaseNote(phase: Phase): string | null {
 }
 
 /**
- * The chat's tools menu: each change is stored on the chat at once (the menu shows it before the
- * server answers, and the saved chat replaces it), and applies from the next message.
+ * Stores a change of the chat's settings at once: the screen shows it before the server answers,
+ * the saved chat replaces it, and a refusal puts the chat back and reports the server's message
+ * to `onError` (`null` when a change starts). Changes apply from the next message.
  */
+function useChatChange(onError: (message: string | null) => void) {
+  const client = useQueryClient();
+  const saved = useChatSaved();
+  return (chat: ChatResponse, body: UpdateChatRequest) => {
+    onError(null);
+    client.setQueryData(keys.chat(chat.id), { ...chat, ...body });
+    updateChat(chat.id, body)
+      .then((result) => saved(result))
+      .catch((failure: unknown) => {
+        onError(describeError(failure).message);
+        void client.invalidateQueries({ queryKey: keys.chat(chat.id), exact: true });
+      });
+  };
+}
+
+/** The chat's tools menu; each change is stored on the chat at once (`useChatChange`). */
 function ChatTools({
   chat,
   project,
@@ -192,24 +225,14 @@ function ChatTools({
   /** The server's message when it refused a change, `null` when one starts. */
   onError: (message: string | null) => void;
 }) {
-  const client = useQueryClient();
-  const saved = useChatSaved();
+  const change = useChatChange(onError);
   return (
     <ToolsMenu
       servers={servers}
       project={project}
       choice={{ toolOverrides: chat.toolOverrides, builtinTools: chat.builtinTools }}
       warning={toolsWarning(toolsOn(chat, project), model?.capabilities)}
-      onChange={(choice) => {
-        onError(null);
-        client.setQueryData(keys.chat(chat.id), { ...chat, ...choice });
-        updateChat(chat.id, choice)
-          .then((result) => saved(result))
-          .catch((failure: unknown) => {
-            onError(describeError(failure).message);
-            void client.invalidateQueries({ queryKey: keys.chat(chat.id), exact: true });
-          });
-      }}
+      onChange={(choice) => change(chat, choice)}
     />
   );
 }
@@ -226,7 +249,8 @@ function Footer({
   stop,
   tools,
   toolsOff,
-  toolsError,
+  changeError,
+  speak,
 }: {
   alert: string | null;
   notice: string | null;
@@ -239,8 +263,9 @@ function Footer({
   tools: ReactNode;
   /** Tools are on but the model cannot call them. */
   toolsOff: boolean;
-  /** Why the server refused the last tools change. */
-  toolsError: string | null;
+  /** Why the server refused the last change of the chat's settings (tools, Speak replies). */
+  changeError: string | null;
+  speak: { on: boolean; onChange: (on: boolean) => void };
 }) {
   const upload: Upload = (file, name, onProgress) =>
     uploadFile({ chatId }, file, name, {
@@ -249,7 +274,7 @@ function Footer({
   const note = phaseNote(phase);
   return (
     <div className="mx-auto w-full max-w-3xl space-y-2 px-4 pb-4 sm:px-8">
-      <FormAlert>{alert ?? toolsError}</FormAlert>
+      <FormAlert>{alert ?? changeError}</FormAlert>
       {notice ? <p className="text-sm text-warn">{notice}</p> : null}
       {toolsOff ? <p className="text-sm text-warn">{TOOLS_OFF_NOTE}</p> : null}
       {note ? (
@@ -271,6 +296,7 @@ function Footer({
         upload={upload}
         discard={(fileId) => void deleteFile(fileId).catch(() => undefined)}
         tools={tools}
+        speak={speak}
       />
     </div>
   );
@@ -303,8 +329,12 @@ function ChatView({ chatId }: { chatId: string }) {
     queryFn: ({ signal }) => fetchProject(projectId ?? "", signal),
     enabled: projectId !== null,
   });
-  const turn = useTurn(chatId, messages.data, first === null);
-  const [toolsError, setToolsError] = useState<string | null>(null);
+  const data = chat.data;
+  const model = models.data?.find((item) => item.id === data?.modelId);
+  const speaker = useSpeaker(speaksReplies(data, model));
+  const turn = useTurn(chatId, messages.data, first === null, speaker);
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const change = useChatChange(setChangeError);
   const scroller = useRef<HTMLDivElement>(null);
 
   useFirstMessage(first, turn.send);
@@ -321,8 +351,6 @@ function ChatView({ chatId }: { chatId: string }) {
   );
   const actions = running ? undefined : listActions(turn);
 
-  const data = chat.data;
-  const model = models.data?.find((item) => item.id === data?.modelId);
   const notice = data ? modelNotice(data, models.data) : null;
   const conversation = conversationQuery(messages, turn.run !== null);
   // A failed load the conversation shows (with a retry) is not repeated above the composer.
@@ -386,11 +414,20 @@ function ChatView({ chatId }: { chatId: string }) {
               project={project.data}
               servers={servers.data}
               model={model}
-              onError={setToolsError}
+              onError={setChangeError}
             />
           }
           toolsOff={toolsWarning(toolsOn(data, project.data), model?.capabilities)}
-          toolsError={toolsError}
+          changeError={changeError}
+          speak={{
+            on: data.voiceReplies,
+            onChange: (on) => {
+              // The click lets the reply's audio start later; turning it off silences it.
+              if (on) speaker.unlock();
+              else speaker.stop();
+              change(data, { voiceReplies: on });
+            },
+          }}
         />
       ) : null}
     </section>
