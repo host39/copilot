@@ -899,6 +899,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_configured_secret_authenticates_the_way_the_server_takes() {
+        let f = fixture();
+        let user = actor();
+        let server = f
+            .service
+            .create(
+                &user,
+                NewToolServer {
+                    client: Some(ClientInput {
+                        id: "my-client".to_owned(),
+                        secret: Some("my-secret".to_owned()),
+                    }),
+                    ..oauth_server()
+                },
+            )
+            .await
+            .unwrap();
+        for (methods, expected) in [
+            (Vec::new(), ClientAuth::Basic),
+            (
+                vec!["client_secret_basic", "client_secret_post"],
+                ClientAuth::Basic,
+            ),
+            (vec!["none", "client_secret_post"], ClientAuth::Post),
+        ] {
+            f.auth.edit(|discovery| {
+                discovery.server.auth_methods = methods.iter().map(|m| (*m).to_owned()).collect();
+            });
+            let state = start(&f, &user, server.id()).await;
+            f.auth.answer(Ok(tokens("access-1", None)));
+            f.service.complete(&callback(&state)).await;
+            let request = f.auth.requests().last().cloned().unwrap();
+            assert_eq!(request.client.auth, expected, "{methods:?}");
+            assert_eq!(request.client.secret, Some(Secret::new("my-secret")));
+        }
+    }
+
+    #[tokio::test]
     async fn a_callback_stores_sealed_tokens_for_its_server_once() {
         let f = fixture();
         let user = actor();
