@@ -14,6 +14,7 @@ The Linux desktop and Android apps: a [Tauri](https://v2.tauri.app/) 2.12 shell 
 | `src-tauri/icons/` | Generated from `apps/web/public/icons/icon.svg` |
 | `src-tauri/gen/android/` | The Android Studio project from `tauri android init`, committed because it is customized (see [Android](#android)) |
 | `test/config.test.ts` | Checks the rules below: identifier, CSP, capability scopes, plugin list, Android signing and insets |
+| `test/workflow.test.ts` | Checks the CI workflow (see [CI](#ci)): triggers, runners, the bundle checks, and the uploads |
 
 ## Prerequisites
 
@@ -39,9 +40,22 @@ Loopback and private addresses (`localhost`, `10.x`, `172.16.x` to `172.31.x`, `
 | `make native-build` | `src-tauri/target/release/bundle/deb/Copilot_<version>_amd64.deb`. `pnpm --filter @copilot/native tauri build` without `--bundles` also builds the `.rpm` and the AppImage |
 | `make android-build` | `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`, for arm64 phones. Install it with `adb install -r <file>` or by opening it on the phone |
 
-Build the `.deb` on the oldest distribution you want to support: it requires that system's glibc or newer. CI (roadmap step P5.2) builds it on Ubuntu 24.04.
+Build the `.deb` on the oldest distribution you want to support: it requires that system's glibc or newer. CI builds it on Ubuntu 24.04 (see [CI](#ci)).
 
 The version comes from `version` in `package.json`; Android's version code is derived from it (`major * 1000000 + minor * 1000 + patch`), so bump it for every APK you hand out.
+
+## CI
+
+`.github/workflows/native.yml` ("Native apps") builds both apps on version tags (`v*`), on manual dispatch (Actions, Native apps, Run workflow), and on pushes to `main` and `claude/**` and pull requests that change `apps/native/**`, `apps/web/**`, or the workflow. Other changes skip the run. Each bundle is a workflow artifact of its own, named after the file and downloaded as that file (not zipped); tag builds keep them 90 days, other builds 14.
+
+| Job | Runner | Artifacts |
+| --- | --- | --- |
+| Linux bundles (`native-linux`) | `ubuntu-24.04`, pinned so the bundles need glibc 2.39 or newer, not the newest image's | `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage` |
+| Android APK (`native-android`) | `ubuntu-latest`, with the image's Android SDK, NDK 29, and Java 21 | `Copilot_<version>_arm64.apk` |
+
+Before uploading, the Linux job runs `make native-lint` and checks the `.deb`'s version, its WebKitGTK dependency, and the newest glibc symbol in the binary, and that the AppImage is an x86-64 type 2 AppImage. The Android job checks that the APK is signed with a debug certificate, holds native code for `arm64-v8a` only, and carries the package name `com.host39.copilot` and the version from `package.json`. Each job writes the artifact sizes to its run summary. `test/workflow.test.ts` keeps the workflow's triggers, runners, and checks in place.
+
+Each runner signs with a debug key of its own, so an APK from a later run does not install over one from an earlier run: uninstall first (see [Android](#android)).
 
 ## Security
 
