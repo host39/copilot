@@ -1,0 +1,25 @@
+meta {
+  name: 11-04 Stop Idle Chat
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/stop
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/stop`
+
+  **This test verifies:** stopping a chat with no running turn succeeds and changes nothing.
+}

@@ -11,6 +11,8 @@
 //! disconnects; it reattaches with `GET /chats/{id}/stream?after=<seq>`.
 
 pub mod cursor;
+#[cfg(test)]
+mod flows;
 pub mod serializer;
 #[cfg(test)]
 mod tests;

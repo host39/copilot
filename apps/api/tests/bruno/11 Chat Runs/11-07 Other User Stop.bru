@@ -1,0 +1,26 @@
+meta {
+  name: 11-07 Other User Stop
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/stop
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/stop` as user B
+
+  **This test verifies:** user B gets `404` for user A's chat and never stops its run.
+}

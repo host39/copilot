@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::records::{
     PartRecord, ProviderStateRecord, SnapshotFileRecord, SnapshotToolRecord, UsageRecord,
 };
-use crate::repositories::store::{PgStore, failed, invalid, json, pending, record, text};
+use crate::repositories::store::{PgStore, failed, invalid, json, record, text};
 
 const CHAT_COLUMNS: &str = "c.created_at, c.updated_at, c.last_read_at, c.id, c.user_id, \
      c.project_id, c.model_id, c.schedule_id, c.pinned, c.voice_replies, c.title, \
@@ -689,11 +689,45 @@ impl MessageRepository for PgStore {
 
     async fn decide(
         &self,
-        _user: UserId,
-        _message: MessageId,
-        _decisions: &[CallDecision],
+        user: UserId,
+        message: MessageId,
+        decisions: &[CallDecision],
     ) -> DomainResult<bool> {
-        pending("MessageRepository::decide")
+        let key = "database.messages.decide.failed";
+        let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        // The row lock makes the check and the write one step: a second decision on the same
+        // message waits, then finds it no longer awaiting approval.
+        let sql = format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = $1 AND user_id = $2 \
+             AND status = 'awaiting_approval' FOR UPDATE"
+        );
+        let row: Option<MessageRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(message.uuid())
+            .bind(user.uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(failed(key))?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let decided = Message::try_from(row)?.decided(decisions, self.now());
+        let stored = Stored::new(&decided);
+        sqlx::query(
+            "UPDATE messages SET updated_at = $3, status = $4, parts = $5, text_content = $6 \
+             WHERE id = $1 AND user_id = $2",
+        )
+        .bind(message.uuid())
+        .bind(user.uuid())
+        .bind(decided.updated_at())
+        .bind(decided.status().as_str())
+        .bind(json(stored.parts))
+        .bind(decided.text_content())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed(key))?;
+        touch(&mut tx, user, decided.chat_id(), decided.updated_at()).await?;
+        tx.commit().await.map_err(failed(key))?;
+        Ok(true)
     }
 
     async fn search(&self, user: UserId, query: &str, limit: u32) -> DomainResult<Vec<SearchHit>> {

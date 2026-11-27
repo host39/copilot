@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode};
 use copilot_core::{Environment, FileLimits, LogLevel, PrivateNetwork};
 use copilot_database::{DbConfig, DbPool, DbSsl};
 use copilot_security::SecretKey;
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -18,7 +19,7 @@ use crate::config::AppConfig;
 use crate::helpers::auth::Identity;
 use crate::helpers::auth::testing::{SETUP_TOKEN, config as identity_config, identity};
 use crate::helpers::bootstrap::Adapters;
-use crate::{AppDependencies, create_app};
+use crate::{App, AppDependencies, assemble, create_app};
 
 /// Local config whose database is unreachable (port 1), so readiness reports `down`.
 pub fn config() -> AppConfig {
@@ -81,13 +82,19 @@ pub async fn live_app(db: DbPool) -> Router {
 
 /// [`live_app`] with another config (for example smaller file limits).
 pub async fn live_app_with(db: DbPool, config: AppConfig) -> Router {
+    live(db, config).await.router
+}
+
+/// [`live_app`] with its shared state, for tests that drain the runs or recover a restart. Each
+/// call is a new process on the same database: its own run registry and shutdown token.
+pub async fn live(db: DbPool, config: AppConfig) -> App {
     copilot_database::operations::migrate::run(&db)
         .await
         .expect("migrated");
     let identity = Identity::start(db.clone(), &identity_config())
         .await
         .expect("rustauth on Postgres");
-    create_app(AppDependencies {
+    assemble(AppDependencies {
         config,
         db,
         identity,
@@ -124,6 +131,87 @@ pub async fn read(app: Router, request: Request<Body>) -> (StatusCode, HeaderMap
         .to_bytes();
     let text = String::from_utf8(bytes.to_vec()).expect("a UTF-8 body");
     (status, headers, text)
+}
+
+/// A server-sent event stream read one event at a time; dropping it disconnects.
+pub struct Events {
+    body: axum::body::BodyDataStream,
+    buffer: String,
+}
+
+impl Events {
+    /// The `data` of the next event, `None` once the stream ended. Fails after 10 seconds.
+    pub async fn next(&mut self) -> Option<Value> {
+        loop {
+            if let Some(end) = self.buffer.find("\n\n") {
+                let frame: String = self.buffer.drain(..end + 2).collect();
+                let data: Vec<&str> = frame
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .collect();
+                if data.is_empty() {
+                    continue; // a keep-alive comment
+                }
+                return Some(serde_json::from_str(&data.join("\n")).expect("JSON event data"));
+            }
+            let chunk = tokio::time::timeout(Duration::from_secs(10), self.body.next())
+                .await
+                .expect("an event within 10 seconds")?
+                .expect("a body chunk");
+            self.buffer
+                .push_str(std::str::from_utf8(&chunk).expect("UTF-8 events"));
+        }
+    }
+
+    /// Events up to and including the first of type `kind`.
+    pub async fn until(&mut self, kind: &str) -> Vec<Value> {
+        let mut events = Vec::new();
+        while let Some(event) = self.next().await {
+            let found = event["type"] == kind;
+            events.push(event);
+            if found {
+                return events;
+            }
+        }
+        panic!("the stream ended before a {kind} event: {events:?}");
+    }
+
+    /// Every event left, up to the end of the stream.
+    pub async fn rest(&mut self) -> Vec<Value> {
+        let mut events = Vec::new();
+        while let Some(event) = self.next().await {
+            events.push(event);
+        }
+        events
+    }
+}
+
+/// Sends `request` and opens its answer as an event stream (any other answer: the status and
+/// the body read as JSON, in the `Err`).
+pub async fn open(app: Router, request: Request<Body>) -> Result<Events, Box<TestResponse>> {
+    let response = app.oneshot(request).await.expect("infallible router");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let is_stream = headers
+        .get("content-type")
+        .is_some_and(|value| value == "text/event-stream");
+    if status == StatusCode::OK && is_stream {
+        return Ok(Events {
+            body: response.into_body().into_data_stream(),
+            buffer: String::new(),
+        });
+    }
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    Err(Box::new(TestResponse {
+        status,
+        headers,
+        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    }))
 }
 
 pub async fn get(app: Router, uri: &str) -> TestResponse {
@@ -224,6 +312,11 @@ pub async fn provider() -> wiremock::MockServer {
 /// A connection of `token`'s user to `server` (loopback: the user must be the administrator),
 /// refreshed; the id of its enabled model.
 pub async fn model(app: &Router, token: &str, server: &wiremock::MockServer) -> String {
+    model_at(app, token, &format!("{}/v1", server.uri())).await
+}
+
+/// [`model`] for a provider at `base_url` (ending in `/v1`).
+pub async fn model_at(app: &Router, token: &str, base_url: &str) -> String {
     let created = send(
         app.clone(),
         request(
@@ -234,7 +327,7 @@ pub async fn model(app: &Router, token: &str, server: &wiremock::MockServer) -> 
                 "kind": "openai",
                 "preset": "custom",
                 "name": "Mock",
-                "baseUrl": format!("{}/v1", server.uri()),
+                "baseUrl": base_url,
             })),
         ),
     )

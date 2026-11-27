@@ -1,0 +1,26 @@
+meta {
+  name: 11-09 Other User Retry
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/retry
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/retry` as user B
+
+  **This test verifies:** user B gets `404` for user A's chat, never `CHAT_BUSY`.
+}

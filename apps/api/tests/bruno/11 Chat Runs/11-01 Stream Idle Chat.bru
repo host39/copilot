@@ -1,0 +1,26 @@
+meta {
+  name: 11-01 Stream Idle Chat
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/stream
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}/stream`
+
+  **This test verifies:** a chat with no running turn answers `204`: the client reads the saved
+  messages instead.
+}

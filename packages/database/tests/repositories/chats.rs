@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    Approval, ApprovedTool, BuiltinTool, CallId, Chat, ChatCursor, ChatId, ChatQuery,
-    ChatRepository, ContextHash, FileId, FinishReason, Message, MessageParts, MessageRepository,
-    MessageStatus, Part, Project, ProjectRepository, ReasoningLevel, Rendering, ResultContent,
-    ScheduleId, ServerOverride, SnapshotFile, SnapshotTool, ToolAlias, ToolCallPart,
-    ToolResultPart, ToolStatus, TurnContext, TurnContextRepository, Usage, UserId,
+    Approval, ApprovedTool, BuiltinTool, CallDecision, CallId, Chat, ChatCursor, ChatId, ChatQuery,
+    ChatRepository, ContextHash, Decision, DecisionScope, FileId, FinishReason, Message,
+    MessageParts, MessageRepository, MessageStatus, Part, Project, ProjectRepository,
+    ReasoningLevel, Rendering, ResultContent, ScheduleId, ServerOverride, SnapshotFile,
+    SnapshotTool, ToolAlias, ToolCallPart, ToolResultPart, ToolStatus, TurnContext,
+    TurnContextRepository, Usage, UserId,
 };
 use copilot_database::{DbPool, PgStore};
 use serde_json::json;
@@ -249,6 +250,94 @@ async fn approve_adds_approval_rows_only(pool: DbPool) {
     assert!(
         untouched.approved_tools().is_empty(),
         "another user's chat gets nothing"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn decide_applies_each_decision_once(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let model = model(&store, owner).await;
+    let chat = chat(&store, owner).await;
+    let docs = server(&store, owner, "docs").await;
+    let call = |name: &str| ToolCallPart {
+        id: CallId::generate(),
+        provider_call_id: Some(format!("call_{name}")),
+        server_id: Some(docs.id()),
+        tool_name: name.to_owned(),
+        alias: ToolAlias::restore(format!("docs__{name}")),
+        arguments_raw: "{}".to_owned(),
+        arguments: Some(json!({})),
+        complete: true,
+        approval: Approval::Pending,
+        deny_reason: None,
+    };
+    let (search, delete) = (call("search"), call("delete"));
+    let paused = Message::restore(MessageParts {
+        status: MessageStatus::AwaitingApproval,
+        finish_reason: Some(FinishReason::ToolCalls),
+        parts: vec![
+            Part::ToolCall(search.clone()),
+            Part::ToolCall(delete.clone()),
+        ],
+        ..Message::assistant(owner, chat.id(), model.id(), model.provider_id(), at(1)).to_parts()
+    });
+    store.append(owner, &paused).await.unwrap();
+    let decisions = [
+        CallDecision {
+            call_id: search.id,
+            decision: Decision::Approve,
+            scope: DecisionScope::Once,
+            reason: None,
+        },
+        CallDecision {
+            call_id: delete.id,
+            decision: Decision::Deny,
+            scope: DecisionScope::Once,
+            reason: Some("Not now.".to_owned()),
+        },
+    ];
+
+    assert!(
+        !store.decide(other, paused.id(), &decisions).await.unwrap(),
+        "another user's message is never decided"
+    );
+    // Two decisions at once: exactly one applies.
+    let (first, second) = tokio::join!(
+        store.decide(owner, paused.id(), &decisions),
+        store.decide(owner, paused.id(), &decisions),
+    );
+    assert_eq!(
+        [first.unwrap(), second.unwrap()]
+            .iter()
+            .filter(|applied| **applied)
+            .count(),
+        1
+    );
+    let history = store.history(owner, chat.id()).await.unwrap();
+    let decided = &history[0];
+    assert_eq!(decided.status(), MessageStatus::Complete);
+    assert_eq!(
+        *decided,
+        paused.clone().decided(&decisions, decided.updated_at())
+    );
+    let approvals: Vec<(Approval, Option<&str>)> = decided
+        .calls()
+        .map(|call| (call.approval, call.deny_reason.as_deref()))
+        .collect();
+    assert_eq!(
+        approvals,
+        [
+            (Approval::Approved, None),
+            (Approval::Denied, Some("Not now."))
+        ]
+    );
+    assert_eq!(
+        updated_at(&store, owner, chat.id()).await,
+        decided.updated_at(),
+        "the chat moves with the decision"
     );
 }
 

@@ -1,0 +1,25 @@
+meta {
+  name: 11-02 Stream After a Seq
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/stream?after=12
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}/stream?after=12`
+
+  **This test verifies:** reattaching after a `seq` to an idle chat answers `204` too.
+}

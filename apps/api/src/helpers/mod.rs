@@ -4,6 +4,8 @@ pub mod runs;
 pub mod uploads;
 
 #[cfg(test)]
+pub(crate) mod llm_server;
+#[cfg(test)]
 pub(crate) mod mcp_server;
 #[cfg(test)]
 pub(crate) mod testing;
