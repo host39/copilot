@@ -34,7 +34,7 @@ Complete: P45R.1 to P45R.4. Ten findings (three medium, seven low) from the comb
 - `make smoke` green against Postgres 18 (both formats, the `openai` and `custom` presets, the approved tool call).
 - `make test-bruno` on the throwaway database `copilot_bruno_p45r` (`PORT=3147`, dropped afterwards): 152 requests, 375 assertions.
 - Native apps run 46020467067 at `256feaa` green: the APK with the new manifest built, and `aapt2` found `allowBackup` false and `dataExtractionRules` set.
-- Code quality CI on the last commit: recorded in the roadmap entry once green.
+- Code quality run 46022485437 at `6407c79` green (lint and web, Rust and Postgres with Bruno, the smoke job); Native apps run 46021617943 at `e5d347d` green (the last commit that touched what the native build reads).
 
 ## Blockers
 
