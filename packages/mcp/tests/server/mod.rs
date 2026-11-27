@@ -77,9 +77,15 @@ pub struct Running {
     pub url: String,
     pub seen: Arc<Mutex<Seen>>,
     pub server: TestServer,
+    require: Arc<Mutex<Option<String>>>,
 }
 
 impl Running {
+    /// From now on, answers `401` unless `Authorization` is exactly `value`.
+    pub fn require(&self, value: &str) {
+        *self.require.lock().unwrap() = Some(value.to_owned());
+    }
+
     pub fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
         self.seen.lock().unwrap()
     }
@@ -120,9 +126,10 @@ pub async fn start(era: Era, options: Options) -> Running {
     let service: StreamableHttpService<TestServer, LocalSessionManager> =
         StreamableHttpService::new(move || Ok(factory.clone()), Default::default(), config);
     let seen = Arc::new(Mutex::new(Seen::default()));
+    let require = Arc::new(Mutex::new(options.require));
     let guard = Guard {
         seen: seen.clone(),
-        require: options.require,
+        require: require.clone(),
         era,
     };
     let router = axum::Router::new()
@@ -137,13 +144,14 @@ pub async fn start(era: Era, options: Options) -> Running {
         url: format!("http://{address}/mcp"),
         seen,
         server,
+        require,
     }
 }
 
 #[derive(Clone)]
 struct Guard {
     seen: Arc<Mutex<Seen>>,
-    require: Option<String>,
+    require: Arc<Mutex<Option<String>>>,
     era: Era,
 }
 
@@ -175,7 +183,8 @@ async fn record(State(guard): State<Guard>, request: Request, next: Next) -> Res
             seen.sessions += 1;
         }
     }
-    if let Some(required) = &guard.require
+    let required = guard.require.lock().unwrap().clone();
+    if let Some(required) = &required
         && authorization.as_deref() != Some(required.as_str())
     {
         return (

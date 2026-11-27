@@ -10,7 +10,7 @@
 use std::error::Error;
 
 use copilot_core::shared::constants::MCP_TOOLS_MAX;
-use copilot_core::{Blocked, DomainError, ToolServerId};
+use copilot_core::{Blocked, DomainError, ToolEndpoint, ToolServerId};
 use rmcp::ServiceError;
 use rmcp::model::ErrorData;
 use rmcp::service::ClientInitializeError;
@@ -42,11 +42,38 @@ pub use copilot_core::TOOL_UNKNOWN;
 /// The longest part of a server's JSON-RPC error message that a call result keeps.
 const REFUSAL_MAX_CHARS: usize = 300;
 
+/// What a server's requests carry, for the message of a refused request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Credentials {
+    None,
+    /// A bearer token or custom headers.
+    Headers,
+    /// An OAuth sign-in's access token.
+    SignIn,
+}
+
+impl Credentials {
+    pub(crate) fn of(endpoint: &ToolEndpoint) -> Self {
+        if endpoint.tokens.is_some() {
+            Self::SignIn
+        } else if endpoint.headers.is_some() {
+            Self::Headers
+        } else {
+            Self::None
+        }
+    }
+}
+
 /// What went wrong, as far as the error chain tells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Failure {
     Blocked(Blocked),
+    /// `401` with a challenge.
     Auth,
+    /// `403` with an `insufficient_scope` challenge.
+    Scope,
+    /// The stored credentials cannot be sent as headers.
+    Headers,
     Unreachable,
     Timeout,
     TooLarge,
@@ -73,8 +100,8 @@ impl Failure {
             | ClientInitializeError::ConflictInitResponseId(..)
             | ClientInitializeError::UncorrelatedErrorResponse { .. } => Self::Protocol,
             ClientInitializeError::LegacyFallbackFailed { fallback, .. } => Self::connect(fallback),
-            _ if error.is_authorization_required() => Self::Auth,
             ClientInitializeError::TransportError { error, .. } => classify(error.error.as_ref()),
+            _ if error.is_authorization_required() => Self::Auth,
             _ => Self::Other,
         }
     }
@@ -82,8 +109,8 @@ impl Failure {
     /// The failure of a request on an open connection (a JSON-RPC error is handled before).
     pub(crate) fn request(error: &ServiceError) -> Self {
         match error {
-            _ if error.is_authorization_required() => Self::Auth,
             ServiceError::TransportSend(error) => classify(error.error.as_ref()),
+            _ if error.is_authorization_required() => Self::Auth,
             ServiceError::Timeout { .. } => Self::Timeout,
             ServiceError::TransportClosed => Self::Closed,
             ServiceError::UnexpectedResponse | ServiceError::ListPaginationExceeded { .. } => {
@@ -91,6 +118,12 @@ impl Failure {
             }
             _ => Self::Other,
         }
+    }
+
+    /// The server refused the request's credentials with `401`: a refreshed access token may
+    /// pass.
+    pub(crate) fn unauthorized(self) -> bool {
+        matches!(self, Self::Auth | Self::Status(401))
     }
 
     /// Whether another lifecycle might work: the server answered, but not as the remembered
@@ -101,9 +134,13 @@ impl Failure {
             Self::Status(status) => {
                 (400..500).contains(&status) && !matches!(status, 401 | 403 | 429)
             }
-            Self::Blocked(_) | Self::Auth | Self::Unreachable | Self::Timeout | Self::TooLarge => {
-                false
-            }
+            Self::Blocked(_)
+            | Self::Auth
+            | Self::Scope
+            | Self::Headers
+            | Self::Unreachable
+            | Self::Timeout
+            | Self::TooLarge => false,
         }
     }
 
@@ -112,6 +149,8 @@ impl Failure {
         match self {
             Self::Blocked(_) => "blocked",
             Self::Auth => "auth",
+            Self::Scope => "scope",
+            Self::Headers => "headers",
             Self::Unreachable => "unreachable",
             Self::Timeout => "timeout",
             Self::TooLarge => "too-large",
@@ -124,8 +163,8 @@ impl Failure {
     }
 
     /// Logs the failure (`mcp.http.blocked` or `mcp.http.failed`) and returns the client's error.
-    /// `credentials` says whether the request carried any, for the sign-in message.
-    pub(crate) fn report(self, server_id: ToolServerId, credentials: bool) -> DomainError {
+    /// `credentials` says what the request carried, for the sign-in message.
+    pub(crate) fn report(self, server_id: ToolServerId, credentials: Credentials) -> DomainError {
         match self {
             Self::Blocked(reason) => {
                 tracing::warn!(server_id = %server_id, reason = %reason, "mcp.http.blocked");
@@ -145,20 +184,39 @@ impl Failure {
         self.error(credentials)
     }
 
-    fn error(self, credentials: bool) -> DomainError {
-        match self {
-            Self::Blocked(_) => DomainError::upstream(
+    fn error(self, credentials: Credentials) -> DomainError {
+        match (self, credentials) {
+            (Self::Blocked(_), _) => DomainError::upstream(
                 "This account may not reach the tool server's address. Check its URL.",
                 TOOL_SERVER_BLOCKED,
             ),
-            Self::Auth if credentials => DomainError::upstream(
+            (Self::Auth | Self::Status(401), Credentials::SignIn) => DomainError::upstream(
+                "The tool server did not accept the sign-in. Sign in to it again in its settings.",
+                TOOL_SERVER_AUTH,
+            ),
+            (Self::Scope, Credentials::SignIn) => DomainError::upstream(
+                "The tool server needs permissions the sign-in did not grant. Sign in to it again in its settings.",
+                TOOL_SERVER_AUTH,
+            ),
+            (Self::Auth | Self::Scope, Credentials::Headers) => DomainError::upstream(
                 "The tool server rejected the credentials. Check its bearer token and headers.",
                 TOOL_SERVER_AUTH,
             ),
-            Self::Auth => DomainError::upstream(
-                "The tool server requires sign-in. Add a bearer token or headers in its settings.",
+            (Self::Auth | Self::Scope, Credentials::None) => DomainError::upstream(
+                "The tool server requires sign-in. Add a bearer token or headers, or sign in with OAuth, in its settings.",
                 TOOL_SERVER_AUTH,
             ),
+            (Self::Headers, _) => DomainError::upstream(
+                "The tool server's credentials cannot be sent. Enter them again in its settings.",
+                TOOL_SERVER_HEADERS,
+            ),
+            (failure, _) => failure.plain(),
+        }
+    }
+
+    /// The error of a failure that does not depend on the credentials.
+    fn plain(self) -> DomainError {
+        match self {
             Self::Unreachable => DomainError::upstream(
                 "Could not connect to the tool server. Check its URL.",
                 TOOL_SERVER_UNREACHABLE,
@@ -188,7 +246,7 @@ impl Failure {
                 "The connection to the tool server ended. The server may have stopped, or sent more than Copilot accepts in one response (4 MiB).",
                 TOOL_SERVER_FAILED,
             ),
-            Self::Other => {
+            Self::Other | Self::Blocked(_) | Self::Auth | Self::Scope | Self::Headers => {
                 DomainError::upstream("The request to the tool server failed.", TOOL_SERVER_FAILED)
             }
         }
@@ -292,9 +350,8 @@ fn transport(error: &StreamableHttpError<reqwest::Error>) -> Option<Failure> {
         StreamableHttpError::Client(error) => Some(http(error)),
         StreamableHttpError::HttpStatus(status) => Some(Failure::Status(status.status)),
         StreamableHttpError::ResponseBodyTooLarge { .. } => Some(Failure::TooLarge),
-        StreamableHttpError::AuthRequired(_) | StreamableHttpError::InsufficientScope(_) => {
-            Some(Failure::Auth)
-        }
+        StreamableHttpError::AuthRequired(_) => Some(Failure::Auth),
+        StreamableHttpError::InsufficientScope(_) => Some(Failure::Scope),
         // "HTTP 404: <body>": keep the status, never the body.
         StreamableHttpError::UnexpectedServerResponse(text) => Some(
             status(text)
@@ -342,7 +399,7 @@ mod tests {
         let error: StreamableHttpError<reqwest::Error> =
             StreamableHttpError::UnexpectedServerResponse("HTTP 404: <html>secret</html>".into());
         assert_eq!(classify(&error), Failure::Status(404));
-        let failure = Failure::Status(404).error(false);
+        let failure = Failure::Status(404).error(Credentials::None);
         assert_eq!(
             failure.to_string(),
             "The tool server answered with HTTP 404."
@@ -360,20 +417,34 @@ mod tests {
             classify(&Blocked::Address),
             Failure::Blocked(Blocked::Address)
         );
-        let error = Failure::Blocked(Blocked::Address).error(true);
+        let error = Failure::Blocked(Blocked::Address).error(Credentials::Headers);
         assert_eq!(error.code(), TOOL_SERVER_BLOCKED);
     }
 
     #[test]
-    fn tells_a_rejected_credential_from_a_missing_one() {
+    fn tells_a_rejected_credential_from_a_missing_one_and_a_sign_in() {
         assert_eq!(
-            Failure::Auth.error(true).to_string(),
+            Failure::Auth.error(Credentials::Headers).to_string(),
             "The tool server rejected the credentials. Check its bearer token and headers."
         );
         assert_eq!(
-            Failure::Auth.error(false).to_string(),
-            "The tool server requires sign-in. Add a bearer token or headers in its settings."
+            Failure::Auth.error(Credentials::None).to_string(),
+            "The tool server requires sign-in. Add a bearer token or headers, or sign in with OAuth, in its settings."
         );
+        assert_eq!(
+            Failure::Status(401).error(Credentials::SignIn).to_string(),
+            "The tool server did not accept the sign-in. Sign in to it again in its settings."
+        );
+        assert_eq!(
+            Failure::Scope.error(Credentials::SignIn).to_string(),
+            "The tool server needs permissions the sign-in did not grant. Sign in to it again in its settings."
+        );
+        assert_eq!(
+            Failure::Headers.error(Credentials::Headers).code(),
+            TOOL_SERVER_HEADERS
+        );
+        assert!(Failure::Auth.unauthorized() && Failure::Status(401).unauthorized());
+        assert!(!Failure::Scope.unauthorized() && !Failure::Status(403).unauthorized());
     }
 
     #[test]
@@ -391,6 +462,8 @@ mod tests {
         for failure in [
             Failure::Blocked(Blocked::Scheme),
             Failure::Auth,
+            Failure::Scope,
+            Failure::Headers,
             Failure::Unreachable,
             Failure::Timeout,
             Failure::TooLarge,

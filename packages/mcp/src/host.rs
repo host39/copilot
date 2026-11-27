@@ -15,7 +15,7 @@ use reqwest::Client;
 use rmcp::model::ProtocolVersion;
 
 use crate::connection::Connection;
-use crate::errors::Failure;
+use crate::errors::{Credentials, Failure};
 use crate::session::McpSession;
 
 /// Servers whose revision this process remembers; past this the memory starts over.
@@ -106,7 +106,7 @@ impl ToolHost for McpHost {
         let listing = tokio::time::timeout(shared.limits.list, listing)
             .await
             .map_err(|_| {
-                Failure::Timeout.report(endpoint.server_id, endpoint.headers.is_some())
+                Failure::Timeout.report(endpoint.server_id, Credentials::of(endpoint))
             })??;
         tracing::info!(
             server_id = %endpoint.server_id,
