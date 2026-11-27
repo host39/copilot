@@ -56,6 +56,7 @@ fn host() -> McpHost {
 
 fn endpoint(url: &str) -> ToolEndpoint {
     ToolEndpoint {
+        tokens: None,
         server_id: ToolServerId::generate(),
         url: BaseUrl::restore(url).expect("a URL"),
         headers: None,

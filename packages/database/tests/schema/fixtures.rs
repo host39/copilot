@@ -27,6 +27,7 @@ pub const TABLES: &[&str] = &[
     "files",
     "messages",
     "models",
+    "oauth_flows",
     "project_tool_servers",
     "projects",
     "providers",
@@ -89,7 +90,8 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// Inserts a provider with a model, a tool server, a project that uses both, a schedule in
+    /// Inserts a provider with a model, a tool server signed in with OAuth (with a sign-in in
+    /// progress), a project that uses both, a schedule in
     /// the project, two chats (one started by the schedule, one standalone that created it) with
     /// tool overrides, an approval, messages, and a turn snapshot, a project file and a chat
     /// file with their bytes, and the user's settings.
@@ -131,11 +133,23 @@ impl Graph {
             .bind(graph.provider),
             sqlx::query(
                 "INSERT INTO tool_servers \
-                 (created_at, updated_at, id, user_id, name, slug, url, headers_sealed) \
-                 VALUES (now(), now(), $1, $2, 'Docs', 'docs', 'https://mcp.example.com', '\\x02')",
+                 (created_at, updated_at, oauth_expires_at, id, user_id, oauth_refreshable, \
+                 name, slug, url, auth_mode, oauth_client_id, oauth_client_secret_sealed, \
+                 oauth_tokens_sealed) \
+                 VALUES (now(), now(), now(), $1, $2, true, 'Docs', 'docs', \
+                 'https://mcp.example.com', 'oauth', 'client-1', '\\x03', '\\x02')",
             )
             .bind(graph.tool_server)
             .bind(user),
+            sqlx::query(
+                "INSERT INTO oauth_flows \
+                 (created_at, expires_at, id, user_id, tool_server_id, state_hash, sealed) \
+                 VALUES (now(), now() + interval '10 minutes', $1, $2, $3, \
+                 sha256(convert_to($1::text, 'UTF8')), '\\x04')",
+            )
+            .bind(Uuid::now_v7())
+            .bind(user)
+            .bind(graph.tool_server),
             sqlx::query(
                 "INSERT INTO projects (created_at, updated_at, id, user_id, default_model_id, name) \
                  VALUES (now(), now(), $1, $2, $3, 'Research')",

@@ -16,6 +16,7 @@ mod settings;
 mod sink;
 mod store;
 mod tool;
+mod tool_auth;
 mod tool_host;
 
 use uuid::Uuid;
@@ -25,6 +26,7 @@ pub use crate::testing::clock::FixedClock;
 pub use crate::testing::gateway::{ScriptedGateway, Step, call_reply, remote_model, text_reply};
 pub use crate::testing::sink::RecordingSink;
 pub use crate::testing::store::MemoryStore;
+pub use crate::testing::tool_auth::{ScriptedAuth, discovery, tokens};
 pub use crate::testing::tool_host::{CallStep, RecordedCall, ScriptedToolHost, remote_tool};
 
 use crate::shared::actor::Actor;

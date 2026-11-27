@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde_json::Value;
 
+use crate::ports::tool_auth::TokenSource;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::errors::DomainResult;
 use crate::shared::ids::ToolServerId;
@@ -84,14 +85,17 @@ pub enum ToolContent {
 }
 
 /// Everything the adapter needs to reach a tool server. `headers` is the opened
-/// `ToolHeaders` JSON (read it with `ToolHeaders::entries`); `network` picks the outbound client,
-/// and a plain `http` `url` (`!is_https()`) takes the plaintext client, whose resolver admits only
+/// `ToolHeaders` JSON (read it with `ToolHeaders::entries`); `tokens`, for a server signed in with
+/// OAuth, gives the access token to send as `Authorization: Bearer` and a fresh one after a `401`
+/// (a server has one or the other, never both); `network` picks the outbound client, and a plain
+/// `http` `url` (`!is_https()`) takes the plaintext client, whose resolver admits only
 /// `net::is_allowed_plaintext` addresses.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolEndpoint {
     pub server_id: ToolServerId,
     pub url: BaseUrl,
     pub headers: Option<Secret>,
+    pub tokens: Option<TokenSource>,
     /// The MCP revision negotiated last time, so a legacy server skips the modern probe.
     pub protocol_version: Option<String>,
     pub network: NetworkScope,

@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use copilot_core::{
-    ApprovalMode, ApprovedTool, BaseUrl, Chat, ChatRepository, NetworkScope, Project,
-    ProjectRepository, RemoteTool, ServerOverride, Slug, ToolListing, ToolMode, ToolServer,
-    ToolServerRepository,
+    ApprovalMode, ApprovedTool, AuthMode, BaseUrl, Chat, ChatRepository, ClientConfig,
+    NetworkScope, Project, ProjectRepository, RemoteTool, ServerOverride, SignIn, SignInFlow,
+    SignInRepository, Slug, ToolListing, ToolMode, ToolServer, ToolServerRepository,
 };
 use copilot_database::DbPool;
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::{at, server, store, user};
 
@@ -168,6 +169,9 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
         slug: changed.slug().clone(),
         url: changed.url().clone(),
         headers_sealed: None,
+        auth: copilot_core::AuthMode::None,
+        client: None,
+        sign_in: None,
         approval: ApprovalMode::Auto,
         tool_modes: BTreeMap::new(),
         enabled: true,
@@ -453,4 +457,295 @@ async fn deleting_a_server_removes_it_from_projects_and_chats(pool: DbPool) {
         .unwrap();
     assert!(chat.tool_overrides().is_empty());
     assert!(chat.approved_tools().is_empty());
+}
+
+/// An OAuth server of `owner` with a pre-registered client and no sign-in.
+async fn oauth_server(
+    store: &copilot_database::PgStore,
+    owner: copilot_core::UserId,
+) -> ToolServer {
+    let url = BaseUrl::parse("https://mcp.example.com/mcp", NetworkScope::Public).unwrap();
+    let server = ToolServer::create(owner, "Docs", Slug::parse("docs").unwrap(), url, at(0))
+        .unwrap()
+        .with_auth(AuthMode::OAuth)
+        .with_client(Some(ClientConfig {
+            id: "client-1".to_owned(),
+            secret_sealed: Some(vec![7, 7]),
+        }));
+    ToolServerRepository::insert(store, &server).await.unwrap();
+    server
+}
+
+fn sign_in(byte: u8, refreshable: bool) -> SignIn {
+    SignIn {
+        sealed: vec![byte; 4],
+        expires_at: Some(at(60)),
+        refreshable,
+    }
+}
+
+async fn stored(store: &copilot_database::PgStore, server: &ToolServer) -> ToolServer {
+    ToolServerRepository::get(store, server.user_id(), server.id())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn sign_ins_round_trip_and_replace_only_what_was_read(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    assert_eq!(stored(&store, &server).await, server, "mode and client");
+
+    let first = sign_in(1, true);
+    assert!(
+        ToolServerRepository::save_sign_in(
+            &store,
+            owner,
+            server.id(),
+            server.url(),
+            Some(&first),
+            None
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(stored(&store, &server).await.sign_in(), Some(&first));
+
+    let second = sign_in(2, false);
+    let stale = ToolServerRepository::save_sign_in(
+        &store,
+        owner,
+        server.id(),
+        server.url(),
+        Some(&second),
+        Some(&[9, 9, 9, 9]),
+    )
+    .await
+    .unwrap();
+    assert!(!stale, "another refresh stored a different sign-in");
+    assert!(
+        ToolServerRepository::save_sign_in(
+            &store,
+            owner,
+            server.id(),
+            server.url(),
+            Some(&second),
+            Some(&first.sealed),
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(stored(&store, &server).await.sign_in(), Some(&second));
+
+    let foreign =
+        ToolServerRepository::save_sign_in(&store, other, server.id(), server.url(), None, None)
+            .await
+            .unwrap();
+    assert!(!foreign, "another user's write changes nothing");
+    let elsewhere = BaseUrl::parse("https://other.example.com/mcp", NetworkScope::Public).unwrap();
+    assert!(
+        !ToolServerRepository::save_sign_in(&store, owner, server.id(), &elsewhere, None, None)
+            .await
+            .unwrap(),
+        "only for the URL the sign-in was for"
+    );
+    assert!(
+        ToolServerRepository::save_sign_in(&store, owner, server.id(), server.url(), None, None)
+            .await
+            .unwrap()
+    );
+    assert_eq!(stored(&store, &server).await.sign_in(), None, "signed out");
+
+    let plain = ToolServer::create(
+        owner,
+        "Web",
+        Slug::parse("web").unwrap(),
+        BaseUrl::parse("https://web.example.com", NetworkScope::Public).unwrap(),
+        at(1),
+    )
+    .unwrap();
+    ToolServerRepository::insert(&store, &plain).await.unwrap();
+    assert!(
+        !ToolServerRepository::save_sign_in(
+            &store,
+            owner,
+            plain.id(),
+            plain.url(),
+            Some(&first),
+            None
+        )
+        .await
+        .unwrap(),
+        "only an OAuth server takes a sign-in"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn settings_writes_keep_a_sign_in_until_the_mode_or_url_changes(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let first = sign_in(1, true);
+    ToolServerRepository::save_sign_in(
+        &store,
+        owner,
+        server.id(),
+        server.url(),
+        Some(&first),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Read before the sign-in: a settings save must not undo it.
+    let renamed = server.clone().with_name("Docs v2").unwrap().touched(at(5));
+    ToolServerRepository::update(&store, &renamed)
+        .await
+        .unwrap();
+    let after = stored(&store, &server).await;
+    assert_eq!(after.name(), "Docs v2");
+    assert_eq!(after.sign_in(), Some(&first));
+
+    let moved = after
+        .clone()
+        .with_url(BaseUrl::parse("https://mcp.example.com/v2", NetworkScope::Public).unwrap());
+    ToolServerRepository::update(&store, &moved).await.unwrap();
+    assert_eq!(stored(&store, &server).await.sign_in(), None, "a new URL");
+
+    let moved = stored(&store, &server).await;
+    ToolServerRepository::save_sign_in(&store, owner, server.id(), moved.url(), Some(&first), None)
+        .await
+        .unwrap();
+    let headers = moved.with_headers(Some(vec![5]));
+    ToolServerRepository::update(&store, &headers)
+        .await
+        .unwrap();
+    let after = stored(&store, &server).await;
+    assert_eq!(after.auth(), AuthMode::Headers);
+    assert_eq!(after.sign_in(), None, "another mode");
+    assert_eq!(after.client(), None);
+    assert_eq!(after.headers_sealed(), Some(&[5][..]));
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn the_database_refuses_credentials_of_another_mode(pool: DbPool) {
+    let store = store(pool.clone()).await;
+    let owner = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let mixed = sqlx::query("UPDATE tool_servers SET headers_sealed = '\\x01' WHERE id = $1")
+        .bind(server.id().uuid())
+        .execute(&pool)
+        .await;
+    assert!(mixed.is_err(), "headers in oauth mode");
+    let orphan = sqlx::query(
+        "UPDATE tool_servers SET auth_mode = 'none', oauth_client_id = NULL, \
+         oauth_client_secret_sealed = NULL, oauth_tokens_sealed = '\\x01' WHERE id = $1",
+    )
+    .bind(server.id().uuid())
+    .execute(&pool)
+    .await;
+    assert!(orphan.is_err(), "tokens outside oauth mode");
+}
+
+fn flow(server: &ToolServer, byte: u8, expires: i64) -> SignInFlow {
+    SignInFlow {
+        id: Uuid::now_v7(),
+        user_id: server.user_id(),
+        server_id: server.id(),
+        state_hash: vec![byte; 32],
+        sealed: vec![byte, byte],
+        created_at: at(0),
+        expires_at: at(expires),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_flow_is_taken_once_and_replaced_by_the_next_of_its_server(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let first = flow(&server, 1, 10);
+    SignInRepository::insert(&store, &first).await.unwrap();
+    let second = flow(&server, 2, 10);
+    SignInRepository::insert(&store, &second).await.unwrap();
+    assert_eq!(
+        SignInRepository::take(&store, &first.state_hash)
+            .await
+            .unwrap(),
+        None,
+        "replaced"
+    );
+    assert_eq!(
+        SignInRepository::take(&store, &second.state_hash)
+            .await
+            .unwrap(),
+        Some(second.clone())
+    );
+    assert_eq!(
+        SignInRepository::take(&store, &second.state_hash)
+            .await
+            .unwrap(),
+        None,
+        "used up"
+    );
+
+    // Expired flows go when the next one starts, and a deleted server takes its flow along.
+    let other = ToolServer::create(
+        owner,
+        "Web",
+        Slug::parse("web").unwrap(),
+        BaseUrl::parse("https://web.example.com", NetworkScope::Public).unwrap(),
+        at(1),
+    )
+    .unwrap()
+    .with_auth(AuthMode::OAuth);
+    ToolServerRepository::insert(&store, &other).await.unwrap();
+    let old = SignInFlow {
+        created_at: at(0),
+        expires_at: at(5),
+        ..flow(&other, 3, 5)
+    };
+    SignInRepository::insert(&store, &old).await.unwrap();
+    let later = SignInFlow {
+        created_at: at(6),
+        ..flow(&server, 4, 20)
+    };
+    SignInRepository::insert(&store, &later).await.unwrap();
+    assert_eq!(
+        SignInRepository::take(&store, &old.state_hash)
+            .await
+            .unwrap(),
+        None,
+        "purged"
+    );
+    ToolServerRepository::delete(&store, owner, server.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        SignInRepository::take(&store, &later.state_hash)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_flow_needs_a_server_of_its_user(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let foreign = SignInFlow {
+        user_id: other,
+        ..flow(&server, 1, 10)
+    };
+    assert!(SignInRepository::insert(&store, &foreign).await.is_err());
 }

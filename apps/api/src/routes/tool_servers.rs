@@ -120,6 +120,8 @@ pub async fn create(
         url: body.url,
         bearer: body.bearer,
         headers: body.headers,
+        auth: None,
+        client: None,
         approval: body.approval.unwrap_or_default().to_core(),
     };
     let server = state.tools.create(&caller, input).await?;
@@ -177,6 +179,8 @@ pub async fn update(
             Some(Credentials { bearer, headers }) => CredentialChange::Set { bearer, headers },
             None => CredentialChange::Clear,
         }),
+        auth: None,
+        client: None,
         approval: body.approval.map(ToCore::to_core),
         tool_modes: body.tool_modes.map(|modes| {
             modes

@@ -1,15 +1,19 @@
-//! `ToolServerRepository` on Postgres (`tool_servers`). Deleting a server cascades to its
-//! `project_tool_servers`, `chat_tool_servers`, and `chat_tool_approvals` rows. Only the user's
-//! review clears `tools_review_required`: a listing saved while a settings write was in flight
-//! keeps the flag it set, so a changed tool list always asks until the user has seen it.
+//! `ToolServerRepository` on Postgres (`tool_servers`) and `SignInRepository` (`oauth_flows`).
+//! Deleting a server cascades to its `project_tool_servers`, `chat_tool_servers`,
+//! `chat_tool_approvals`, and `oauth_flows` rows. Only the user's review clears
+//! `tools_review_required`: a listing saved while a settings write was in flight keeps the flag
+//! it set, so a changed tool list always asks until the user has seen it. Only `save_sign_in`
+//! writes a sign-in: a settings write keeps the stored one unless it leaves `oauth` or changes
+//! the URL, so it never undoes a sign-in or a refresh that ran meanwhile.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    BaseUrl, DomainError, DomainResult, Slug, ToolCache, ToolListing, ToolServer, ToolServerId,
-    ToolServerParts, ToolServerRepository, UserId,
+    AuthMode, BaseUrl, ClientConfig, DomainError, DomainResult, SignIn, SignInFlow,
+    SignInRepository, Slug, ToolCache, ToolListing, ToolServer, ToolServerId, ToolServerParts,
+    ToolServerRepository, UserId,
 };
 use serde_json::Value;
 use sqlx::types::Json;
@@ -18,19 +22,22 @@ use uuid::Uuid;
 use crate::records::{ToolCacheRecord, modes, to_modes};
 use crate::repositories::store::{PgStore, failed, invalid, json, record, text};
 
-const COLUMNS: &str = "created_at, updated_at, tools_fetched_at, id, user_id, enabled, \
-     tools_review_required, name, slug, url, approval, headers_sealed, protocol_version, \
-     tool_modes, tools_cached";
+const COLUMNS: &str = "created_at, updated_at, tools_fetched_at, oauth_expires_at, id, user_id, \
+     enabled, tools_review_required, oauth_refreshable, name, slug, url, approval, headers_sealed, \
+     protocol_version, tool_modes, tools_cached, auth_mode, oauth_client_id, \
+     oauth_client_secret_sealed, oauth_tokens_sealed";
 
 #[derive(sqlx::FromRow)]
 struct ServerRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     tools_fetched_at: Option<DateTime<Utc>>,
+    oauth_expires_at: Option<DateTime<Utc>>,
     id: Uuid,
     user_id: Uuid,
     enabled: bool,
     tools_review_required: bool,
+    oauth_refreshable: bool,
     name: String,
     slug: String,
     url: String,
@@ -39,6 +46,10 @@ struct ServerRow {
     protocol_version: Option<String>,
     tool_modes: Json<BTreeMap<String, String>>,
     tools_cached: Option<Value>,
+    auth_mode: String,
+    oauth_client_id: Option<String>,
+    oauth_client_secret_sealed: Option<Vec<u8>>,
+    oauth_tokens_sealed: Option<Vec<u8>>,
 }
 
 impl TryFrom<ServerRow> for ToolServer {
@@ -64,6 +75,16 @@ impl TryFrom<ServerRow> for ToolServer {
             slug: Slug::restore(row.slug),
             url: BaseUrl::restore(&row.url)?,
             headers_sealed: row.headers_sealed,
+            auth: text::<AuthMode>(&row.auth_mode, "database.tool-servers.auth-mode.invalid")?,
+            client: row.oauth_client_id.map(|id| ClientConfig {
+                id,
+                secret_sealed: row.oauth_client_secret_sealed,
+            }),
+            sign_in: row.oauth_tokens_sealed.map(|sealed| SignIn {
+                sealed,
+                expires_at: row.oauth_expires_at,
+                refreshable: row.oauth_refreshable,
+            }),
             approval: text(&row.approval, "database.tool-servers.approval.invalid")?,
             tool_modes: to_modes(row.tool_modes.0)
                 .map_err(invalid("database.tool-servers.tool-modes.invalid"))?,
@@ -104,11 +125,16 @@ impl ToolServerRepository for PgStore {
 
     async fn insert(&self, server: &ToolServer) -> DomainResult<()> {
         let cache = server.cache();
+        let client = server.client();
+        let sign_in = server.sign_in();
         sqlx::query(
             "INSERT INTO tool_servers (created_at, updated_at, tools_fetched_at, id, user_id, \
              enabled, tools_review_required, name, slug, url, approval, headers_sealed, \
-             protocol_version, tool_modes, tools_cached) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+             protocol_version, tool_modes, tools_cached, auth_mode, oauth_client_id, \
+             oauth_client_secret_sealed, oauth_tokens_sealed, oauth_expires_at, \
+             oauth_refreshable) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
+             $17, $18, $19, $20, $21)",
         )
         .bind(server.created_at())
         .bind(server.updated_at())
@@ -125,6 +151,12 @@ impl ToolServerRepository for PgStore {
         .bind(server.protocol_version())
         .bind(json(modes(server.tool_modes())))
         .bind(cache.map(|cache| json(ToolCacheRecord::from(cache))))
+        .bind(server.auth().as_str())
+        .bind(client.map(|client| client.id.as_str()))
+        .bind(client.and_then(|client| client.secret_sealed.as_deref()))
+        .bind(sign_in.map(|sign_in| sign_in.sealed.as_slice()))
+        .bind(sign_in.and_then(|sign_in| sign_in.expires_at))
+        .bind(sign_in.is_some_and(|sign_in| sign_in.refreshable))
         .execute(self.pool())
         .await
         .map_err(failed("database.tool-servers.insert.failed"))?;
@@ -133,7 +165,10 @@ impl ToolServerRepository for PgStore {
 
     async fn update(&self, server: &ToolServer) -> DomainResult<()> {
         // A listing saved since `server` was read (its `tools_fetched_at` moved) wins: it keeps
-        // its review flag, and its protocol version while the URL stays the same.
+        // its review flag, and its protocol version while the URL stays the same. The stored
+        // sign-in stays while the mode stays `oauth` and the URL the same (`url` in an
+        // expression is the row's old value).
+        let client = server.client();
         sqlx::query(
             "UPDATE tool_servers SET updated_at = $3, enabled = $4, name = $5, url = $6, \
              approval = $7, headers_sealed = $8, tool_modes = $9, \
@@ -141,7 +176,13 @@ impl ToolServerRepository for PgStore {
                OR (tools_review_required AND tools_fetched_at IS DISTINCT FROM $11), \
              protocol_version = CASE \
                WHEN tools_fetched_at IS DISTINCT FROM $11 AND url = $6 THEN protocol_version \
-               ELSE $12 END \
+               ELSE $12 END, \
+             auth_mode = $13, oauth_client_id = $14, oauth_client_secret_sealed = $15, \
+             oauth_tokens_sealed = CASE WHEN $13 = 'oauth' AND url = $6 \
+               THEN oauth_tokens_sealed END, \
+             oauth_expires_at = CASE WHEN $13 = 'oauth' AND url = $6 \
+               THEN oauth_expires_at END, \
+             oauth_refreshable = $13 = 'oauth' AND url = $6 AND oauth_refreshable \
              WHERE id = $1 AND user_id = $2",
         )
         .bind(server.id().uuid())
@@ -156,6 +197,9 @@ impl ToolServerRepository for PgStore {
         .bind(server.review_required())
         .bind(server.cache().map(|cache| cache.fetched_at))
         .bind(server.protocol_version())
+        .bind(server.auth().as_str())
+        .bind(client.map(|client| client.id.as_str()))
+        .bind(client.and_then(|client| client.secret_sealed.as_deref()))
         .execute(self.pool())
         .await
         .map_err(failed("database.tool-servers.update.failed"))?;
@@ -208,6 +252,34 @@ impl ToolServerRepository for PgStore {
         Ok(saved > 0)
     }
 
+    async fn save_sign_in(
+        &self,
+        user: UserId,
+        id: ToolServerId,
+        url: &BaseUrl,
+        sign_in: Option<&SignIn>,
+        previous: Option<&[u8]>,
+    ) -> DomainResult<bool> {
+        let saved = sqlx::query(
+            "UPDATE tool_servers SET oauth_tokens_sealed = $4, oauth_expires_at = $5, \
+             oauth_refreshable = $6 \
+             WHERE id = $1 AND user_id = $2 AND url = $3 AND auth_mode = 'oauth' \
+               AND ($7::bytea IS NULL OR oauth_tokens_sealed = $7)",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .bind(url.as_str())
+        .bind(sign_in.map(|sign_in| sign_in.sealed.as_slice()))
+        .bind(sign_in.and_then(|sign_in| sign_in.expires_at))
+        .bind(sign_in.is_some_and(|sign_in| sign_in.refreshable))
+        .bind(previous)
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.tool-servers.save-sign-in.failed"))?
+        .rows_affected();
+        Ok(saved > 0)
+    }
+
     async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
         // A `ttl_ms` of 0 expires the list now; `tools_fetched_at` keeps telling when it came.
         sqlx::query(
@@ -220,5 +292,82 @@ impl ToolServerRepository for PgStore {
         .await
         .map_err(failed("database.tool-servers.stale.failed"))?;
         Ok(())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct FlowRow {
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    id: Uuid,
+    user_id: Uuid,
+    tool_server_id: Uuid,
+    state_hash: Vec<u8>,
+    sealed: Vec<u8>,
+}
+
+impl From<FlowRow> for SignInFlow {
+    fn from(row: FlowRow) -> Self {
+        Self {
+            id: row.id,
+            user_id: UserId::new(row.user_id),
+            server_id: ToolServerId::new(row.tool_server_id),
+            state_hash: row.state_hash,
+            sealed: row.sealed,
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+        }
+    }
+}
+
+#[async_trait]
+impl SignInRepository for PgStore {
+    async fn insert(&self, flow: &SignInFlow) -> DomainResult<()> {
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(failed("database.oauth-flows.insert.failed"))?;
+        sqlx::query("DELETE FROM oauth_flows WHERE expires_at <= $1")
+            .bind(flow.created_at)
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed("database.oauth-flows.purge.failed"))?;
+        // The composite key only accepts a server of `user_id`; a new flow of the server
+        // replaces the one that never came back.
+        sqlx::query(
+            "INSERT INTO oauth_flows (created_at, expires_at, id, user_id, tool_server_id, \
+             state_hash, sealed) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (tool_server_id) DO UPDATE SET created_at = EXCLUDED.created_at, \
+             expires_at = EXCLUDED.expires_at, id = EXCLUDED.id, \
+             state_hash = EXCLUDED.state_hash, sealed = EXCLUDED.sealed \
+             WHERE oauth_flows.user_id = EXCLUDED.user_id",
+        )
+        .bind(flow.created_at)
+        .bind(flow.expires_at)
+        .bind(flow.id)
+        .bind(flow.user_id.uuid())
+        .bind(flow.server_id.uuid())
+        .bind(&flow.state_hash)
+        .bind(&flow.sealed)
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed("database.oauth-flows.insert.failed"))?;
+        transaction
+            .commit()
+            .await
+            .map_err(failed("database.oauth-flows.insert.failed"))
+    }
+
+    async fn take(&self, state_hash: &[u8]) -> DomainResult<Option<SignInFlow>> {
+        let row: Option<FlowRow> = sqlx::query_as(
+            "DELETE FROM oauth_flows WHERE state_hash = $1 RETURNING created_at, expires_at, \
+             id, user_id, tool_server_id, state_hash, sealed",
+        )
+        .bind(state_hash)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(failed("database.oauth-flows.take.failed"))?;
+        Ok(row.map(SignInFlow::from))
     }
 }
