@@ -257,11 +257,19 @@ impl ToolService {
 
     /// Connects, lists the tools, and stores the list. When any tool's name, description, or
     /// input schema changed since the last list, every tool of the server asks until
-    /// [`ToolService::review`].
+    /// [`ToolService::review`]. A URL changed while the list was fetched stores nothing and fails
+    /// with `TOOL_SERVER_CHANGED`.
     pub async fn test(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolTest> {
         let server = self.load(actor, id).await?;
         let listing = self.fetch(actor, &server).await?;
-        let (server, changes) = self.store(actor, server, listing).await?;
+        let Some((server, changes)) = self.store(actor, server, listing).await? else {
+            // Deleted meanwhile (`404`), or its URL changed.
+            self.load(actor, id).await?;
+            return Err(DomainError::business_rule(
+                "The server's URL changed during the test. Test it again.",
+                "TOOL_SERVER_CHANGED",
+            ));
+        };
         Ok(ToolTest { server, changes })
     }
 
@@ -280,7 +288,7 @@ impl ToolService {
     /// of the caller count; `off` tools are dropped. A server whose cached list expired (or that
     /// was never listed at its current URL) is listed again first. When that fails the stale list
     /// is used if it came from the current URL, and any other server is reported in
-    /// `unavailable`.
+    /// `unavailable`, as is a server whose URL changed while it was listed.
     pub async fn effective_tools(
         &self,
         actor: &Actor,
@@ -303,7 +311,13 @@ impl ToolService {
             let mut server = server.clone();
             if server.needs_refresh(now) {
                 match self.fetch(actor, &server).await {
-                    Ok(listing) => server = self.store(actor, server, listing).await?.0,
+                    Ok(listing) => match self.store(actor, server, listing).await? {
+                        Some((stored, _)) => server = stored,
+                        None => {
+                            effective.unavailable.push(id);
+                            continue;
+                        }
+                    },
                     Err(_) if server.listed() => {}
                     Err(_) => {
                         effective.unavailable.push(id);
@@ -344,21 +358,30 @@ impl ToolService {
         Ok(listing)
     }
 
-    /// Stores a fresh listing with its review flag.
+    /// Stores a fresh listing of `server`'s URL with its review flag. `None`, with nothing
+    /// stored, when the server's URL changed (or the server went away) since it was read.
     async fn store(
         &self,
         actor: &Actor,
         server: ToolServer,
         listing: ToolListing,
-    ) -> DomainResult<(ToolServer, ToolChanges)> {
+    ) -> DomainResult<Option<(ToolServer, ToolChanges)>> {
         let before = server.cache().map(|cache| cache.tools.as_slice());
         let changes = ToolChanges::between(before, &listing.tools);
         let review_required = server.review_required() || !changes.is_empty();
         let now = self.clock.now();
-        self.servers
-            .save_listing(actor.user_id, server.id(), &listing, review_required, now)
+        let saved = self
+            .servers
+            .save_listing(
+                actor.user_id,
+                server.id(),
+                server.url(),
+                &listing,
+                review_required,
+                now,
+            )
             .await?;
-        Ok((server.with_listing(&listing, review_required, now), changes))
+        Ok(saved.then(|| (server.with_listing(&listing, review_required, now), changes)))
     }
 
     async fn load(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolServer> {
@@ -393,7 +416,8 @@ mod tests {
 
     use super::*;
     use crate::domains::tool::selection::ServerOverride;
-    use crate::ports::tool_host::RemoteTool;
+    use crate::ports::tool_host::{RemoteTool, ToolSession};
+    use crate::shared::ids::UserId;
     use crate::shared::net::NetworkScope;
     use crate::testing::{
         FakeCipher, FixedClock, MemoryStore, ScriptedToolHost, actor, admin, remote_tool,
@@ -1029,5 +1053,73 @@ mod tests {
             .unwrap();
         assert_eq!(effective.tools[0].mode, ToolMode::Auto);
         assert!(!effective.tools[0].review_required);
+    }
+
+    /// The scripted host, with the user moving the server to a new URL while it lists
+    /// (`https://moved-<n>.example.net/mcp` on the n-th list).
+    struct Moving {
+        host: Arc<ScriptedToolHost>,
+        store: Arc<MemoryStore>,
+        owner: UserId,
+        moves: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolHost for Moving {
+        async fn list(&self, endpoint: &ToolEndpoint) -> DomainResult<ToolListing> {
+            let stored =
+                ToolServerRepository::get(self.store.as_ref(), self.owner, endpoint.server_id)
+                    .await?
+                    .expect("the server");
+            let moves = self.moves.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let url = BaseUrl::restore(&format!("https://moved-{moves}.example.net/mcp"))?;
+            ToolServerRepository::update(self.store.as_ref(), &stored.with_url(url)).await?;
+            self.host.list(endpoint).await
+        }
+
+        async fn open(&self, endpoints: Vec<ToolEndpoint>) -> DomainResult<Box<dyn ToolSession>> {
+            self.host.open(endpoints).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_list_from_a_url_changed_meanwhile_is_never_stored() {
+        let clock = Arc::new(FixedClock::default());
+        let store = Arc::new(MemoryStore::new(clock.clone()));
+        let host = Arc::new(ScriptedToolHost::new());
+        let caller = actor();
+        let moving = Arc::new(Moving {
+            host: host.clone(),
+            store: store.clone(),
+            owner: caller.user_id,
+            moves: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let service = ToolService::new(
+            store.clone(),
+            moving,
+            Arc::new(FakeCipher::new()),
+            clock,
+            PrivateNetwork::Admins,
+        );
+        let server = service.create(&caller, named("GitHub")).await.unwrap();
+
+        host.push_tools(vec![remote_tool("search")]);
+        let error = service.test(&caller, server.id()).await.unwrap_err();
+        assert_eq!(error.code(), "TOOL_SERVER_CHANGED");
+        let stored = service.get(&caller, server.id()).await.unwrap().server;
+        assert_eq!(stored.url().as_str(), "https://moved-1.example.net/mcp");
+        assert!(stored.cache().is_none(), "the old URL's list is not stored");
+        assert!(!stored.listed());
+
+        host.push_tools(vec![remote_tool("search")]);
+        let effective = service
+            .effective_tools(&caller, &selection(vec![server.id()], vec![]))
+            .await
+            .unwrap();
+        assert!(effective.tools.is_empty(), "nothing from the old URL");
+        assert_eq!(effective.unavailable, [server.id()]);
+        let stored = service.get(&caller, server.id()).await.unwrap().server;
+        assert_eq!(stored.url().as_str(), "https://moved-2.example.net/mcp");
+        assert!(stored.cache().is_none());
     }
 }

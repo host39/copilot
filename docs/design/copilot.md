@@ -140,7 +140,7 @@ Users register remote MCP servers in Settings: name, URL, optional bearer token 
 - **Approval:** new servers default to `ask`; `auto` is an explicit choice with a warning. After Test, the server page lists its tools, each set to Off, Ask, or Auto (default: the server mode). Auto is suggested, as a hint only, for tools annotated `readOnlyHint` (annotations are untrusted). Off tools are never sent to the model.
 - **Approval card:** Approve, Approve for this chat, Deny (with an optional reason passed to the model). Approvals are stored, so any device can answer them, and nothing waits in memory.
 - **Changed tools:** when a refresh changes any tool's name, description, or input schema, the server falls back to `ask` for every tool until the user reviews the change.
-- **Tool list cache:** Copilot stores each server's tool list (refreshed on Test, on expiry using the server's `ttlMs` capped at 24 hours, or 1 hour without one, and when a call reports an unknown tool), so building a request does not connect to every server. Changing a server's URL makes the next turn list the new URL first (a stale list from the old URL is never offered) and puts every tool back to `ask` until the user reviews the server.
+- **Tool list cache:** Copilot stores each server's tool list (refreshed on Test, on expiry using the server's `ttlMs` capped at 24 hours, or 1 hour without one, and when a call reports an unknown tool), so building a request does not connect to every server. Changing a server's URL makes the next turn list the new URL first (a stale list from the old URL is never offered, and a list fetched from the old URL while the URL changed is never stored: Test then answers `TOOL_SERVER_CHANGED` and a turn reports the server unavailable) and puts every tool back to `ask` until the user reviews the server.
 - **Authentication:** bearer token or custom headers in v1. A custom `Authorization` header is rejected when the bearer field is set.
 
 ### Providers and Models
@@ -419,7 +419,7 @@ trait ToolServerRepository {
     async fn insert(&self, server: &ToolServer) -> DomainResult<()>;
     async fn update(&self, server: &ToolServer) -> DomainResult<()>;
     async fn delete(&self, user: UserId, id: ToolServerId) -> DomainResult<bool>;
-    async fn save_listing(&self, user: UserId, id: ToolServerId, listing: &ToolListing, review_required: bool, at: DateTime<Utc>) -> DomainResult<()>;
+    async fn save_listing(&self, user: UserId, id: ToolServerId, url: &BaseUrl, listing: &ToolListing, review_required: bool, at: DateTime<Utc>) -> DomainResult<bool>; // only while the server's URL is still `url`
 }
 trait ScheduleRepository {
     async fn list(&self, user: UserId, query: ScheduleQuery) -> DomainResult<Vec<Schedule>>;

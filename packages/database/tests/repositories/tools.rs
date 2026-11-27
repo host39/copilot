@@ -94,10 +94,19 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
     let other = user(&store).await;
     let server = server(&store, owner, "docs").await;
 
-    store
-        .save_listing(other, server.id(), &listing("search", "v1"), true, at(5))
-        .await
-        .unwrap();
+    assert!(
+        !store
+            .save_listing(
+                other,
+                server.id(),
+                server.url(),
+                &listing("search", "v1"),
+                true,
+                at(5)
+            )
+            .await
+            .unwrap()
+    );
     assert_eq!(
         ToolServerRepository::get(&store, owner, server.id())
             .await
@@ -105,10 +114,19 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
         Some(server.clone()),
         "another user's listing changes nothing"
     );
-    store
-        .save_listing(owner, server.id(), &listing("search", "v1"), false, at(5))
-        .await
-        .unwrap();
+    assert!(
+        store
+            .save_listing(
+                owner,
+                server.id(),
+                server.url(),
+                &listing("search", "v1"),
+                false,
+                at(5)
+            )
+            .await
+            .unwrap()
+    );
     let listed = ToolServerRepository::get(&store, owner, server.id())
         .await
         .unwrap()
@@ -187,12 +205,76 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
+async fn a_listing_of_a_url_changed_meanwhile_is_not_stored(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let server = server(&store, owner, "docs").await;
+    assert!(
+        store
+            .save_listing(
+                owner,
+                server.id(),
+                server.url(),
+                &listing("search", "v1"),
+                false,
+                at(1)
+            )
+            .await
+            .unwrap()
+    );
+    let read = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    // A Test (or a turn's refresh) lists the old URL while the user changes it.
+    let moved = read
+        .clone()
+        .with_url(BaseUrl::parse("https://other.example.net/mcp", NetworkScope::Public).unwrap())
+        .touched(at(2));
+    ToolServerRepository::update(&store, &moved).await.unwrap();
+    assert!(
+        !store
+            .save_listing(
+                owner,
+                server.id(),
+                read.url(),
+                &listing("delete", "v2"),
+                false,
+                at(3)
+            )
+            .await
+            .unwrap()
+    );
+    let stored = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.url(), moved.url());
+    assert_eq!(
+        stored.cache(),
+        read.cache(),
+        "the old URL's list is not stored"
+    );
+    assert_eq!(stored.protocol_version(), None, "nor its protocol version");
+    assert!(!stored.listed(), "the next turn lists the new URL first");
+    assert!(stored.review_required());
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
 async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool) {
     let store = store(pool).await;
     let owner = user(&store).await;
     let server = server(&store, owner, "docs").await;
     store
-        .save_listing(owner, server.id(), &listing("search", "v1"), false, at(1))
+        .save_listing(
+            owner,
+            server.id(),
+            server.url(),
+            &listing("search", "v1"),
+            false,
+            at(1),
+        )
         .await
         .unwrap();
     let read = ToolServerRepository::get(&store, owner, server.id())
@@ -202,7 +284,14 @@ async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool
 
     // A turn's refresh finds a changed tool list while the user edits the server.
     store
-        .save_listing(owner, server.id(), &listing("delete", "v2"), true, at(2))
+        .save_listing(
+            owner,
+            server.id(),
+            server.url(),
+            &listing("delete", "v2"),
+            true,
+            at(2),
+        )
         .await
         .unwrap();
     ToolServerRepository::update(&store, &read.clone().with_enabled(false).touched(at(3)))
@@ -230,7 +319,14 @@ async fn only_a_review_of_the_latest_listing_clears_the_review_flag(pool: DbPool
     );
     // A listing without changes never clears it either.
     store
-        .save_listing(owner, server.id(), &listing("delete", "v2"), false, at(5))
+        .save_listing(
+            owner,
+            server.id(),
+            server.url(),
+            &listing("delete", "v2"),
+            false,
+            at(5),
+        )
         .await
         .unwrap();
     let latest = ToolServerRepository::get(&store, owner, server.id())

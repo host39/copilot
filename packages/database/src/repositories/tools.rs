@@ -177,21 +177,22 @@ impl ToolServerRepository for PgStore {
         &self,
         user: UserId,
         id: ToolServerId,
+        url: &BaseUrl,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,
-    ) -> DomainResult<()> {
+    ) -> DomainResult<bool> {
         let record = ToolCacheRecord::from(&ToolCache {
             tools: listing.tools.clone(),
             ttl: listing.ttl,
             fetched_at: at,
         });
         // Never clears the review flag: a URL change or another listing may have set it since
-        // the caller read the server.
-        sqlx::query(
+        // the caller read the server. Never stores the list of a URL the server no longer has.
+        let saved = sqlx::query(
             "UPDATE tool_servers SET tools_cached = $3, tools_fetched_at = $4, \
              protocol_version = $5, tools_review_required = tools_review_required OR $6 \
-             WHERE id = $1 AND user_id = $2",
+             WHERE id = $1 AND user_id = $2 AND url = $7",
         )
         .bind(id.uuid())
         .bind(user.uuid())
@@ -199,9 +200,11 @@ impl ToolServerRepository for PgStore {
         .bind(at)
         .bind(&listing.protocol_version)
         .bind(review_required)
+        .bind(url.as_str())
         .execute(self.pool())
         .await
-        .map_err(failed("database.tool-servers.save-listing.failed"))?;
-        Ok(())
+        .map_err(failed("database.tool-servers.save-listing.failed"))?
+        .rows_affected();
+        Ok(saved > 0)
     }
 }

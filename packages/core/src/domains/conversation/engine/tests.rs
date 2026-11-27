@@ -33,6 +33,7 @@ use crate::domains::tool::{
 use crate::ports::llm_gateway::{LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities};
 use crate::ports::tool_host::{ToolContent, ToolListing, ToolOutput};
 use crate::shared::actor::Actor;
+use crate::shared::base_url::BaseUrl;
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::MCP_RESULT_MAX_BYTES;
 use crate::shared::ids::{ModelId, ProjectId, ToolServerId, UserId};
@@ -1585,14 +1586,16 @@ impl ToolServerRepository for Gauge {
         &self,
         user: UserId,
         id: ToolServerId,
+        url: &BaseUrl,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,
-    ) -> DomainResult<()> {
+    ) -> DomainResult<bool> {
         ToolServerRepository::save_listing(
             self.store.as_ref(),
             user,
             id,
+            url,
             listing,
             review_required,
             at,

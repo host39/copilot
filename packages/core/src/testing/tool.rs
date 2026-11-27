@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::tool::{ToolServer, ToolServerParts, ToolServerRepository};
 use crate::ports::tool_host::ToolListing;
+use crate::shared::base_url::BaseUrl;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ToolServerId, UserId};
 use crate::testing::store::{MemoryStore, Tables, duplicate};
@@ -82,17 +83,23 @@ impl ToolServerRepository for MemoryStore {
         &self,
         user: UserId,
         id: ToolServerId,
+        url: &BaseUrl,
         listing: &ToolListing,
         review_required: bool,
         at: DateTime<Utc>,
-    ) -> DomainResult<()> {
+    ) -> DomainResult<bool> {
         let mut tables = self.tables();
-        if let Some(stored) = tables.tool_servers.get_mut(&id)
-            && stored.user_id() == user
-        {
-            *stored = stored.clone().with_listing(listing, review_required, at);
-        }
-        Ok(())
+        let Some(stored) = tables
+            .tool_servers
+            .get_mut(&id)
+            .filter(|stored| stored.user_id() == user && stored.url() == url)
+        else {
+            return Ok(false);
+        };
+        // A set review flag stays: only the user's review clears it.
+        let review_required = stored.review_required() || review_required;
+        *stored = stored.clone().with_listing(listing, review_required, at);
+        Ok(true)
     }
 }
 

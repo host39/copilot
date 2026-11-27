@@ -230,7 +230,7 @@ pub async fn delete(
     responses(
         (status = OK, description = "Connected, listed the tools, and refreshed the cache", body = DetailsResponse<ToolTestResponse>),
         (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse),
-        (status = UNPROCESSABLE_ENTITY, description = "The stored credentials no longer open (`SECRET_UNREADABLE`)", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The stored credentials no longer open (`SECRET_UNREADABLE`), or the URL changed during the test (`TOOL_SERVER_CHANGED`)", body = ErrorResponse),
         (status = BAD_GATEWAY, description = "The server could not be reached or listed", body = ErrorResponse)
     )
 )]
