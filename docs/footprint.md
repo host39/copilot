@@ -22,7 +22,7 @@ Measured on 2026-11-27 on x86_64 Linux (4 vCPUs) with rustc 1.100.0, Docker 29.9
 | Idle memory (RSS) of the server | | 21.3 MB | 22.0 MB (release), 17.5 MB (image) | |
 | Cold start to the first `/health` 200 | | 62 to 75 ms | 55 to 70 ms (release binary), 181 to 203 ms (`docker run` included) | |
 
-`scripts/footprint.sh` checks the four budgets in CI on every push (binaries in the Rust job, first load in the lint job, image in `image.yml`), so growth past them fails the build and needs a deliberate change to the script.
+CI measured the same commit's code within a few kilobytes (run 46046421711: `server` 22,288,040 bytes, `migrate` 5,222,296, first load 152,756 gzip; run 46046421706: the image at 19,028,337). `scripts/footprint.sh` checks the four budgets in CI on every push (binaries in the Rust job, first load in the lint job, image in `image.yml`), so growth past them fails the build and needs a deliberate change to the script.
 
 ## Binaries
 
