@@ -9,13 +9,25 @@ license.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+# Images and audio in tool results arrive as base64.
+base64 = { workspace = true }
+bytes = { workspace = true }
 copilot-core = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
 rmcp = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+# `sync`: the session's connections live behind an async mutex.
+tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The in-process MCP server of the tests: rmcp's own Streamable HTTP server (both eras), served
+# by axum on loopback. Dev only: `make boundaries` checks normal dependencies.
+axum = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+# The tests connect through the real hardened clients, as the composition root injects them.
+copilot-security = { workspace = true }
 
 [lints]
 workspace = true
