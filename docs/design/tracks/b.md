@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other track ch
 
 ## Status
 
-Complete: part 1 (the OpenAI-compatible adapter beyond text) and part 2 (the Anthropic adapter, the Gemini spike, and the limits check). Ready for the P2.F integration merge. Live checks against real Anthropic and Gemini keys are left for the P3.4 owner checkpoint (see Blockers). Last green CI: recorded in the commit that follows this one.
+Complete: part 1 (the OpenAI-compatible adapter beyond text) and part 2 (the Anthropic adapter, the Gemini spike, and the limits check). Ready for the P2.F integration merge. Live checks against real Anthropic and Gemini keys are left for the P3.4 owner checkpoint (see Blockers). Last green CI: `bd4a1e3` (Code quality, run 45915334040), which holds part 2's commits `e884c3a`, `f44ec98`, `1e24024`, and `3dc92d2`.
 
 ## Sub-Steps
 
