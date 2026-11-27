@@ -63,14 +63,16 @@ pub struct SchedulePreview {
 }
 
 /// A run to start: a claimed due schedule or a Run now, with its owner. The chat domain turns it
-/// into a prepared turn (a new chat titled `<schedule name> · <local date>`) and the scheduler
-/// reports the end with [`ScheduleService::record`].
+/// into a prepared turn (the new chat `chat_id`, titled `<schedule name> · <local date>`) and
+/// the scheduler reports the end with [`ScheduleService::record`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Firing {
     pub schedule: Schedule,
     pub actor: Actor,
     /// When the run started (the claim, or the Run now request).
     pub at: DateTime<Utc>,
+    /// The chat the run will create, known before it exists so the run can reserve it first.
+    pub chat_id: ChatId,
 }
 
 #[derive(Clone)]
@@ -225,7 +227,9 @@ impl ScheduleService {
     /// Claims up to `limit` due schedules (the free scheduled-run slots). Each claim is a
     /// compare-and-set of `next_run_at` from the value read to the rule's next fire after `now`,
     /// so fires missed while the server was down collapse into one run, and of two schedulers
-    /// only one claims a fire. Schedules of disabled users are never due.
+    /// only one claims a fire. Schedules of disabled users are never due. A claim that fails after
+    /// others succeeded ends the round with those (logged as `core.schedules.claim.failed`), so a
+    /// claimed fire is never dropped.
     pub async fn fire_due(&self, now: DateTime<Utc>, limit: u32) -> DomainResult<Vec<Firing>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -237,15 +241,25 @@ impl ScheduleService {
             else {
                 continue;
             };
-            if self
+            let claimed = match self
                 .schedules
                 .advance(schedule.id(), expected, next, now)
-                .await?
+                .await
             {
+                Ok(claimed) => claimed,
+                Err(error) if firings.is_empty() => return Err(error),
+                Err(error) => {
+                    // The fires claimed so far must still run: their next run already moved.
+                    tracing::warn!(schedule_id = %schedule.id(), error = %error, "core.schedules.claim.failed");
+                    break;
+                }
+            };
+            if claimed {
                 firings.push(Firing {
                     schedule: schedule.advanced(next, now),
                     actor,
                     at: now,
+                    chat_id: ChatId::generate(),
                 });
             }
         }
@@ -259,6 +273,7 @@ impl ScheduleService {
             schedule,
             actor: *actor,
             at: self.clock.now(),
+            chat_id: ChatId::generate(),
         })
     }
 
@@ -808,6 +823,86 @@ mod tests {
         assert!(f.service.fire_due(at(10, 0), 1).await.unwrap().is_empty());
     }
 
+    /// Ticks every 30 seconds from `from` to `to` (as the scheduler does) and returns when each
+    /// claim fired.
+    async fn ticks(f: &Fixture, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+        let mut fired = Vec::new();
+        let mut now = from;
+        while now <= to {
+            for firing in f.service.fire_due(now, 2).await.unwrap() {
+                fired.push(firing.at);
+            }
+            now += Duration::seconds(30);
+        }
+        fired
+    }
+
+    fn utc(month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, month, day, hour, minute, 0)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn daylight_saving_gaps_fire_once_at_the_next_valid_time() {
+        let f = fixture();
+        let caller = admin();
+        f.store.add_user(&caller);
+        let (model, _) = model(&f, &caller).await;
+        f.clock.set(utc(3, 7, 12, 0));
+        let input = NewSchedule {
+            cron: "30 2 * * *".to_owned(),
+            timezone: "America/New_York".to_owned(),
+            ..daily(model)
+        };
+        f.service.create(&caller, input).await.unwrap();
+        // 02:30 does not exist on 8 March 2026 in New York (02:00 EST jumps to 03:00 EDT).
+        let fired = ticks(&f, utc(3, 8, 5, 0), utc(3, 9, 8, 0)).await;
+        assert_eq!(
+            fired,
+            [utc(3, 8, 7, 0), utc(3, 9, 6, 30)],
+            "03:00 EDT on the day of the gap, then 02:30 EDT"
+        );
+    }
+
+    #[tokio::test]
+    async fn daylight_saving_overlaps_fire_fixed_times_once_and_steps_on_real_time() {
+        let f = fixture();
+        let caller = admin();
+        f.store.add_user(&caller);
+        let (model, _) = model(&f, &caller).await;
+        f.clock.set(utc(10, 31, 12, 0));
+        let fixed = NewSchedule {
+            cron: "30 1 * * *".to_owned(),
+            timezone: "America/New_York".to_owned(),
+            ..daily(model)
+        };
+        let fixed = f.service.create(&caller, fixed).await.unwrap();
+        // 01:00 to 02:00 happens twice on 1 November 2026 in New York (EDT, then EST).
+        let fired = ticks(&f, utc(11, 1, 4, 0), utc(11, 1, 8, 0)).await;
+        assert_eq!(fired, [utc(11, 1, 5, 30)], "01:30 EDT only, not 01:30 EST");
+        f.service.delete(&caller, fixed.id()).await.unwrap();
+
+        let every_half_hour = NewSchedule {
+            cron: "*/30 1 * * *".to_owned(),
+            timezone: "America/New_York".to_owned(),
+            ..daily(model)
+        };
+        f.clock.set(utc(10, 31, 12, 0));
+        f.service.create(&caller, every_half_hour).await.unwrap();
+        let fired = ticks(&f, utc(11, 1, 4, 0), utc(11, 1, 8, 0)).await;
+        assert_eq!(
+            fired,
+            [
+                utc(11, 1, 5, 0),
+                utc(11, 1, 5, 30),
+                utc(11, 1, 6, 0),
+                utc(11, 1, 6, 30)
+            ],
+            "a rule with steps in the repeated hour runs on real time: 01:00 and 01:30 EDT, then \
+             01:00 and 01:30 EST, each once"
+        );
+    }
+
     #[tokio::test]
     async fn run_now_does_not_move_the_next_run() {
         let f = fixture();
@@ -1171,10 +1266,12 @@ mod tests {
     }
 
     /// Records a failed run of the schedule before each of the first `races` reschedules, the
-    /// way a run ending between the service's read and its write would.
+    /// way a run ending between the service's read and its write would. Claims fail once
+    /// `claims` succeeded.
     struct Racing {
         store: Arc<MemoryStore>,
         races: std::sync::atomic::AtomicUsize,
+        claims: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -1243,6 +1340,20 @@ mod tests {
             next: DateTime<Utc>,
             now: DateTime<Utc>,
         ) -> DomainResult<bool> {
+            let allowed = self
+                .claims
+                .try_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |left| left.checked_sub(1),
+                )
+                .is_ok();
+            if !allowed {
+                return Err(DomainError::internal(
+                    "database.schedules.advance.failed",
+                    "connection lost",
+                ));
+            }
             self.store.advance(id, expected, next, now).await
         }
 
@@ -1260,6 +1371,7 @@ mod tests {
         let racing = Arc::new(Racing {
             store: f.store.clone(),
             races: std::sync::atomic::AtomicUsize::new(1),
+            claims: std::sync::atomic::AtomicUsize::new(usize::MAX),
         });
         let service = ScheduleService::new(
             racing.clone(),
@@ -1295,5 +1407,43 @@ mod tests {
         assert_eq!(error.code(), "SCHEDULE_BUSY");
         let stored = service.get(&caller, schedule.id()).await.unwrap();
         assert_eq!(stored.rule().expression(), "0 10 * * *");
+    }
+
+    #[tokio::test]
+    async fn a_failed_claim_keeps_the_fires_already_claimed() {
+        let f = fixture();
+        let caller = admin();
+        f.store.add_user(&caller);
+        let (model, _) = model(&f, &caller).await;
+        let first = f.service.create(&caller, daily(model)).await.unwrap();
+        let second = f.service.create(&caller, daily(model)).await.unwrap();
+        let racing = Arc::new(Racing {
+            store: f.store.clone(),
+            races: std::sync::atomic::AtomicUsize::new(0),
+            claims: std::sync::atomic::AtomicUsize::new(1),
+        });
+        let service = ScheduleService::new(
+            racing.clone(),
+            f.store.clone(),
+            f.store.clone(),
+            f.clock.clone(),
+        );
+
+        let firings = service.fire_due(at(9, 1), 2).await.unwrap();
+        assert_eq!(firings.len(), 1, "the claimed fire still runs");
+        assert_eq!(firings[0].schedule.id(), first.id());
+        let error = service.fire_due(at(9, 1), 2).await.unwrap_err();
+        assert_eq!(error.code(), "INTERNAL_ERROR", "nothing claimed: the error");
+
+        racing
+            .claims
+            .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        let firings = service.fire_due(at(9, 1), 2).await.unwrap();
+        assert_eq!(
+            firings.len(),
+            1,
+            "the other fire is claimed on the next tick"
+        );
+        assert_eq!(firings[0].schedule.id(), second.id());
     }
 }

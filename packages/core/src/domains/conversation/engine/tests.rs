@@ -1289,7 +1289,13 @@ async fn unattended_runs_deny_or_pause_ask_tools() {
         .await
         .unwrap();
     let firing = f.schedules.run_now(&f.caller, denying.id()).await.unwrap();
-    let turn = f.chats.prepare_scheduled(firing).await.unwrap();
+    let turn = f
+        .chats
+        .prepare_scheduled(firing)
+        .await
+        .unwrap()
+        .ready()
+        .unwrap();
     let chat = turn.chat.clone();
     let aliases: Vec<&str> = turn
         .context
@@ -1327,7 +1333,13 @@ async fn unattended_runs_deny_or_pause_ask_tools() {
         .await
         .unwrap();
     let firing = f.schedules.run_now(&f.caller, pausing.id()).await.unwrap();
-    let turn = f.chats.prepare_scheduled(firing).await.unwrap();
+    let turn = f
+        .chats
+        .prepare_scheduled(firing)
+        .await
+        .unwrap()
+        .ready()
+        .unwrap();
     f.gateway
         .push_events(call_reply(&[("github__search", "{}")]));
     let (outcome, _) = f.run(turn).await;

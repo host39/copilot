@@ -12,8 +12,8 @@ pub use crate::domains::schedule::builtin::{
 };
 pub use crate::domains::schedule::cron::CronRule;
 pub use crate::domains::schedule::entities::{
-    CreatedBy, MODEL_REMOVED, MODEL_TURNED_OFF, OnAsk, RunOutcome, RunRecord, RunStatus, Schedule,
-    ScheduleParts,
+    CreatedBy, MODEL_REMOVED, MODEL_TURNED_OFF, OnAsk, RUN_FAILED, RunOutcome, RunRecord,
+    RunStatus, START_FAILED, Schedule, ScheduleParts,
 };
 pub use crate::domains::schedule::ports::{ScheduleQuery, ScheduleRepository};
 pub use crate::domains::schedule::service::{

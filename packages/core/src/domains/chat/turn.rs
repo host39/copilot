@@ -15,6 +15,9 @@ use crate::ports::llm_gateway::ModelTarget;
 use crate::shared::actor::Actor;
 use crate::shared::ids::{FileId, MessageId};
 
+/// Code of a model that cannot answer (turned off, no longer listed, or its connection is off).
+pub const MODEL_UNAVAILABLE: &str = "MODEL_UNAVAILABLE";
+
 /// What the user asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TurnInput {
@@ -79,6 +82,30 @@ pub struct PreparedTurn {
     pub history: Vec<Message>,
     /// The turn's snapshot: built for this turn, or the paused turn's for a decision.
     pub context: TurnContext,
+}
+
+/// What starting a scheduled run gave (`ChatService::prepare_scheduled`).
+#[derive(Clone, Debug)]
+pub enum ScheduledTurn {
+    /// The run's chat and prompt are saved: run it unattended.
+    Ready(Box<PreparedTurn>),
+    /// The schedule's model was removed or turned off, or its connection is off: nothing was
+    /// written, and the run records `RunOutcome::Paused` with `reason` (`MODEL_REMOVED` or
+    /// `MODEL_TURNED_OFF`) and `message`, which pauses the schedule.
+    Paused {
+        reason: &'static str,
+        message: &'static str,
+    },
+}
+
+impl ScheduledTurn {
+    /// The turn to run, `None` for a pause.
+    pub fn ready(self) -> Option<PreparedTurn> {
+        match self {
+            Self::Ready(turn) => Some(*turn),
+            Self::Paused { .. } => None,
+        }
+    }
 }
 
 impl PreparedTurn {

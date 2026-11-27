@@ -23,4 +23,6 @@ pub use crate::domains::chat::ports::{
     TurnContextRepository,
 };
 pub use crate::domains::chat::service::{ChatRepositories, ChatService, ChatUpdate, NewChat};
-pub use crate::domains::chat::turn::{PreparedTurn, RunMode, TurnInput};
+pub use crate::domains::chat::turn::{
+    MODEL_UNAVAILABLE, PreparedTurn, RunMode, ScheduledTurn, TurnInput,
+};

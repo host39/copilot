@@ -636,7 +636,13 @@ async fn the_chat_list_pages_by_update_time_and_filters(pool: DbPool) {
         .with_pinned(true);
     ChatRepository::insert(&store, &pinned).await.unwrap();
     say(&store, owner, pinned.id(), "second", 2).await;
-    let run = Chat::scheduled(owner, daily, "Daily · 1 Jan".to_owned(), at(3));
+    let run = Chat::scheduled(
+        ChatId::generate(),
+        owner,
+        daily,
+        "Daily · 1 Jan".to_owned(),
+        at(3),
+    );
     ChatRepository::insert(&store, &run).await.unwrap();
     let tied = [chat(&store, owner).await, chat(&store, owner).await];
     for chat in &tied {

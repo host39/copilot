@@ -91,14 +91,17 @@ impl Chat {
         }
     }
 
-    /// The chat of one run of `schedule`, titled `<schedule name> · <local date>`, unread.
+    /// The chat `id` of one run of `schedule`, titled `<schedule name> · <local date>`, unread.
+    /// The scheduler picks the id before the run starts, so it can reserve the chat first.
     pub fn scheduled(
+        id: ChatId,
         user_id: UserId,
         schedule: ScheduleId,
         title: String,
         now: DateTime<Utc>,
     ) -> Self {
         Self {
+            id,
             schedule_id: Some(schedule),
             title,
             last_read_at: None,
@@ -482,12 +485,15 @@ mod tests {
             ..chat.to_parts()
         });
         assert!(changed.unread());
+        let id = ChatId::generate();
         let run = Chat::scheduled(
+            id,
             chat.user_id(),
             ScheduleId::generate(),
             "Digest · 2026-01-01".to_owned(),
             now(),
         );
+        assert_eq!(run.id(), id, "the id the scheduler reserved");
         assert!(run.unread());
         assert_eq!(run.title(), "Digest · 2026-01-01");
     }

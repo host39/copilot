@@ -45,6 +45,11 @@ text_enum!(OnAsk { Deny => "deny", Pause => "pause" });
 text_enum!(CreatedBy { User => "user", Assistant => "assistant" });
 text_enum!(RunStatus { Ok => "ok", Error => "error", AwaitingApproval => "awaiting_approval" });
 
+/// The failure a run records when it could not start for an internal reason (the log has it).
+pub const START_FAILED: &str = "The run could not start. It will try again at the next run.";
+/// The failure a run records when it stopped with an internal error (the log has it).
+pub const RUN_FAILED: &str = "Something went wrong while answering.";
+
 /// How a run ended, as the scheduler reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunOutcome {
@@ -52,12 +57,31 @@ pub enum RunOutcome {
     /// A human-readable reason.
     Failed(String),
     AwaitingApproval,
+    /// The run could not start because the schedule's model is gone or turned off: the schedule
+    /// pauses at once with `reason` ([`MODEL_REMOVED`] or [`MODEL_TURNED_OFF`]), and `message`
+    /// says why in a sentence.
+    Paused {
+        reason: String,
+        message: String,
+    },
+}
+
+impl RunOutcome {
+    /// How a run whose start failed with `error` ends: a failed run with the error's message
+    /// (internal errors read as [`START_FAILED`]).
+    pub fn not_started(error: &DomainError) -> Self {
+        match error {
+            DomainError::Internal { .. } => Self::Failed(START_FAILED.to_owned()),
+            other => Self::Failed(other.to_string()),
+        }
+    }
 }
 
 /// What `ScheduleRepository::record` writes, built by core so the failure rule stays here:
 /// `last_run_at`, `last_status`, `last_error`, `consecutive_failures` (reset by `ok`, raised
 /// by `error`, kept by `awaiting_approval`), and, when the failures reach `max_failures` on an
-/// enabled schedule, `enabled = false`, `next_run_at = NULL`, and `disabled_reason`.
+/// enabled schedule, `enabled = false`, `next_run_at = NULL`, and `disabled_reason`. A paused
+/// run is an `error` with `max_failures` 0, so it disables the schedule at once.
 /// [`Schedule::recorded`] is the reference implementation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunRecord {
@@ -70,17 +94,24 @@ pub struct RunRecord {
 
 impl RunRecord {
     pub fn new(outcome: RunOutcome, started_at: DateTime<Utc>) -> Self {
+        let mut max_failures = SCHEDULE_MAX_FAILURES;
+        let mut disable_reason = format!("Failed {SCHEDULE_MAX_FAILURES} times in a row");
         let (status, error) = match outcome {
             RunOutcome::Ok => (RunStatus::Ok, None),
             RunOutcome::Failed(reason) => (RunStatus::Error, Some(reason)),
             RunOutcome::AwaitingApproval => (RunStatus::AwaitingApproval, None),
+            RunOutcome::Paused { reason, message } => {
+                max_failures = 0;
+                disable_reason = reason;
+                (RunStatus::Error, Some(message))
+            }
         };
         Self {
             status,
             error,
             started_at,
-            max_failures: SCHEDULE_MAX_FAILURES,
-            disable_reason: format!("Failed {SCHEDULE_MAX_FAILURES} times in a row"),
+            max_failures,
+            disable_reason,
         }
     }
 }
@@ -526,6 +557,46 @@ mod tests {
         assert_eq!(ok.consecutive_failures(), 0);
         assert_eq!(ok.last_status(), Some(RunStatus::Ok));
         assert_eq!(ok.last_run_at(), Some(now() + Duration::hours(1)));
+    }
+
+    #[test]
+    fn a_run_without_its_model_pauses_the_schedule_at_once() {
+        let paused = || RunOutcome::Paused {
+            reason: MODEL_REMOVED.to_owned(),
+            message: "This schedule's model was removed.".to_owned(),
+        };
+        let schedule = schedule().recorded(&RunRecord::new(paused(), now()));
+        assert!(!schedule.enabled());
+        assert_eq!(schedule.next_run_at(), None);
+        assert_eq!(schedule.disabled_reason(), Some(MODEL_REMOVED));
+        assert_eq!(schedule.last_status(), Some(RunStatus::Error));
+        assert_eq!(
+            schedule.last_error(),
+            Some("This schedule's model was removed.")
+        );
+        let off = schedule
+            .disabled(None)
+            .recorded(&RunRecord::new(paused(), now()));
+        assert_eq!(
+            off.disabled_reason(),
+            None,
+            "a schedule already off stays as it was"
+        );
+    }
+
+    #[test]
+    fn a_run_that_could_not_start_fails_with_a_readable_reason() {
+        let error = DomainError::validation("Too many files.");
+        assert_eq!(
+            RunOutcome::not_started(&error),
+            RunOutcome::Failed("Too many files.".to_owned())
+        );
+        let error = DomainError::internal("database.chats.insert.failed", "boom");
+        assert_eq!(
+            RunOutcome::not_started(&error),
+            RunOutcome::Failed(START_FAILED.to_owned()),
+            "never a dotted key"
+        );
     }
 
     #[test]

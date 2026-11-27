@@ -18,12 +18,14 @@ use crate::domains::chat::message::{
     skipped_results,
 };
 use crate::domains::chat::service::ChatService;
-use crate::domains::chat::turn::{PreparedTurn, RunMode, TurnInput};
+use crate::domains::chat::turn::{
+    MODEL_UNAVAILABLE, PreparedTurn, RunMode, ScheduledTurn, TurnInput,
+};
 use crate::domains::conversation::context::{self, ContextInputs, references};
 use crate::domains::file::{FileKind, FileOwner, MediaType, StoredFile};
 use crate::domains::project::Project;
 use crate::domains::provider::{Capabilities, Model, Provider};
-use crate::domains::schedule::{Firing, Schedule};
+use crate::domains::schedule::{Firing, MODEL_REMOVED, MODEL_TURNED_OFF, Schedule};
 use crate::domains::settings::UserSettings;
 use crate::domains::tool::{EffectiveTools, ToolServer};
 use crate::ports::llm_gateway::ModelTarget;
@@ -32,8 +34,6 @@ use crate::shared::constants::MAX_PARALLEL_READS;
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{ChatId, FileId, MessageId, ModelId, ProjectId, ToolServerId};
 
-/// Code of a model that cannot answer (turned off, no longer listed, or its connection is off).
-const MODEL_UNAVAILABLE: &str = "MODEL_UNAVAILABLE";
 /// Code of a decision on a message that does not wait for one.
 const NOT_AWAITING_APPROVAL: &str = "NOT_AWAITING_APPROVAL";
 /// Code of a Retry when the turn's last answer did not fail.
@@ -151,14 +151,17 @@ impl ChatService {
         }
     }
 
-    /// Starts the unattended run of a claimed schedule (or a Run now): a new chat titled
-    /// `<schedule name> · <local date>` with the schedule's project, model, and reasoning, and
-    /// the prompt as its user message. A standalone schedule runs without tools.
-    pub async fn prepare_scheduled(&self, firing: Firing) -> DomainResult<PreparedTurn> {
+    /// Starts the unattended run of a claimed schedule (or a Run now): the new chat
+    /// `firing.chat_id`, titled `<schedule name> · <local date>`, with the schedule's project,
+    /// model, and reasoning, and the prompt as its user message. A standalone schedule runs
+    /// without tools. A schedule whose model was removed or turned off (or whose connection is
+    /// off) writes nothing and gives [`ScheduledTurn::Paused`].
+    pub async fn prepare_scheduled(&self, firing: Firing) -> DomainResult<ScheduledTurn> {
         let Firing {
             schedule,
             actor,
             at,
+            chat_id,
         } = firing;
         let user = actor.user_id;
         let (settings, project, model) = try_join3(
@@ -171,16 +174,26 @@ impl ChatService {
             return Err(DomainError::not_found("Project", id.to_string()));
         }
         let Some(model) = model else {
-            return Err(
-                DomainError::validation("Choose a model for this schedule.").with_field("modelId")
-            );
+            return Ok(ScheduledTurn::Paused {
+                reason: MODEL_REMOVED,
+                message: "This schedule's model was removed. Choose another model, then turn \
+                          the schedule on again.",
+            });
         };
-        let provider = self.provider(&actor, &model).await?;
+        let provider = self
+            .stores
+            .providers
+            .get(user, model.provider_id())
+            .await?
+            .ok_or_else(|| DomainError::not_found("Provider", model.provider_id().to_string()))?;
+        if let Some(paused) = model_pause(&model, &provider) {
+            return Ok(paused);
+        }
         let (capabilities, target) = self.target(&actor, &model, &provider)?;
         let files = self.project_files(&actor, project.as_ref()).await?;
 
         let title = format!("{} · {}", schedule.name(), schedule.rule().local_date(at));
-        let chat = Chat::scheduled(user, schedule.id(), title, self.clock.now())
+        let chat = Chat::scheduled(chat_id, user, schedule.id(), title, self.clock.now())
             .with_project(schedule.project_id())
             .with_model(schedule.model_id())
             .with_reasoning(schedule.reasoning());
@@ -219,7 +232,8 @@ impl ChatService {
 
         self.stores.chats.insert(&chat).await?;
         self.stores.messages.append(user, &prompt).await?;
-        self.finish(&actor, chat, loaded, staged, mode).await
+        let turn = self.finish(&actor, chat, loaded, staged, mode).await?;
+        Ok(ScheduledTurn::Ready(Box::new(turn)))
     }
 
     async fn send(
@@ -845,6 +859,33 @@ fn missing_snapshot(message: MessageId) -> DomainError {
     }
 }
 
+/// Why a schedule cannot run on `model` and pauses: the model is no longer offered, or it or its
+/// connection is turned off. `None` when it can run.
+fn model_pause(model: &Model, provider: &Provider) -> Option<ScheduledTurn> {
+    let (reason, message) = if !model.available() {
+        (
+            MODEL_REMOVED,
+            "This schedule's model is no longer offered by its provider. Choose another model, \
+             then turn the schedule on again.",
+        )
+    } else if !model.enabled() {
+        (
+            MODEL_TURNED_OFF,
+            "This schedule's model is turned off. Turn it on or choose another model, then turn \
+             the schedule on again.",
+        )
+    } else if !provider.enabled() {
+        (
+            MODEL_TURNED_OFF,
+            "This schedule's provider connection is turned off. Turn it on or choose another \
+             model, then turn the schedule on again.",
+        )
+    } else {
+        return None;
+    };
+    Some(ScheduledTurn::Paused { reason, message })
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -859,7 +900,7 @@ mod tests {
     };
     use crate::domains::file::FileUpdate;
     use crate::domains::project::NewProject;
-    use crate::domains::provider::{ModelUpdate, ProviderUpdate};
+    use crate::domains::provider::{ModelRepository, ModelUpdate, ProviderUpdate};
     use crate::domains::schedule::{NewSchedule, OnAsk};
     use crate::domains::settings::SettingsRepository;
     use crate::ports::clock::Clock;
@@ -1558,8 +1599,10 @@ mod tests {
         let schedule = f.schedules.create(&caller, input).await.unwrap();
         f.clock.advance(Duration::hours(12));
         let firing = f.schedules.run_now(&caller, schedule.id()).await.unwrap();
+        let chat_id = firing.chat_id;
 
-        let turn = f.chats.prepare_scheduled(firing).await.unwrap();
+        let turn = scheduled(&f, firing).await;
+        assert_eq!(turn.chat.id(), chat_id, "the chat the run reserved");
         assert_eq!(
             turn.mode,
             RunMode::Unattended {
@@ -1607,7 +1650,7 @@ mod tests {
         };
         let schedule = f.schedules.create(&caller, input).await.unwrap();
         let firing = f.schedules.run_now(&caller, schedule.id()).await.unwrap();
-        let turn = f.chats.prepare_scheduled(firing).await.unwrap();
+        let turn = scheduled(&f, firing).await;
         assert!(turn.tools.tools.is_empty());
         assert!(turn.project.is_none());
         assert_eq!(
@@ -1624,23 +1667,103 @@ mod tests {
 
         f.providers.delete(&caller, provider).await.unwrap();
         let firing = f.schedules.run_now(&caller, schedule.id()).await.unwrap();
-        let chats_before = f
-            .chats
-            .list(&caller, ChatQuery::default())
+        let chats_before = chat_count(&f, &caller).await;
+        let paused = f.chats.prepare_scheduled(firing).await.unwrap();
+        assert!(
+            matches!(paused, ScheduledTurn::Paused { reason, .. } if reason == MODEL_REMOVED),
+            "{paused:?}"
+        );
+        assert_eq!(
+            chats_before,
+            chat_count(&f, &caller).await,
+            "no empty chat for a run that cannot start"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_schedule_pauses_when_its_model_or_connection_cannot_answer() {
+        let f = fixture();
+        let caller = actor();
+        let (model, provider) = model(&f, &caller).await;
+        let input = NewSchedule {
+            name: "Joke".to_owned(),
+            cron: "0 9 * * *".to_owned(),
+            timezone: "UTC".to_owned(),
+            prompt: "Tell a joke.".to_owned(),
+            model_id: Some(model),
+            ..NewSchedule::default()
+        };
+        let schedule = f.schedules.create(&caller, input).await.unwrap();
+        let reason = |turn: ScheduledTurn| match turn {
+            ScheduledTurn::Paused { reason, message } => {
+                assert!(
+                    message.ends_with("turn the schedule on again."),
+                    "{message}"
+                );
+                Some(reason)
+            }
+            ScheduledTurn::Ready(_) => None,
+        };
+        let start = || async {
+            let firing = f.schedules.run_now(&caller, schedule.id()).await.unwrap();
+            reason(f.chats.prepare_scheduled(firing).await.unwrap())
+        };
+
+        // The connection turned off: the model cannot answer.
+        let off = ProviderUpdate {
+            enabled: Some(false),
+            ..ProviderUpdate::default()
+        };
+        f.providers.update(&caller, provider, off).await.unwrap();
+        assert_eq!(start().await, Some(MODEL_TURNED_OFF));
+        let on = ProviderUpdate {
+            enabled: Some(true),
+            ..ProviderUpdate::default()
+        };
+        f.providers.update(&caller, provider, on).await.unwrap();
+
+        // The provider no longer lists the model.
+        f.gateway.push_models(vec![remote_model("another-model")]);
+        f.providers.refresh(&caller, provider).await.unwrap();
+        assert_eq!(start().await, Some(MODEL_REMOVED));
+        f.gateway.push_models(vec![remote_model("gpt-5.6-terra")]);
+        f.providers.refresh(&caller, provider).await.unwrap();
+        assert_eq!(start().await, None, "listed again");
+
+        // The model is turned off (stored directly: the model service would pause the schedule
+        // itself, and a schedule paused before its run still reaches the scheduler through Run now).
+        let stored = ModelRepository::get(f.store.as_ref(), caller.user_id, model)
+            .await
+            .unwrap()
+            .unwrap();
+        let off = stored.with_enabled(false);
+        ModelRepository::update(f.store.as_ref(), &off)
+            .await
+            .unwrap();
+        assert_eq!(start().await, Some(MODEL_TURNED_OFF));
+        assert_eq!(
+            chat_count(&f, &caller).await,
+            1,
+            "only the run that started wrote a chat"
+        );
+    }
+
+    async fn scheduled(f: &Fixture, firing: Firing) -> PreparedTurn {
+        f.chats
+            .prepare_scheduled(firing)
+            .await
+            .unwrap()
+            .ready()
+            .expect("the run starts")
+    }
+
+    async fn chat_count(f: &Fixture, caller: &Actor) -> usize {
+        f.chats
+            .list(caller, ChatQuery::default())
             .await
             .unwrap()
             .items
-            .len();
-        let error = f.chats.prepare_scheduled(firing).await.unwrap_err();
-        assert_eq!(error.to_string(), "Choose a model for this schedule.");
-        let chats_after = f
-            .chats
-            .list(&caller, ChatQuery::default())
-            .await
-            .unwrap()
-            .items
-            .len();
-        assert_eq!(chats_before, chats_after, "no empty chat for a failed run");
+            .len()
     }
 
     #[tokio::test]

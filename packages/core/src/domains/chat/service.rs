@@ -677,7 +677,14 @@ mod tests {
         };
         let schedule = f.schedules.create(&caller, input).await.unwrap();
         let firing = f.schedules.run_now(&caller, schedule.id()).await.unwrap();
-        let run = f.chats.prepare_scheduled(firing).await.unwrap().chat;
+        let run = f
+            .chats
+            .prepare_scheduled(firing)
+            .await
+            .unwrap()
+            .ready()
+            .expect("the run starts")
+            .chat;
 
         let scheduled = ChatQuery {
             scheduled: Some(true),

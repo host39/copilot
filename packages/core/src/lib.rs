@@ -17,10 +17,10 @@ pub mod testing;
 pub use crate::domains::chat::{
     Approval, ApprovedTool, CallDecision, Chat, ChatCursor, ChatParts, ChatQuery, ChatRepositories,
     ChatRepository, ChatService, ChatSummary, ChatUpdate, ContextHash, Decision, DecisionScope,
-    FinishReason, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus, NewChat,
-    Page, Part, PreparedTurn, Rendering, ResultContent, Role, RunMode, SKIPPED, SearchHit,
-    SnapshotFile, SnapshotTool, ToolCallPart, ToolResultPart, ToolStatus, TurnContext,
-    TurnContextRepository, TurnInput, Usage, skipped_results,
+    FinishReason, INTERRUPTED, MODEL_UNAVAILABLE, Message, MessageParts, MessageRepository,
+    MessageStatus, NewChat, Page, Part, PreparedTurn, Rendering, ResultContent, Role, RunMode,
+    SKIPPED, ScheduledTurn, SearchHit, SnapshotFile, SnapshotTool, ToolCallPart, ToolResultPart,
+    ToolStatus, TurnContext, TurnContextRepository, TurnInput, Usage, skipped_results,
 };
 pub use crate::domains::conversation::{ChatEngine, ContextInputs, Draft, TurnEvent, TurnOutcome};
 pub use crate::domains::file::{
@@ -39,9 +39,10 @@ pub use crate::domains::provider::{
     reasoning_off_with_tools,
 };
 pub use crate::domains::schedule::{
-    CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RunOutcome,
-    RunRecord, RunStatus, Schedule, ScheduleParts, SchedulePreview, SchedulePrompt, ScheduleQuery,
-    ScheduleRepository, ScheduleService, ScheduleTool, ScheduleUpdate, ToolOrigin, cancel_target,
+    CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RUN_FAILED,
+    RunOutcome, RunRecord, RunStatus, START_FAILED, Schedule, ScheduleParts, SchedulePreview,
+    SchedulePrompt, ScheduleQuery, ScheduleRepository, ScheduleService, ScheduleTool,
+    ScheduleUpdate, ToolOrigin, cancel_target,
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{
