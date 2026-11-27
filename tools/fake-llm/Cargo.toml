@@ -1,0 +1,35 @@
+[package]
+name = "fake-llm"
+description = "Dev only: a scriptable fake model server (OpenAI-compatible and Anthropic) with a small MCP server, for manual testing and the smoke test."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fake-llm"
+path = "src/main.rs"
+
+# Never a dependency of a Copilot crate, and it depends on none (`make boundaries`). The release
+# build names its packages (`-p copilot-api -p copilot-database`), so nothing here reaches the
+# image, and rmcp's server features stay out of the product's feature set.
+[dependencies]
+# `/v1/*` and `/mcp`, with a raised body limit for inline images and audio.
+axum = { workspace = true }
+# Audio deltas and replayed audio parts.
+base64 = { workspace = true }
+futures-util = { workspace = true }
+# The fake MCP server: rmcp's own Streamable HTTP server, in both protocol eras.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-matches="$(grep -rnE --include='*.rs' '^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?use[[:space:]]+super::' apps packages |
+matches="$(grep -rnE --include='*.rs' '^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?use[[:space:]]+super::' apps packages tools |
   grep -vE 'use[[:space:]]+super::\*;' || true)"
 
 if [[ -n "$matches" ]]; then

@@ -1,4 +1,4 @@
-.PHONY: help install update update-latest setup dev dev-api dev-web run-api migrate seed migrations contracts test test-db test-bruno lint format type-check boundaries check ci build clean
+.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno lint format type-check boundaries check ci build clean
 
 .DEFAULT_GOAL := help
 
@@ -16,6 +16,7 @@ help:
 	@echo "  dev            Start Postgres, then run API (:3000) + web (:4000)"
 	@echo "  dev-api        Start Postgres, then run the API only"
 	@echo "  dev-web        Run the web dev server only"
+	@echo "  fake-llm       Run the fake model and MCP server (:4010, key fake-key; tools/fake-llm/README.md)"
 	@echo "  migrate        Apply migrations + readonly grants"
 	@echo "  seed           Apply local SQL seed files"
 	@echo "  migrations     Scaffold a migration pair (name=<name>)"
@@ -63,6 +64,9 @@ dev-web:
 
 run-api:
 	bash scripts/dev-api.sh
+
+fake-llm:
+	cargo run -q -p fake-llm
 
 migrate:
 	$(WITH_API_ENV) cargo run -q -p copilot-database --bin migrate

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["apps/api", "packages/*"]
+# `tools/*` are dev-only binaries (never a dependency of a product crate, never in the image).
+members = ["apps/api", "packages/*", "tools/*"]
 # The Tauri shell builds on its own, so `make check` never needs WebKitGTK headers.
 exclude = ["apps/native/src-tauri"]
 
