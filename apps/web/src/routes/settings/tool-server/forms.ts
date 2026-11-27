@@ -1,6 +1,6 @@
 // The tool server forms of Settings: credentials (a bearer token and custom headers, checked with
 // the server's rules before sending), a pre-registered OAuth client, the server's own settings,
-// and adding a server.
+// and adding a server (remote, or a stdio program for administrators: `stdio.ts`).
 
 import type {
   ApprovalMode,
@@ -16,6 +16,7 @@ import { describeError } from "@web/api/errors";
 import { createToolServer, testToolServer } from "@web/api/routes/tool-servers";
 import { isHttp } from "@web/forms";
 import { NAME_MAX_CHARS } from "@web/routes/settings/providers/presets";
+import { environment, parseArgs, programProblem } from "@web/routes/settings/tool-server/stdio";
 import { z } from "zod";
 
 /** One custom header row of the form; `id` keeps React's keys stable while rows are removed. */
@@ -167,6 +168,7 @@ const authMode = z.enum(["none", "headers", "oauth"]);
 /**
  * The add-server form; parses to the `POST /tool-servers` body. Only the chosen authentication's
  * fields are sent: a token or headers for `headers` (one of them needed), a client for `oauth`.
+ * A `stdio` server sends its program instead of an address and credentials.
  */
 export const serverSchema = z
   .object({
@@ -178,15 +180,39 @@ export const serverSchema = z
         (value) => value === "" || new RegExp(`^[a-z0-9]{1,${SLUG_MAX_CHARS}}$`).test(value),
         `The slug must be 1 to ${SLUG_MAX_CHARS} lowercase letters or digits.`
       ),
-    url,
+    transport: z.enum(["http", "stdio"]).default("http"),
+    url: z.string().trim(),
     approval,
     auth: authMode,
     bearer: z.string(),
     rows: z.array(z.custom<HeaderRow>()),
     clientId: z.string(),
     clientSecret: z.string(),
+    command: z.string().default(""),
+    args: z.string().default(""),
+    envRows: z.array(z.custom<HeaderRow>()).default([]),
+    cwd: z.string().default(""),
   })
   .superRefine((input, context) => {
+    if (input.transport === "stdio") {
+      const problem = programProblem({
+        command: input.command,
+        args: input.args,
+        rows: input.envRows,
+        cwd: input.cwd,
+      });
+      if (problem) {
+        context.addIssue({ code: "custom", path: [problem.field], message: problem.message });
+      }
+      return;
+    }
+    if (!isHttp(input.url)) {
+      context.addIssue({
+        code: "custom",
+        path: ["url"],
+        message: "Enter a full http:// or https:// address.",
+      });
+    }
     if (input.auth === "headers") {
       const problem = credentialsProblem(input.bearer, input.rows);
       if (problem) {
@@ -201,6 +227,22 @@ export const serverSchema = z
     }
   })
   .transform((input): CreateToolServerRequest => {
+    if (input.transport === "stdio") {
+      const cwd = input.cwd.trim();
+      return {
+        name: input.name,
+        transport: "stdio",
+        approval: input.approval,
+        headers: {},
+        stdio: {
+          command: input.command.trim(),
+          args: parseArgs(input.args),
+          env: environment(input.envRows),
+          ...(cwd ? { cwd } : {}),
+        },
+        ...(input.slug ? { slug: input.slug } : {}),
+      };
+    }
     const { bearer, headers } =
       input.auth === "headers" ? credentials(input.bearer, input.rows) : { headers: {} };
     const client =
@@ -222,12 +264,16 @@ export function isEmpty(value: Credentials): boolean {
   return value.bearer === undefined && Object.keys(value.headers ?? {}).length === 0;
 }
 
-/** The Server form of an existing server; parses to a `PATCH` body with only what changed. */
+/**
+ * The Server form of an existing server; parses to a `PATCH` body with only what changed. A
+ * stdio server has no address (its program has its own form).
+ */
 export function settingsSchema(server: ToolServerResponse) {
-  return z.object({ name, url, approval }).transform((input): UpdateToolServerRequest => {
+  const address = server.transport === "stdio" ? z.string().optional() : url;
+  return z.object({ name, url: address, approval }).transform((input): UpdateToolServerRequest => {
     const body: UpdateToolServerRequest = {};
     if (input.name !== server.name) body.name = input.name;
-    if (input.url !== server.url) body.url = input.url;
+    if (server.transport !== "stdio" && input.url !== server.url) body.url = input.url;
     if (input.approval !== server.approval) body.approval = input.approval as ApprovalMode;
     return body;
   });
@@ -245,9 +291,10 @@ export type Added = {
 export type AddedState = Pick<Added, "test" | "problem">;
 
 /**
- * Registers a server, then tests it (connects and lists its tools). A failed test keeps the
- * server, so the user can fix the address or credentials. A server that signs in with OAuth is
- * not tested: it has no sign-in yet, and its page offers one.
+ * Registers a server, then tests it (connects and lists its tools; a stdio server's program
+ * starts for the test and ends with it). A failed test keeps the server, so the user can fix the
+ * address, credentials, or program. A server that signs in with OAuth is not tested: it has no
+ * sign-in yet, and its page offers one.
  */
 export async function addServer(body: CreateToolServerRequest): Promise<Added> {
   const server = await createToolServer(body);

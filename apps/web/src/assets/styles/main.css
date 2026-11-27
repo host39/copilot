@@ -68,6 +68,11 @@ body {
     @apply rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-danger;
   }
 
+  /* A stdio program's command line: every character shown, wrapped, never cut. */
+  .program-line {
+    @apply rounded-lg border border-line bg-surface p-3 font-mono text-xs break-all whitespace-pre-wrap;
+  }
+
   /* A caution beside a risky choice or a state that needs the user (Auto approval, changed tools). */
   .form-warning {
     @apply rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-warn;

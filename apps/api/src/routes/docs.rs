@@ -184,7 +184,7 @@ mod tests {
             }
         }
         // The routes of the spec's HTTP API table; adding one is an interface change.
-        assert_eq!(checked, 56, "every Copilot route of the spec");
+        assert_eq!(checked, 57, "every Copilot route of the spec");
     }
 
     #[tokio::test]

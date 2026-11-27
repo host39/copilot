@@ -2,6 +2,7 @@ import type {
   ApprovalMode,
   AuthMode,
   ServerTool,
+  StdioProgram,
   ToolMode,
   ToolServerResponse,
 } from "@copilot/contracts";
@@ -10,6 +11,7 @@ import { describeError } from "@web/api/errors";
 import { keys } from "@web/api/routes/keys";
 import {
   deleteToolServer,
+  fetchCapabilities,
   fetchToolServer,
   reviewToolServer,
   signOut,
@@ -28,6 +30,8 @@ import { ApprovalPicker } from "@web/components/Settings/ApprovalPicker";
 import { AuthPicker } from "@web/components/Settings/AuthPicker";
 import { ClientFields } from "@web/components/Settings/ClientFields";
 import { HeaderRows } from "@web/components/Settings/HeaderRows";
+import { ProgramFields } from "@web/components/Settings/ProgramFields";
+import { ProgramPreview } from "@web/components/Settings/ProgramPreview";
 import { QueryState } from "@web/components/Settings/QueryState";
 import { Section } from "@web/components/Settings/Section";
 import { SettingsPage } from "@web/components/Settings/SettingsPage";
@@ -56,6 +60,13 @@ import {
   SIGN_IN_WAIT_MS,
   signInBadge,
 } from "@web/routes/settings/tool-server/sign-in";
+import {
+  envNamesAfter,
+  location,
+  type ProgramInput,
+  programErrors,
+  programSchema,
+} from "@web/routes/settings/tool-server/stdio";
 import { useEffect, useState } from "react";
 import { LuLogIn, LuPlugZap } from "react-icons/lu";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -144,6 +155,40 @@ function ToolRow({
   );
 }
 
+/** Changed tools wait for the user's review; a stdio server shows the program it reviews. */
+function Review({
+  server,
+  busy,
+  onAccept,
+}: {
+  server: ToolServerResponse;
+  busy: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <div className="form-warning flex flex-wrap items-center justify-between gap-3">
+      <p>
+        The server changed its tools since you last reviewed them. Every tool asks before it runs
+        until you accept the changes.
+      </p>
+      <Button variant="secondary" busy={busy} onClick={onAccept}>
+        Accept changes
+      </Button>
+      {server.stdio ? (
+        <div className="w-full text-fg">
+          <ProgramPreview
+            title="You accept the tools of this program:"
+            command={server.stdio.command}
+            args={server.stdio.args}
+            envNames={server.stdio.envNames}
+            cwd={server.stdio.cwd}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Tools({ server, state }: { server: ToolServerResponse; state: AddedState | null }) {
   const store = useStore();
   const [draft, setDraft] = useState<Record<string, ToolMode>>({});
@@ -201,15 +246,7 @@ function Tools({ server, state }: { server: ToolServerResponse; state: AddedStat
         <FormAlert>{problem}</FormAlert>
         <FormNotice>{notice}</FormNotice>
         {server.reviewRequired ? (
-          <div className="form-warning flex flex-wrap items-center justify-between gap-3">
-            <p>
-              The server changed its tools since you last reviewed them. Every tool asks before it
-              runs until you accept the changes.
-            </p>
-            <Button variant="secondary" busy={review.isPending} onClick={() => review.mutate()}>
-              Accept changes
-            </Button>
-          </div>
+          <Review server={server} busy={review.isPending} onAccept={() => review.mutate()} />
         ) : null}
         {server.tools === null ? (
           <p className="text-sm text-muted">No tools listed yet.</p>
@@ -287,7 +324,8 @@ function Settings({ server }: { server: ToolServerResponse }) {
             event.preventDefault();
             setNotice(undefined);
             const data = new FormData(event.currentTarget);
-            void form.submit({ name: text(data, "name"), url: text(data, "url"), approval });
+            const url = server.transport === "stdio" ? undefined : text(data, "url");
+            void form.submit({ name: text(data, "name"), url, approval });
           }}
         >
           <FormAlert>{form.alert}</FormAlert>
@@ -299,18 +337,20 @@ function Settings({ server }: { server: ToolServerResponse }) {
             defaultValue={server.name}
             error={form.errors.name}
           />
-          <TextField
-            label="Server address"
-            name="url"
-            type="url"
-            inputMode="url"
-            autoComplete="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            defaultValue={server.url}
-            hint="A new address asks before every tool until you accept its tools. Moving to another host removes the stored credentials unless you enter new ones."
-            error={form.errors.url}
-          />
+          {server.url === null ? null : (
+            <TextField
+              label="Server address"
+              name="url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              defaultValue={server.url}
+              hint="A new address asks before every tool until you accept its tools. Moving to another host removes the stored credentials unless you enter new ones."
+              error={form.errors.url}
+            />
+          )}
           <ApprovalPicker value={approval} onChange={setApproval} />
           <div className="flex justify-end">
             <Button type="submit" busy={form.busy} disabled={form.wait > 0}>
@@ -320,6 +360,153 @@ function Settings({ server }: { server: ToolServerResponse }) {
         </form>
       </div>
     </Section>
+  );
+}
+
+/**
+ * A stdio server's program, always shown whole. An administrator (while the server allows stdio)
+ * may change it ([`ProgramForm`]).
+ */
+function Program({ server }: { server: ToolServerResponse }) {
+  const capabilities = useQuery({
+    queryKey: keys.capabilities,
+    queryFn: ({ signal }) => fetchCapabilities(signal),
+  });
+  const program = server.stdio;
+  if (!program) return null;
+
+  return (
+    <Section
+      title="Program"
+      description="Copilot starts this program for each chat that uses the server, and for each test, and ends it afterwards."
+    >
+      <div className="space-y-6">
+        <ProgramPreview
+          command={program.command}
+          args={program.args}
+          envNames={program.envNames}
+          cwd={program.cwd}
+        />
+        {program.env === "unreadable" ? (
+          <p className="form-warning">
+            The stored environment variables can no longer be read: enter them again.
+          </p>
+        ) : null}
+        {capabilities.data?.stdioServers ? (
+          <ProgramForm key={server.updatedAt} server={server} program={program} />
+        ) : (
+          <p className="text-sm text-muted">
+            Only an administrator can change the program, while this Copilot server allows stdio
+            tool servers (MCP_STDIO_ENABLED).
+          </p>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+/** The directory field's value: blank for the server's own folder. */
+function ownCwd(server: ToolServerResponse, program: StdioProgram): string {
+  return program.cwd === server.id ? "" : program.cwd;
+}
+
+/** Changes the program; the new one shows again for a confirmation before it is saved. */
+function ProgramForm({ server, program }: { server: ToolServerResponse; program: StdioProgram }) {
+  const store = useStore();
+  const [rows, setRows] = useState<HeaderRow[]>([]);
+  const [clearEnv, setClearEnv] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const [pending, setPending] = useState<ProgramInput>();
+  const schema = programSchema(server, clearEnv);
+  const form = useSubmit(
+    schema,
+    async (stdio) =>
+      Object.keys(stdio).length === 0 ? server : updateToolServer(server.id, { stdio }),
+    (saved) => {
+      setPending(undefined);
+      store(saved);
+      setNotice(
+        saved.updatedAt === server.updatedAt
+          ? "Nothing changed."
+          : "Saved. Test the server to list the tools of the new program."
+      );
+    }
+  );
+  const parsed = pending ? schema.safeParse(pending) : undefined;
+  const next = parsed?.success ? parsed.data : undefined;
+
+  return (
+    <form
+      noValidate
+      className="space-y-4 border-t border-line pt-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setNotice(undefined);
+        const data = new FormData(event.currentTarget);
+        const values: ProgramInput = {
+          command: text(data, "command"),
+          args: String(data.get("args") ?? ""),
+          rows,
+          cwd: text(data, "cwd"),
+        };
+        const checked = schema.safeParse(values);
+        if (checked.success && Object.keys(checked.data).length > 0) setPending(values);
+        else void form.submit(values);
+      }}
+    >
+      <FormAlert>{form.alert}</FormAlert>
+      <FormNotice>{notice}</FormNotice>
+      <ProgramFields
+        rows={rows}
+        onRows={setRows}
+        errors={programErrors(form.errors)}
+        defaults={{
+          command: program.command,
+          args: program.args.join("\n"),
+          cwd: ownCwd(server, program),
+        }}
+        envHint={
+          program.envNames.length > 0
+            ? `Stored: ${program.envNames.join(", ")}. Variables entered here replace them all; leave this empty to keep them.`
+            : undefined
+        }
+      />
+      {program.envNames.length > 0 ? (
+        <Switch
+          label="Remove the stored variables"
+          hint="When no variables are entered above, the program starts with an empty environment."
+          checked={clearEnv}
+          onChange={(event) => setClearEnv(event.target.checked)}
+        />
+      ) : null}
+      <div className="flex justify-end">
+        <Button type="submit" busy={form.busy} disabled={form.wait > 0}>
+          Save program
+        </Button>
+      </div>
+      <ConfirmDialog
+        open={pending !== undefined}
+        title="Save this program?"
+        confirm="Save program"
+        tone="primary"
+        busy={form.busy}
+        error={form.alert}
+        onConfirm={() => {
+          if (pending) void form.submit(pending);
+        }}
+        onCancel={() => setPending(undefined)}
+      >
+        {next ? (
+          <ProgramPreview
+            title="Copilot runs this program from the next chat or test on:"
+            command={next.command ?? program.command}
+            args={next.args ?? program.args}
+            envNames={envNamesAfter(server, next)}
+            cwd={next.cwd ?? ownCwd(server, program)}
+          />
+        ) : null}
+      </ConfirmDialog>
+    </form>
   );
 }
 
@@ -647,7 +834,7 @@ function Remove({ server }: { server: ToolServerResponse }) {
 
 /**
  * Settings, Tool servers, one server: its tools and their modes, settings, authentication
- * (credentials or sign-in), delete.
+ * (credentials or sign-in) or a stdio server's program, delete.
  */
 export function ToolServerDetails({ id }: { id: string }) {
   const state = useLocation().state as AddedState | null;
@@ -658,13 +845,22 @@ export function ToolServerDetails({ id }: { id: string }) {
   const data = server.data;
 
   return (
-    <SettingsPage title="Tool Server" heading={data?.name} description={data?.url} back={BACK}>
+    <SettingsPage
+      title="Tool Server"
+      heading={data?.name}
+      description={data ? location(data) : undefined}
+      back={BACK}
+    >
       <QueryState query={server} back={BACK}>
         {data ? (
           <>
             <Tools server={data} state={state} />
             <Settings server={data} />
-            <Authentication key={data.authMode} server={data} />
+            {data.transport === "stdio" ? (
+              <Program server={data} />
+            ) : (
+              <Authentication key={data.authMode} server={data} />
+            )}
             <Remove server={data} />
           </>
         ) : null}

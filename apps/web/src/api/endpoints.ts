@@ -13,6 +13,7 @@ const API = {
   ready: "/health/ready",
 
   settings: "/settings",
+  capabilities: "/capabilities",
 
   providers: "/providers",
   provider: (providerId: string) => `/providers/${id(providerId)}`,

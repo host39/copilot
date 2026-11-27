@@ -1,8 +1,11 @@
 // MCP tool servers (`/tool-servers`). Credentials only go in: answers say whether they are stored
-// (`credentials`) and how an OAuth sign-in stands (`oauth`), never what they are.
+// (`credentials`) and how an OAuth sign-in stands (`oauth`), never what they are. A stdio server's
+// environment answers with its variable names only.
 
 import {
+  type CapabilitiesResponse,
   type CreateToolServerRequest,
+  capabilitiesBodySchema,
   type OAuthStartResponse,
   oauthStartBodySchema,
   type ToolServerResponse,
@@ -14,6 +17,14 @@ import {
 } from "@copilot/contracts";
 import { apiFetch, apiRequest } from "@web/api/client";
 import API from "@web/api/endpoints";
+
+/**
+ * `GET /capabilities`: what the server lets the caller do (`stdioServers`: an administrator on a
+ * server with `MCP_STDIO_ENABLED`).
+ */
+export async function fetchCapabilities(signal?: AbortSignal): Promise<CapabilitiesResponse> {
+  return (await apiFetch(API.capabilities, capabilitiesBodySchema, { signal })).data;
+}
 
 /** `GET /tool-servers`: the caller's servers, oldest first. */
 export async function fetchToolServers(signal?: AbortSignal): Promise<ToolServerResponse[]> {

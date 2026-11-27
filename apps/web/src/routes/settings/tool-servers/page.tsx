@@ -8,6 +8,7 @@ import { SettingsPage } from "@web/components/Settings/SettingsPage";
 import path, { link } from "@web/routes/path";
 import { plural } from "@web/routes/settings/format";
 import { needsSignIn, signInBadge } from "@web/routes/settings/tool-server/sign-in";
+import { location } from "@web/routes/settings/tool-server/stdio";
 import { LuChevronRight, LuPlus } from "react-icons/lu";
 import { Link } from "react-router-dom";
 
@@ -25,8 +26,9 @@ function Row({ server }: { server: ToolServerResponse }) {
               <Badge tone="warn">{signInBadge(server.oauth?.state ?? "needs_sign_in").label}</Badge>
             ) : null}
             {server.approval === "auto" ? <Badge tone="accent">Auto</Badge> : null}
+            {server.transport === "stdio" ? <Badge>Program</Badge> : null}
           </p>
-          <p className="truncate text-sm text-muted">{`${tools} · ${server.url}`}</p>
+          <p className="truncate text-sm text-muted">{`${tools} · ${location(server)}`}</p>
         </div>
         <LuChevronRight aria-hidden className="shrink-0 text-muted" />
       </Link>

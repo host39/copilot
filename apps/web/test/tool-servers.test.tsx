@@ -36,6 +36,16 @@ import {
   openSignIn,
   signInBadge,
 } from "@web/routes/settings/tool-server/sign-in";
+import {
+  commandLine,
+  location,
+  type ProgramInput,
+  parseArgs,
+  programPatch,
+  programProblem,
+  programSchema,
+  quote,
+} from "@web/routes/settings/tool-server/stdio";
 import ToolServersPage from "@web/routes/settings/tool-servers/page";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -52,7 +62,9 @@ const server: ToolServerResponse = {
   id: ID,
   name: "Docs",
   slug: "docs",
+  transport: "http",
   url: "https://mcp.example.com/mcp",
+  stdio: null,
   approval: "ask",
   toolModes: { search: "auto" },
   enabled: true,
@@ -343,7 +355,7 @@ describe("adding and testing a server", () => {
         { headers: { "Content-Type": "application/json" } }
       )
     );
-    const added = await addServer({ name: "Docs", url: server.url, headers: {} });
+    const added = await addServer({ name: "Docs", url: server.url ?? undefined, headers: {} });
     expect(urls).toEqual(["/api/tool-servers", `/api/tool-servers/${ID}/test`]);
     expect(added.test?.changes.added).toEqual(["search"]);
   });
@@ -362,7 +374,7 @@ describe("adding and testing a server", () => {
     });
     const added = await addServer({
       name: "Docs",
-      url: server.url,
+      url: server.url ?? undefined,
       headers: {},
       authMode: "oauth",
     });
@@ -378,7 +390,7 @@ describe("adding and testing a server", () => {
         headers: { "Content-Type": "application/json" },
       })
     );
-    const added = await addServer({ name: "Docs", url: server.url, headers: {} });
+    const added = await addServer({ name: "Docs", url: server.url ?? undefined, headers: {} });
     expect(added.server.id).toBe(ID);
     expect(added.problem).toBe("The tool server cannot be reached.");
   });
@@ -552,5 +564,214 @@ describe("sign-in", () => {
     expect(done).toContain("Open the tool server");
     const forged = page("result=signed-in&server=javascript:alert(1)");
     expect(forged).not.toContain("Open the tool server");
+  });
+});
+
+const program: ToolServerResponse = {
+  ...server,
+  id: "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708102",
+  name: "Files",
+  slug: "files",
+  transport: "stdio",
+  url: null,
+  credentials: "missing",
+  authMode: "none",
+  stdio: {
+    command: "/usr/local/bin/files-mcp",
+    args: ["--root", "/srv/data dir", "it's"],
+    envNames: ["API_KEY"],
+    env: "set",
+    cwd: "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708102",
+  },
+};
+
+describe("stdio programs", () => {
+  const input: ProgramInput = { command: "/usr/local/bin/files-mcp", args: "", rows: [], cwd: "" };
+
+  test("the command line shows every argument, quoted only where needed", () => {
+    expect(quote("--root")).toBe("--root");
+    expect(quote("/srv/data dir")).toBe("'/srv/data dir'");
+    expect(quote("it's")).toBe("'it'\\''s'");
+    expect(quote("")).toBe("''");
+    expect(quote("$HOME;rm")).toBe("'$HOME;rm'");
+    expect(commandLine("/bin/x", ["a b", "c"])).toBe("/bin/x 'a b' c");
+    const long = "x".repeat(3000);
+    expect(commandLine("/bin/x", [long])).toContain(long);
+    expect(location(program)).toBe("/usr/local/bin/files-mcp --root '/srv/data dir' 'it'\\''s'");
+    expect(location(server)).toBe("https://mcp.example.com/mcp");
+  });
+
+  test("one argument per line, kept exactly, blank lines left out", () => {
+    expect(parseArgs("--root\n /srv \r\n\n--flag")).toEqual(["--root", " /srv ", "--flag"]);
+    expect(parseArgs("")).toEqual([]);
+  });
+
+  test("the program follows the server's rules", () => {
+    const field = (change: Partial<ProgramInput>) => programProblem({ ...input, ...change })?.field;
+    expect(programProblem(input)).toBeUndefined();
+    expect(field({ command: "" })).toBe("command");
+    expect(field({ command: "npx" })).toBe("command");
+    expect(programProblem({ ...input, command: "npx" })?.message).toContain("absolute path");
+    expect(field({ command: "/bin/a\nb" })).toBe("command");
+    expect(field({ args: Array.from({ length: 65 }, () => "a").join("\n") })).toBe("args");
+    expect(field({ rows: [row("1ABC", "v")] })).toBe("env");
+    expect(field({ rows: [row("A-B", "v")] })).toBe("env");
+    expect(field({ rows: [row("KEY", "a"), row(" KEY ", "b")] })).toBe("env");
+    expect(field({ rows: [row("KEY", " spaced value ")] })).toBeUndefined();
+    for (const cwd of ["../etc", "/etc", "a/../b", "a//b", "a b"]) {
+      expect(field({ cwd })).toBe("cwd");
+    }
+    expect(field({ cwd: "team/files_1.0" })).toBeUndefined();
+  });
+
+  test("adding a stdio server sends its program, never an address or credentials", () => {
+    const parsed = parse(serverSchema, {
+      name: "Files",
+      slug: "",
+      transport: "stdio",
+      url: "",
+      approval: "ask",
+      auth: "headers",
+      bearer: "tok",
+      rows: [row("X-Team", "a")],
+      clientId: "",
+      clientSecret: "",
+      command: " /usr/local/bin/files-mcp ",
+      args: "--root\n/srv/data dir",
+      envRows: [row("API_KEY", "sk-1"), row("", "")],
+      cwd: "",
+    });
+    expect(parsed).toEqual({
+      value: {
+        name: "Files",
+        transport: "stdio",
+        approval: "ask",
+        headers: {},
+        stdio: {
+          command: "/usr/local/bin/files-mcp",
+          args: ["--root", "/srv/data dir"],
+          env: { API_KEY: "sk-1" },
+        },
+      },
+    });
+    const relative = parse(serverSchema, {
+      name: "Files",
+      slug: "",
+      transport: "stdio",
+      url: "",
+      approval: "ask",
+      auth: "none",
+      bearer: "",
+      rows: [],
+      clientId: "",
+      clientSecret: "",
+      command: "npx",
+    });
+    expect(Object.keys(relative.errors ?? {})).toEqual(["command"]);
+  });
+
+  test("a program change sends only what changed, and the variables only when entered", () => {
+    const same = {
+      command: "/usr/local/bin/files-mcp",
+      args: "--root\n/srv/data dir\nit's",
+      rows: [],
+      cwd: "",
+    };
+    expect(programPatch(program, same, false)).toEqual({});
+    expect(programPatch(program, same, true)).toEqual({ env: {} });
+    expect(
+      programPatch(program, { ...same, args: "--write", rows: [row("MODE", "rw")] }, false)
+    ).toEqual({ args: ["--write"], env: { MODE: "rw" } });
+    expect(programPatch(program, { ...same, cwd: "shared" }, false)).toEqual({ cwd: "shared" });
+    expect(parse(programSchema(program, false), { ...same, command: "rel" }).errors).toEqual({
+      command: expect.stringContaining("absolute path"),
+    });
+  });
+
+  test("a stdio server has no address in its settings", () => {
+    expect(parse(settingsSchema(program), { name: "Files 2", approval: "ask" })).toEqual({
+      value: { name: "Files 2" },
+    });
+  });
+});
+
+describe("the stdio screens", () => {
+  const admin: UserResponse = {
+    id: "0195d6a4-1b2c-7d3e-8f40-123456789abd",
+    username: "root",
+    displayName: "Root",
+    role: "administrator",
+    disabled: false,
+    createdAt: AT,
+    updatedAt: AT,
+  };
+
+  function render(entry: string, data: [readonly unknown[], unknown][]) {
+    const client = new QueryClient();
+    setToken("token");
+    client.setQueryData(["auth", "me", "token"], admin);
+    for (const [key, value] of data) client.setQueryData(key, value);
+    return renderToString(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[entry]}>
+          <Routes>
+            <Route path={path.toolServers} element={<ToolServersPage />} />
+            <Route path={path.toolServerNew} element={<ToolServerPage />} />
+            <Route path={path.toolServer} element={<ToolServerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  }
+
+  test("the add screen offers a program only when the server allows the caller stdio", () => {
+    const off = render(path.toolServerNew, [[keys.capabilities, { stdioServers: false }]]);
+    expect(off).not.toContain('name="transport"');
+    const on = render(path.toolServerNew, [[keys.capabilities, { stdioServers: true }]]);
+    expect(on).toContain('name="transport"');
+    expect(checked(on, "transport", "http")).toBe(true);
+    expect(on).toContain("Program on this server");
+  });
+
+  test("the list names a program by its command line", () => {
+    const html = render(path.toolServers, [[keys.toolServers, [program]]]);
+    expect(html).toContain("/usr/local/bin/files-mcp --root");
+    expect(html).toContain(">Program<");
+  });
+
+  test("a stdio server shows its whole program, and the form only to an administrator", () => {
+    const long = "x".repeat(2000);
+    const base = program.stdio;
+    if (!base) throw new Error("a stdio server");
+    const stored = { ...program, stdio: { ...base, args: ["--root", long] } };
+    const html = render(`/settings/tools/${program.id}`, [
+      [keys.toolServer(program.id), stored],
+      [keys.capabilities, { stdioServers: true }],
+    ]);
+    expect(html).toContain(long);
+    expect(html).toContain("program-line");
+    expect(html).toContain("Environment: only API_KEY.");
+    expect(html).toContain("Save program");
+    expect(html).toContain("Remove the stored variables");
+    expect(html).not.toContain('name="authMode"');
+    expect(html).not.toContain('name="url"');
+
+    const viewer = render(`/settings/tools/${program.id}`, [
+      [keys.toolServer(program.id), stored],
+      [keys.capabilities, { stdioServers: false }],
+    ]);
+    expect(viewer).toContain(long);
+    expect(viewer).not.toContain("Save program");
+    expect(viewer).toContain("Only an administrator can change the program");
+  });
+
+  test("a review shows the program whose tools it accepts", () => {
+    const html = render(`/settings/tools/${program.id}`, [
+      [keys.toolServer(program.id), { ...program, reviewRequired: true }],
+      [keys.capabilities, { stdioServers: false }],
+    ]);
+    expect(html).toContain("Accept changes");
+    expect(html).toContain("You accept the tools of this program:");
+    expect(html).toContain("--root &#x27;/srv/data dir&#x27;");
   });
 });

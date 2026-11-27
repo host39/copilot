@@ -10,6 +10,8 @@ export type ChatFilter = Omit<ChatListQuery, "cursor">;
 export const keys = {
   sessions: ["auth", "sessions"] as const,
   settings: ["settings"] as const,
+  /** What the server lets the caller do (`GET /capabilities`). */
+  capabilities: ["capabilities"] as const,
 
   providers: ["providers"] as const,
   provider: (providerId: string) => ["providers", providerId] as const,

@@ -8,7 +8,28 @@ type HeaderRowsProps = {
   onChange: (rows: HeaderRow[]) => void;
   /** Why the server or the form refused the headers. */
   error?: string;
+  /** `variables`: a stdio program's environment variables instead of request headers. */
+  kind?: "headers" | "variables";
+  /** Replaces the default hint. */
+  hint?: string;
 };
+
+const TEXT = {
+  headers: {
+    legend: "Custom headers (optional)",
+    hint: "Sent with every request to this server, for example an API key header.",
+    noun: "Header",
+    add: "Add header",
+    placeholder: "X-Api-Key",
+  },
+  variables: {
+    legend: "Environment variables (optional)",
+    hint: "The program's whole environment: it gets these and nothing else, so set what it needs, such as an API key. Stored encrypted; values are never shown again.",
+    noun: "Variable",
+    add: "Add variable",
+    placeholder: "API_KEY",
+  },
+} as const;
 
 let nextId = 1;
 
@@ -19,10 +40,11 @@ export function emptyRow(): HeaderRow {
 }
 
 /**
- * Custom request headers as name and value rows. Values are hidden like passwords (they usually
- * hold keys) until the user shows them.
+ * Custom request headers (or a program's environment variables) as name and value rows. Values
+ * are hidden like passwords (they usually hold keys) until the user shows them.
  */
-export function HeaderRows({ rows, onChange, error }: HeaderRowsProps) {
+export function HeaderRows({ rows, onChange, error, kind = "headers", hint }: HeaderRowsProps) {
+  const text = TEXT[kind];
   const id = useId();
   const [revealed, setRevealed] = useState(false);
   const update = (row: HeaderRow, change: Partial<HeaderRow>) =>
@@ -30,9 +52,9 @@ export function HeaderRows({ rows, onChange, error }: HeaderRowsProps) {
 
   return (
     <fieldset aria-describedby={error ? `${id}-error` : `${id}-hint`}>
-      <legend className="field-label">Custom headers (optional)</legend>
+      <legend className="field-label">{text.legend}</legend>
       <p id={`${id}-hint`} className="field-hint">
-        Sent with every request to this server, for example an API key header.
+        {hint ?? text.hint}
       </p>
       {rows.length > 0 ? (
         <ul className="mt-3 space-y-2">
@@ -42,9 +64,9 @@ export function HeaderRows({ rows, onChange, error }: HeaderRowsProps) {
               className="grid grid-cols-[1fr_auto] gap-2 sm:grid-cols-[1fr_1fr_auto]"
             >
               <input
-                aria-label={`Header ${index + 1} name`}
+                aria-label={`${text.noun} ${index + 1} name`}
                 value={row.name}
-                placeholder="X-Api-Key"
+                placeholder={text.placeholder}
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
@@ -54,14 +76,14 @@ export function HeaderRows({ rows, onChange, error }: HeaderRowsProps) {
               />
               <Button
                 variant="ghost"
-                aria-label={`Remove header ${index + 1}`}
+                aria-label={`Remove ${text.noun.toLowerCase()} ${index + 1}`}
                 onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
                 className="px-3 sm:order-last"
               >
                 <LuTrash2 aria-hidden />
               </Button>
               <input
-                aria-label={`Header ${index + 1} value`}
+                aria-label={`${text.noun} ${index + 1} value`}
                 type={revealed ? "text" : "password"}
                 value={row.value}
                 placeholder="Value"
@@ -83,7 +105,7 @@ export function HeaderRows({ rows, onChange, error }: HeaderRowsProps) {
       <div className="mt-2 flex flex-wrap gap-2">
         <Button variant="secondary" onClick={() => onChange([...rows, emptyRow()])}>
           <LuPlus aria-hidden />
-          Add header
+          {text.add}
         </Button>
         {rows.length > 0 ? (
           <Button
