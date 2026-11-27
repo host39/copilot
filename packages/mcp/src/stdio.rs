@@ -158,8 +158,10 @@ impl Drop for Process {
     }
 }
 
-/// `<base>/<cwd>`, made (owner-only) when missing, and still inside `base` once symbolic links
-/// are resolved. Core already checked that `cwd` is a relative path of plain names.
+/// `<base>/<cwd>`, made (owner-only) when missing, one folder at a time, each checked to be
+/// inside `base` once symbolic links are resolved before anything is made in it, so a link can
+/// never make Copilot create a folder elsewhere. Core already checked that `cwd` is a relative
+/// path of plain names.
 fn directory(base: &Path, cwd: &str) -> io::Result<PathBuf> {
     let relative = Path::new(cwd);
     let plain = !cwd.is_empty()
@@ -172,20 +174,29 @@ fn directory(base: &Path, cwd: &str) -> io::Result<PathBuf> {
             "not a plain relative path",
         ));
     }
-    let directory = base.join(relative);
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&directory)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder.create(base)?;
     let root = base.canonicalize()?;
-    let resolved = directory.canonicalize()?;
-    if !resolved.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "outside the base directory",
-        ));
+    builder.recursive(false);
+    let mut current = root.clone();
+    for part in relative.components() {
+        let next = current.join(part);
+        match builder.create(&next) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let resolved = next.canonicalize()?;
+        if !resolved.starts_with(&root) || !resolved.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "outside the base directory",
+            ));
+        }
+        current = resolved;
     }
-    Ok(resolved)
+    Ok(current)
 }
 
 fn start_failed(error: &io::Error) -> DomainError {
@@ -358,9 +369,16 @@ mod tests {
         for bad in ["", "../x", "/etc", "a/../../b", "."] {
             assert!(directory(&base, bad).is_err(), "{bad}");
         }
-        std::os::unix::fs::symlink("/", base.join("escape")).unwrap();
-        let error = directory(&base, "escape/tmp").unwrap_err();
+        let outside = base.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("escape")).unwrap();
+        let error = directory(&base, "escape/made").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            !outside.join("made").exists(),
+            "nothing made outside the base"
+        );
+        std::fs::remove_dir_all(&outside).unwrap();
         std::fs::remove_dir_all(&base).unwrap();
     }
 
