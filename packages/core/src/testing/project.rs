@@ -71,18 +71,20 @@ impl ProjectRepository for MemoryStore {
         Ok(true)
     }
 
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()> {
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
         let mut tables = self.tables();
         if tables.projects.contains_key(&project.id()) {
             return Err(duplicate("projects"));
         }
+        // `UPDATE chats ... WHERE id = $1 AND user_id = $2 AND project_id IS NULL`.
         let Some(stored) = tables
             .chats
             .get(&chat)
             .filter(|stored| stored.user_id() == project.user_id())
+            .filter(|stored| stored.project_id().is_none())
             .cloned()
         else {
-            return Err(foreign_key("chat"));
+            return Ok(false);
         };
         tables.check_references(project)?;
         tables.projects.insert(project.id(), project.clone());
@@ -96,7 +98,7 @@ impl ProjectRepository for MemoryStore {
                 *file = file.clone().moved(project.id());
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 

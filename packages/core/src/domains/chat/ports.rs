@@ -18,9 +18,12 @@ pub trait ChatRepository: Send + Sync {
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
     /// With its `chat_tool_servers` and `chat_tool_approvals` rows, in one transaction.
     async fn insert(&self, chat: &Chat) -> DomainResult<()>;
-    /// Writes the chat's settings and replaces its `chat_tool_servers` and `chat_tool_approvals`
-    /// rows, in one transaction. `updated_at` and `last_read_at` are not written here: message writes move
-    /// `updated_at`, and `mark_read` sets `last_read_at`.
+    /// Writes the chat's settings, replaces its `chat_tool_servers` rows, and adds its
+    /// `chat_tool_approvals` rows, in one transaction. Approvals only grow here (only deleting a
+    /// server removes them), so a chat read before another request approved a tool keeps that
+    /// approval. Rows naming a server the user no longer has are skipped. `updated_at` and
+    /// `last_read_at` are not written here: message writes move `updated_at`, and `mark_read`
+    /// sets `last_read_at`.
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
     /// Cascades to its messages, snapshots, attachments, and join rows; schedules created from
     /// it keep existing (`source_chat_id` becomes null). `false` when the user has no such chat.

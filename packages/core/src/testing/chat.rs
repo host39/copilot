@@ -13,7 +13,7 @@ use crate::domains::chat::{
 use crate::domains::file::FileOwner;
 use crate::domains::schedule::{Schedule, ScheduleParts};
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, MessageId, UserId};
+use crate::shared::ids::{ChatId, MessageId, ToolServerId, UserId};
 use crate::testing::schedule::parts as schedule_parts;
 use crate::testing::store::{MemoryStore, Tables, duplicate};
 
@@ -92,9 +92,32 @@ impl ChatRepository for MemoryStore {
 
     async fn update(&self, chat: &Chat) -> DomainResult<()> {
         let mut tables = self.tables();
-        tables.check_chat_references(chat)?;
+        // Approvals only grow, and rows naming a server the user no longer has are skipped.
+        let user = chat.user_id();
+        let owned = |tables: &Tables, id: ToolServerId| {
+            tables
+                .tool_servers
+                .get(&id)
+                .is_some_and(|server| server.user_id() == user)
+        };
+        let mut parts = chat.to_parts();
+        if let Some(stored) = tables.chats.get(&chat.id()) {
+            for tool in stored.approved_tools() {
+                if !parts.approved_tools.contains(tool) {
+                    parts.approved_tools.push(tool.clone());
+                }
+            }
+        }
+        parts
+            .approved_tools
+            .retain(|tool| owned(&tables, tool.server_id));
+        parts
+            .tool_overrides
+            .retain(|row| owned(&tables, row.server_id));
+        let chat = Chat::restore(parts);
+        tables.check_chat_references(&chat)?;
         if let Some(stored) = tables.chats.get_mut(&chat.id())
-            && stored.user_id() == chat.user_id()
+            && stored.user_id() == user
         {
             *stored = Chat::restore(ChatParts {
                 updated_at: stored.updated_at(),

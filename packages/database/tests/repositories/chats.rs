@@ -61,7 +61,8 @@ async fn chats_round_trip_with_their_overrides_and_approvals(pool: DbPool) {
         None
     );
 
-    // Settings changes replace the join rows and never move `updated_at` or `last_read_at`.
+    // Settings changes replace the overrides, keep the approvals (they only grow), and never
+    // move `updated_at` or `last_read_at`.
     let changed = created
         .clone()
         .titled_by("What is Rust?")
@@ -86,7 +87,7 @@ async fn chats_round_trip_with_their_overrides_and_approvals(pool: DbPool) {
     assert!(stored.pinned());
     assert_eq!(stored.builtin_tools(), None);
     assert_eq!(stored.tool_overrides(), changed.tool_overrides());
-    assert!(stored.approved_tools().is_empty());
+    assert_eq!(stored.approved_tools(), created.approved_tools());
     assert_eq!(stored.updated_at(), at(0));
     assert_eq!(stored.last_read_at(), Some(at(0)));
 
@@ -121,6 +122,68 @@ async fn chats_round_trip_with_their_overrides_and_approvals(pool: DbPool) {
             .await
             .unwrap(),
         None
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_stale_chat_update_keeps_later_approvals_and_skips_deleted_servers(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let docs = server(&store, owner, "docs").await;
+    let web = server(&store, owner, "web").await;
+    let created = Chat::create(owner, at(0)).with_tool_overrides(vec![
+        ServerOverride {
+            server_id: docs.id(),
+            enabled: true,
+        },
+        ServerOverride {
+            server_id: web.id(),
+            enabled: true,
+        },
+    ]);
+    ChatRepository::insert(&store, &created).await.unwrap();
+    // A rename reads the chat; then "Approve for this chat" saves an approval, and the web
+    // server is deleted; then the rename writes what it read.
+    let stale = created.clone().titled_by("Renamed");
+    let search = ApprovedTool {
+        server_id: docs.id(),
+        name: "search".to_owned(),
+    };
+    ChatRepository::update(&store, &created.clone().approving(search.clone()))
+        .await
+        .unwrap();
+    let fetch = ApprovedTool {
+        server_id: web.id(),
+        name: "fetch".to_owned(),
+    };
+    ChatRepository::update(&store, &created.clone().approving(fetch))
+        .await
+        .unwrap();
+    assert!(
+        copilot_core::ToolServerRepository::delete(&store, owner, web.id())
+            .await
+            .unwrap()
+    );
+
+    ChatRepository::update(&store, &stale).await.unwrap();
+    let stored = ChatRepository::get(&store, owner, created.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.title(), "Renamed");
+    assert_eq!(
+        stored.approved_tools(),
+        [search],
+        "the approval stays; the deleted server's went with it"
+    );
+    assert_eq!(
+        stored.tool_overrides(),
+        [ServerOverride {
+            server_id: docs.id(),
+            enabled: true,
+        }],
+        "the deleted server is skipped, not a failed update"
     );
 }
 

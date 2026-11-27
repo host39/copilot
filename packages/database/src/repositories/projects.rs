@@ -219,14 +219,17 @@ impl ProjectRepository for PgStore {
         Ok(deleted > 0)
     }
 
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()> {
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
         let key = "database.projects.save-chat.failed";
         let user = project.user_id().uuid();
         let mut tx = self.pool().begin().await.map_err(failed(key))?;
         insert_row(&mut tx, project, key).await?;
-        // Chat settings changes never move `updated_at` (only message writes do).
+        // Chat settings changes never move `updated_at` (only message writes do). A concurrent
+        // save of the same chat waits for this row lock, then finds `project_id` set and moves
+        // nothing.
         let moved = sqlx::query(
-            "UPDATE chats SET project_id = $3, instructions = '' WHERE id = $1 AND user_id = $2",
+            "UPDATE chats SET project_id = $3, instructions = '' \
+             WHERE id = $1 AND user_id = $2 AND project_id IS NULL",
         )
         .bind(chat.uuid())
         .bind(user)
@@ -237,10 +240,7 @@ impl ProjectRepository for PgStore {
         .rows_affected();
         if moved == 0 {
             // Dropping `tx` rolls the project back.
-            return Err(DomainError::Internal {
-                key: "database.projects.save-chat.chat-missing".to_owned(),
-                source: None,
-            });
+            return Ok(false);
         }
         sqlx::query("DELETE FROM chat_tool_servers WHERE chat_id = $1 AND user_id = $2")
             .bind(chat.uuid())
@@ -257,6 +257,7 @@ impl ProjectRepository for PgStore {
         .execute(&mut *tx)
         .await
         .map_err(failed(key))?;
-        tx.commit().await.map_err(failed(key))
+        tx.commit().await.map_err(failed(key))?;
+        Ok(true)
     }
 }

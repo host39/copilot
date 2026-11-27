@@ -54,7 +54,7 @@ A project is a reusable context: **name, icon, instructions (system prompt), fil
 - **Personal instructions** (Settings, Account) apply to every chat of the user. They are stored in Copilot's `user_settings`, not in rustauth.
 - **Project instructions** are the project's system prompt.
 - **Chat instructions** are appended after the project's. Standalone chats use them as their system prompt.
-- **Save as project** is offered on standalone chats. One action creates a project from the chat: name = chat title, instructions = chat instructions, default model = chat model, reasoning = chat reasoning, tools = the chat's enabled tool servers and built-in tools. The chat's attachments **move** into the project as project files (no copy, no re-upload), the chat moves into the project, and its chat instructions and tool overrides are cleared so nothing is sent twice. It is one transaction.
+- **Save as project** is offered on standalone chats. One action creates a project from the chat: name = chat title, instructions = chat instructions, default model = chat model, reasoning = chat reasoning, tools = the chat's enabled tool servers and built-in tools. The chat's attachments **move** into the project as project files (no copy, no re-upload), the chat moves into the project, and its chat instructions and tool overrides are cleared so nothing is sent twice. It is one transaction, and it moves the chat only while the chat is still standalone: of two saves at once (a double-click, a retry), one creates the project and the other gets `CHAT_IN_PROJECT`.
 - In a chat that is already in a project, the action is **Save instructions to project**: it appends the chat instructions to the project instructions (separated by a blank line) and clears them on the chat. Each attachment also has **Add to project**, which moves it.
 - **Limitation and workaround:** a role cannot be linked to another project's files. The chat instructions editor has **Insert from project...**, which copies another project's instructions into the chat instructions (a copy, not a link), so prompt-only projects double as a prompt library.
 
@@ -379,7 +379,7 @@ trait ProjectRepository {
     async fn insert(&self, project: &Project) -> DomainResult<()>;  // with project_tool_servers rows, one tx
     async fn update(&self, project: &Project) -> DomainResult<()>;  // replaces join rows, one tx
     async fn delete(&self, user: UserId, id: ProjectId) -> DomainResult<bool>; // cascades chats, files, schedules
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<()>; // Save as project, one tx
+    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool>; // Save as project, one tx; false (nothing written) unless the chat is still standalone
 }
 trait FileRepository {
     async fn list(&self, user: UserId, owner: FileOwner) -> DomainResult<Vec<StoredFile>>;
@@ -395,7 +395,7 @@ trait ChatRepository {
     async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>>; // filters: project, schedule, pinned, scheduled (runs vs recent); cursor (updated_at, id); unread and awaiting flags
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
     async fn insert(&self, chat: &Chat) -> DomainResult<()>;        // with chat_tool_servers and chat_tool_approvals rows, one tx
-    async fn update(&self, chat: &Chat) -> DomainResult<()>;
+    async fn update(&self, chat: &Chat) -> DomainResult<()>;        // replaces chat_tool_servers rows; chat_tool_approvals only grow (a stale read never drops one)
     async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool>;
     async fn mark_read(&self, user: UserId, id: ChatId, at: DateTime<Utc>) -> DomainResult<()>;
 }

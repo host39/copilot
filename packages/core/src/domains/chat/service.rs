@@ -280,14 +280,12 @@ impl ChatService {
     /// Save as project, in one transaction: a project from the standalone chat (name = title,
     /// instructions, default model, reasoning, enabled tool servers, and built-in tools), the
     /// chat's attachments moved into it as project files, the chat moved into it, and the chat's
-    /// instructions and tool overrides cleared so nothing is sent twice.
+    /// instructions and tool overrides cleared so nothing is sent twice. Of two saves of the same
+    /// chat at once, one creates the project and the other fails with `CHAT_IN_PROJECT`.
     pub async fn save_as_project(&self, actor: &Actor, id: ChatId) -> DomainResult<Project> {
         let chat = self.get(actor, id).await?;
         if chat.project_id().is_some() {
-            return Err(DomainError::business_rule(
-                "This chat is already in a project.",
-                "CHAT_IN_PROJECT",
-            ));
+            return Err(in_project());
         }
         let name = if chat.title().is_empty() {
             UNTITLED_PROJECT
@@ -306,7 +304,11 @@ impl ChatService {
             .with_reasoning(chat.reasoning())
             .with_builtin_tools(chat.builtin_tools().map(<[_]>::to_vec).unwrap_or_default())
             .with_tool_servers(servers);
-        self.stores.projects.insert_with_chat(&project, id).await?;
+        if !self.stores.projects.insert_with_chat(&project, id).await? {
+            // Saved or moved by another request since it was read, or deleted (then `404`).
+            self.get(actor, id).await?;
+            return Err(in_project());
+        }
         Ok(project)
     }
 
@@ -406,6 +408,10 @@ fn not_found(id: ChatId) -> DomainError {
     DomainError::not_found("Chat", id.to_string())
 }
 
+fn in_project() -> DomainError {
+    DomainError::business_rule("This chat is already in a project.", "CHAT_IN_PROJECT")
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -419,7 +425,7 @@ mod tests {
     use crate::domains::project::{NewProject, ProjectQuery};
     use crate::domains::schedule::{NewSchedule, SchedulePrompt, ScheduleQuery};
     use crate::domains::tool::ToolSelection;
-    use crate::shared::ids::ProviderId;
+    use crate::shared::ids::{ProviderId, UserId};
     use crate::testing::actor;
 
     fn is_not_found(error: &DomainError, entity: &str) -> bool {
@@ -905,6 +911,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(projects.len(), 2);
+    }
+
+    /// What happens to the chat between `save_as_project`'s read and its write.
+    #[derive(Clone, Copy)]
+    enum Meanwhile {
+        /// Another request saves it as a project first.
+        Saved,
+        /// Another request deletes it.
+        Deleted,
+    }
+
+    /// The store's projects, with another request acting on the chat just before each save.
+    struct Racing {
+        store: Arc<crate::testing::MemoryStore>,
+        meanwhile: Meanwhile,
+        owner: Actor,
+    }
+
+    #[async_trait::async_trait]
+    impl ProjectRepository for Racing {
+        async fn list(&self, user: UserId, query: ProjectQuery) -> DomainResult<Vec<Project>> {
+            ProjectRepository::list(self.store.as_ref(), user, query).await
+        }
+
+        async fn get(&self, user: UserId, id: ProjectId) -> DomainResult<Option<Project>> {
+            ProjectRepository::get(self.store.as_ref(), user, id).await
+        }
+
+        async fn insert(&self, project: &Project) -> DomainResult<()> {
+            ProjectRepository::insert(self.store.as_ref(), project).await
+        }
+
+        async fn update(&self, project: &Project) -> DomainResult<()> {
+            ProjectRepository::update(self.store.as_ref(), project).await
+        }
+
+        async fn delete(&self, user: UserId, id: ProjectId) -> DomainResult<bool> {
+            ProjectRepository::delete(self.store.as_ref(), user, id).await
+        }
+
+        async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
+            let user = self.owner.user_id;
+            match self.meanwhile {
+                Meanwhile::Saved => {
+                    let first = Project::create(user, "First", project.created_at())?;
+                    assert!(self.store.insert_with_chat(&first, chat).await?);
+                }
+                Meanwhile::Deleted => {
+                    assert!(ChatRepository::delete(self.store.as_ref(), user, chat).await?);
+                }
+            }
+            self.store.insert_with_chat(project, chat).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_saved_or_deleted_meanwhile_is_not_saved_again() {
+        for meanwhile in [Meanwhile::Saved, Meanwhile::Deleted] {
+            let f = fixture();
+            let caller = actor();
+            let chat = f.chats.create(&caller, NewChat::default()).await.unwrap();
+            let racing = Racing {
+                store: f.store.clone(),
+                meanwhile,
+                owner: caller,
+            };
+            let chats = ChatService::new(
+                ChatRepositories {
+                    projects: Arc::new(racing),
+                    ..ChatRepositories::shared(f.store.clone())
+                },
+                f.tools.clone(),
+                f.cipher.clone(),
+                f.clock.clone(),
+                PrivateNetwork::Admins,
+            );
+
+            let error = chats.save_as_project(&caller, chat.id()).await.unwrap_err();
+            let projects = f
+                .projects
+                .list(&caller, ProjectQuery::default())
+                .await
+                .unwrap();
+            match meanwhile {
+                Meanwhile::Saved => {
+                    assert_eq!(error.code(), "CHAT_IN_PROJECT");
+                    let names: Vec<&str> = projects.iter().map(Project::name).collect();
+                    assert_eq!(names, ["First"], "only the first save made a project");
+                }
+                Meanwhile::Deleted => {
+                    assert!(is_not_found(&error, "Chat"), "{error:?}");
+                    assert!(projects.is_empty());
+                }
+            }
+        }
     }
 
     #[tokio::test]

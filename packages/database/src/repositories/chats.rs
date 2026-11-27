@@ -133,7 +133,8 @@ fn builtin(chat: &Chat) -> Option<Vec<&'static str>> {
         .map(|tools| tools.iter().map(|tool| tool.as_str()).collect())
 }
 
-/// Writes the chat's `chat_tool_servers` and `chat_tool_approvals` rows.
+/// Writes the chat's `chat_tool_servers` and `chat_tool_approvals` rows, skipping servers the
+/// user no longer has (deleted since the chat was read; their rows went with them).
 async fn join_rows(tx: &mut Transaction<'_, Postgres>, chat: &Chat) -> DomainResult<()> {
     let overrides = chat.tool_overrides();
     if !overrides.is_empty() {
@@ -141,8 +142,10 @@ async fn join_rows(tx: &mut Transaction<'_, Postgres>, chat: &Chat) -> DomainRes
         let enabled: Vec<bool> = overrides.iter().map(|row| row.enabled).collect();
         sqlx::query(
             "INSERT INTO chat_tool_servers (chat_id, tool_server_id, user_id, enabled) \
-             SELECT $1, server, $2, enabled FROM UNNEST($3::uuid[], $4::boolean[]) \
-             AS rows (server, enabled)",
+             SELECT $1, rows.server, $2, rows.enabled \
+             FROM UNNEST($3::uuid[], $4::boolean[]) AS rows (server, enabled) \
+             WHERE EXISTS (SELECT 1 FROM tool_servers t \
+               WHERE t.id = rows.server AND t.user_id = $2)",
         )
         .bind(chat.id().uuid())
         .bind(chat.user_id().uuid())
@@ -158,7 +161,10 @@ async fn join_rows(tx: &mut Transaction<'_, Postgres>, chat: &Chat) -> DomainRes
         let names: Vec<&str> = approvals.iter().map(|tool| tool.name.as_str()).collect();
         sqlx::query(
             "INSERT INTO chat_tool_approvals (chat_id, tool_server_id, user_id, tool_name) \
-             SELECT $1, server, $2, name FROM UNNEST($3::uuid[], $4::text[]) AS rows (server, name) \
+             SELECT $1, rows.server, $2, rows.name \
+             FROM UNNEST($3::uuid[], $4::text[]) AS rows (server, name) \
+             WHERE EXISTS (SELECT 1 FROM tool_servers t \
+               WHERE t.id = rows.server AND t.user_id = $2) \
              ON CONFLICT DO NOTHING",
         )
         .bind(chat.id().uuid())
@@ -294,17 +300,14 @@ impl ChatRepository for PgStore {
         .map_err(failed("database.chats.update.failed"))?
         .rows_affected();
         if updated > 0 {
-            for sql in [
-                "DELETE FROM chat_tool_servers WHERE chat_id = $1 AND user_id = $2",
-                "DELETE FROM chat_tool_approvals WHERE chat_id = $1 AND user_id = $2",
-            ] {
-                sqlx::query(sql)
-                    .bind(chat.id().uuid())
-                    .bind(chat.user_id().uuid())
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(failed("database.chats.update.failed"))?;
-            }
+            // The overrides are the caller's to replace. Approvals only grow here: `chat` may
+            // have been read before another request approved a tool for the chat.
+            sqlx::query("DELETE FROM chat_tool_servers WHERE chat_id = $1 AND user_id = $2")
+                .bind(chat.id().uuid())
+                .bind(chat.user_id().uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(failed("database.chats.update.failed"))?;
             join_rows(&mut tx, chat).await?;
         }
         tx.commit()

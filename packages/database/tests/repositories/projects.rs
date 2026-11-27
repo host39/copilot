@@ -375,7 +375,7 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
         .unwrap()
         .with_instructions("Be brief.")
         .with_tool_servers(vec![docs]);
-    store.insert_with_chat(&project, chat.id()).await.unwrap();
+    assert!(store.insert_with_chat(&project, chat.id()).await.unwrap());
 
     let read = ProjectRepository::get(&store, owner, project.id())
         .await
@@ -407,7 +407,7 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
     let theirs = Chat::create(other, at(0));
     ChatRepository::insert(&store, &theirs).await.unwrap();
     let stolen = Project::create(owner, "Stolen", at(8)).unwrap();
-    assert!(store.insert_with_chat(&stolen, theirs.id()).await.is_err());
+    assert!(!store.insert_with_chat(&stolen, theirs.id()).await.unwrap());
     assert_eq!(
         ProjectRepository::get(&store, owner, stolen.id())
             .await
@@ -420,4 +420,78 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
         .unwrap()
         .expect("their chat");
     assert_eq!(untouched.project_id(), None);
+}
+
+/// Waits until `count` sessions of the test's database wait for a lock.
+async fn lock_waiters(store: &PgStore, count: i64) {
+    for _ in 0..250 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        if waiting >= count {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("{count} sessions never waited for the lock");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn two_saves_of_one_chat_at_once_create_one_project(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let chat = Chat::create(owner, at(0)).with_instructions("Be brief.");
+    ChatRepository::insert(&store, &chat).await.unwrap();
+    let attachment = file_in(&store, owner, None, Some(chat.id())).await;
+    let first = Project::create(owner, "First", at(1)).unwrap();
+    let second = Project::create(owner, "Second", at(2)).unwrap();
+
+    // Holds the chat's row until both saves have inserted their project and wait to move the
+    // chat, as a double-click does.
+    let mut holder = store.pool().begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM chats WHERE id = $1 FOR UPDATE")
+        .bind(chat.id().uuid())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let (saved_first, saved_second, ()) = tokio::join!(
+        store.insert_with_chat(&first, chat.id()),
+        store.insert_with_chat(&second, chat.id()),
+        async {
+            lock_waiters(&store, 2).await;
+            holder.commit().await.unwrap();
+        },
+    );
+    let saved = [saved_first.unwrap(), saved_second.unwrap()];
+    assert_eq!(saved.iter().filter(|saved| **saved).count(), 1, "{saved:?}");
+    let winner = if saved[0] { first.id() } else { second.id() };
+
+    let projects = ProjectRepository::list(&store, owner, ProjectQuery::default())
+        .await
+        .unwrap();
+    let ids: Vec<ProjectId> = projects.iter().map(Project::id).collect();
+    assert_eq!(ids, [winner], "the other save rolled its project back");
+    let moved = ChatRepository::get(&store, owner, chat.id())
+        .await
+        .unwrap()
+        .expect("the chat stays");
+    assert_eq!(moved.project_id(), Some(winner));
+    let files: Option<Uuid> = sqlx::query_scalar("SELECT project_id FROM files WHERE id = $1")
+        .bind(attachment)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(files, Some(winner.uuid()), "the files went with the chat");
+    assert!(
+        !store
+            .insert_with_chat(&Project::create(owner, "Third", at(3)).unwrap(), chat.id())
+            .await
+            .unwrap(),
+        "a chat in a project is not saved again"
+    );
 }
