@@ -1,0 +1,34 @@
+meta {
+  name: 10-01 Preview Too Frequent
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/schedules/preview
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "cron": "*/5 * * * *",
+    "timezone": "UTC"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq cron
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules/preview`
+
+  **This test verifies:** fires less than 15 minutes apart are refused.
+}

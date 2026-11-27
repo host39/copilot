@@ -163,6 +163,12 @@ mod tests {
         ("DELETE", "/api/tool-servers/{id}"),
         ("POST", "/api/tool-servers/{id}/test"),
         ("POST", "/api/tool-servers/{id}/review"),
+        ("GET", "/api/schedules"),
+        ("POST", "/api/schedules"),
+        ("GET", "/api/schedules/{id}"),
+        ("PATCH", "/api/schedules/{id}"),
+        ("DELETE", "/api/schedules/{id}"),
+        ("POST", "/api/schedules/preview"),
     ];
 
     fn written(method: &Method, uri: &str) -> bool {

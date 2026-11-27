@@ -1,0 +1,37 @@
+meta {
+  name: 10-04 Create Project
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/projects
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Schedules"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("scheduleProjectId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+docs {
+  **Endpoint:** `POST /api/projects`
+
+  **This test verifies:** a project of user A for the cross-user checks (`scheduleProjectId`).
+}

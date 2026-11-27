@@ -1,0 +1,26 @@
+meta {
+  name: 10-09 Unknown Schedule Runs
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/chats?scheduleId=0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/chats?scheduleId={id}`
+
+  **This test verifies:** the runs of a schedule the caller does not have are a `404`.
+}

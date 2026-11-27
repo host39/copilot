@@ -1,0 +1,26 @@
+meta {
+  name: 10-06 Other User List by Project
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/schedules?projectId={{scheduleProjectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/schedules?projectId={id}` as user B, with user A's project
+
+  **This test verifies:** user A's project id in a query is a `404`, not an empty list.
+}

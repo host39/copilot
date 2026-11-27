@@ -1,0 +1,11 @@
+meta {
+  name: 10 Schedules
+  seq: 11
+}
+
+docs {
+  `/api/schedules`: the preview of a rule, the checks on a new schedule, and user B
+  (`otherToken`) getting `404` for user A's project in bodies and queries. A schedule needs an
+  enabled model, and Bruno has no model provider, so the route tests on Postgres create
+  schedules and check user B's `404` for their ids in paths.
+}

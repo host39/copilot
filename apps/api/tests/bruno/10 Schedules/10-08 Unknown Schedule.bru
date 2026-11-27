@@ -1,0 +1,26 @@
+meta {
+  name: 10-08 Unknown Schedule
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/schedules/0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/schedules/{id}`
+
+  **This test verifies:** a schedule the caller does not have is a `404`.
+}

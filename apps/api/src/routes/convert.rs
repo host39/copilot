@@ -68,6 +68,13 @@ both_ways!(
 );
 both_ways!(core::ApprovalMode, dto::ApprovalMode, [Ask, Auto]);
 both_ways!(core::ToolMode, dto::ToolMode, [Off, Ask, Auto]);
+both_ways!(core::OnAsk, dto::OnAsk, [Deny, Pause]);
+out!(core::CreatedBy, dto::CreatedBy, [User, Assistant]);
+out!(
+    core::RunStatus,
+    dto::RunStatus,
+    [Ok, Error, AwaitingApproval]
+);
 out!(core::KeyState, dto::KeyState, [Missing, Set, Unreadable]);
 out!(core::Role, dto::Role, [User, Assistant, Tool]);
 out!(
@@ -250,6 +257,26 @@ mod tests {
         for mode in [core::ApprovalMode::Ask, core::ApprovalMode::Auto] {
             assert_eq!(mode.to_dto().to_core(), mode);
             assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
+        }
+        for on_ask in [core::OnAsk::Deny, core::OnAsk::Pause] {
+            assert_eq!(on_ask.to_dto().to_core(), on_ask);
+            assert_eq!(
+                serde_json::to_value(on_ask.to_dto()).unwrap(),
+                on_ask.as_str()
+            );
+        }
+        for by in [core::CreatedBy::User, core::CreatedBy::Assistant] {
+            assert_eq!(serde_json::to_value(by.to_dto()).unwrap(), by.as_str());
+        }
+        for status in [
+            core::RunStatus::Ok,
+            core::RunStatus::Error,
+            core::RunStatus::AwaitingApproval,
+        ] {
+            assert_eq!(
+                serde_json::to_value(status.to_dto()).unwrap(),
+                status.as_str()
+            );
         }
     }
 }
