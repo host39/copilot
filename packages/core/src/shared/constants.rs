@@ -115,6 +115,9 @@ pub const CONTEXT_WARN_RATIO: f64 = 0.8;
 pub const TOKENS_PER_PDF_PAGE: u32 = 3_000;
 pub const TOKENS_PER_IMAGE: u32 = 1_600;
 pub const BYTES_PER_TOKEN: u64 = 4;
+/// Audio, by how long it plays: Gemini documents 32 tokens per second, the most of the
+/// providers that state a rate, so a clip never counts for less than it costs.
+pub const TOKENS_PER_AUDIO_SECOND: u64 = 32;
 /// Longest audio in a chat: a push-to-talk clip (the client stops recording there), any audio
 /// file uploaded to a chat (refused past it), and a spoken reply (`AUDIO_OUT_MAX_BYTES`).
 pub const AUDIO_CLIP_MAX_SECS: u32 = 300;

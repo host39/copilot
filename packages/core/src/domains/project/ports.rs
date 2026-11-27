@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::domains::project::entities::Project;
 use crate::shared::errors::DomainResult;
-use crate::shared::ids::{ChatId, ProjectId, UserId};
+use crate::shared::ids::{ChatId, FileId, ProjectId, UserId};
 
 #[async_trait]
 pub trait ProjectRepository: Send + Sync {
@@ -19,12 +19,17 @@ pub trait ProjectRepository: Send + Sync {
     /// project.
     async fn delete(&self, user: UserId, id: ProjectId) -> DomainResult<bool>;
     /// Save as project, in one transaction: inserts `project` with its tool server rows, moves the
-    /// chat into it, moves the chat's attachments into the project as included project files (no
-    /// copy), and clears the chat's instructions and tool server overrides. The move applies only
+    /// chat into it, moves those of `attachments` the chat owns into the project as included
+    /// project files (no copy), and clears the chat's instructions and tool server overrides. The move applies only
     /// while the chat is still a standalone chat of the project's owner: otherwise (another
     /// request saved or moved it since the caller read it, or it is gone) nothing is written and
     /// the result is `false`.
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool>;
+    async fn insert_with_chat(
+        &self,
+        project: &Project,
+        chat: ChatId,
+        attachments: &[FileId],
+    ) -> DomainResult<bool>;
 }
 
 /// Which projects to list.

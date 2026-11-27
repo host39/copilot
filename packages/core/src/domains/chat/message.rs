@@ -436,6 +436,26 @@ impl Message {
         })
     }
 
+    /// Every file the message names: its attachments, its spoken reply, and the images of its
+    /// tool results.
+    pub fn named_files(&self) -> impl Iterator<Item = FileId> + '_ {
+        self.parts.iter().flat_map(|part| {
+            let ids: Vec<FileId> = match part {
+                Part::File { file_id, .. } | Part::Audio { file_id, .. } => vec![*file_id],
+                Part::ToolResult(result) => result
+                    .content
+                    .iter()
+                    .filter_map(|content| match content {
+                        ResultContent::Image { file_id } => Some(*file_id),
+                        ResultContent::Text(_) => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            ids
+        })
+    }
+
     /// The text parts joined by a line break (`text_content`, for search).
     pub fn text_content(&self) -> String {
         let texts: Vec<&str> = self

@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
     ApprovedTool, BuiltinTool, CallDecision, Chat, ChatCursor, ChatId, ChatParts, ChatQuery,
-    ChatRepository, ChatSummary, ContextHash, DomainError, DomainResult, INTERRUPTED, Message,
-    MessageId, MessageParts, MessageRepository, ModelId, Page, Part, ProjectId, ProviderId,
-    ReasoningLevel, ScheduleId, SearchHit, ServerOverride, SnapshotFile, SnapshotTool,
+    ChatRepository, ChatSummary, ContextHash, DomainError, DomainResult, FileId, INTERRUPTED,
+    Message, MessageId, MessageParts, MessageRepository, ModelId, Page, Part, ProjectId,
+    ProviderId, ReasoningLevel, ScheduleId, SearchHit, ServerOverride, SnapshotFile, SnapshotTool,
     ToolServerId, TurnContext, TurnContextRepository, Usage, UserId,
 };
 use serde_json::Value;
@@ -536,6 +536,29 @@ async fn touch(
     Ok(())
 }
 
+/// Deletes the files of `ids` that `chat` still owns (a file moved to a project stays), inside
+/// `tx`. Their bytes go with them (`ON DELETE CASCADE`).
+async fn drop_orphans(
+    tx: &mut Transaction<'_, Postgres>,
+    user: UserId,
+    chat: ChatId,
+    ids: &[FileId],
+    key: &'static str,
+) -> DomainResult<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = ids.iter().map(|id| id.uuid()).collect();
+    sqlx::query("DELETE FROM files WHERE id = ANY($1) AND user_id = $2 AND chat_id = $3")
+        .bind(&ids)
+        .bind(user.uuid())
+        .bind(chat.uuid())
+        .execute(&mut **tx)
+        .await
+        .map_err(failed(key))?;
+    Ok(())
+}
+
 /// Inserts `message` (the next `seq`), inside `tx`.
 async fn insert(
     tx: &mut Transaction<'_, Postgres>,
@@ -641,6 +664,7 @@ impl MessageRepository for PgStore {
         chat: ChatId,
         from: MessageId,
         message: &Message,
+        orphans: &[FileId],
     ) -> DomainResult<()> {
         owned(user, message)?;
         let key = "database.messages.replace-tail.failed";
@@ -656,6 +680,7 @@ impl MessageRepository for PgStore {
         .execute(&mut *tx)
         .await
         .map_err(failed(key))?;
+        drop_orphans(&mut tx, user, chat, orphans, key).await?;
         insert(&mut tx, user, message, key).await?;
         touch(&mut tx, user, message.chat_id(), message.updated_at()).await?;
         tx.commit().await.map_err(failed(key))
@@ -666,6 +691,7 @@ impl MessageRepository for PgStore {
         user: UserId,
         chat: ChatId,
         after: MessageId,
+        orphans: &[FileId],
     ) -> DomainResult<u64> {
         let key = "database.messages.delete-after.failed";
         let mut tx = self.pool().begin().await.map_err(failed(key))?;
@@ -681,6 +707,7 @@ impl MessageRepository for PgStore {
         .map_err(failed(key))?
         .rows_affected();
         if deleted > 0 {
+            drop_orphans(&mut tx, user, chat, orphans, key).await?;
             touch(&mut tx, user, chat, self.now()).await?;
         }
         tx.commit().await.map_err(failed(key))?;

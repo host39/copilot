@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use crate::domains::file::FileOwner;
 use crate::domains::project::{Project, ProjectQuery, ProjectRepository};
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, ProjectId, UserId};
+use crate::shared::ids::{ChatId, FileId, ProjectId, UserId};
 use crate::testing::store::{MemoryStore, Tables, duplicate};
 
 #[async_trait]
@@ -71,7 +71,12 @@ impl ProjectRepository for MemoryStore {
         Ok(true)
     }
 
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
+    async fn insert_with_chat(
+        &self,
+        project: &Project,
+        chat: ChatId,
+        attachments: &[FileId],
+    ) -> DomainResult<bool> {
         let mut tables = self.tables();
         if tables.projects.contains_key(&project.id()) {
             return Err(duplicate("projects"));
@@ -93,8 +98,8 @@ impl ProjectRepository for MemoryStore {
             .with_instructions("")
             .with_tool_overrides(Vec::new());
         tables.chats.insert(chat, moved);
-        for (file, _) in tables.files.values_mut() {
-            if file.owner() == FileOwner::Chat(chat) {
+        for (id, (file, _)) in tables.files.iter_mut() {
+            if file.owner() == FileOwner::Chat(chat) && attachments.contains(id) {
                 *file = file.clone().moved(project.id());
             }
         }

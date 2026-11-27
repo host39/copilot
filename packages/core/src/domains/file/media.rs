@@ -6,7 +6,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::shared::constants::{BYTES_PER_TOKEN, TOKENS_PER_IMAGE, TOKENS_PER_PDF_PAGE};
+use crate::shared::constants::{
+    BYTES_PER_TOKEN, TOKENS_PER_AUDIO_SECOND, TOKENS_PER_IMAGE, TOKENS_PER_PDF_PAGE,
+};
 use crate::shared::errors::{DomainError, DomainResult};
 
 /// The type served for anything not on the allowlist.
@@ -374,14 +376,23 @@ fn is_pdf_space(byte: u8) -> bool {
 }
 
 /// The rough token cost of a file in a model's context: text bytes / 4, PDF pages x 3,000,
-/// 1,600 per image. Audio has no estimate in v1 (it is a chat attachment for `audio_in` models
-/// and never part of the project file preamble), so it counts 0. Capped at `i32::MAX`.
-pub fn estimate(media: MediaType, size_bytes: u64, pages: Option<u32>) -> u32 {
+/// 1,600 per image, and `TOKENS_PER_AUDIO_SECOND` per second of audio (`played_ms`; audio
+/// whose length cannot be measured never reaches a model, because chats refuse it, and counts
+/// 0). Capped at `i32::MAX`.
+pub fn estimate(
+    media: MediaType,
+    size_bytes: u64,
+    pages: Option<u32>,
+    played_ms: Option<u64>,
+) -> u32 {
     let tokens = match media.kind() {
         FileKind::Text => size_bytes.div_ceil(BYTES_PER_TOKEN),
         FileKind::Pdf => u64::from(pages.unwrap_or(1)) * u64::from(TOKENS_PER_PDF_PAGE),
         FileKind::Image => u64::from(TOKENS_PER_IMAGE),
-        FileKind::Audio => 0,
+        FileKind::Audio => played_ms
+            .unwrap_or(0)
+            .saturating_mul(TOKENS_PER_AUDIO_SECOND)
+            .div_ceil(1_000),
     };
     u32::try_from(tokens.min(i32::MAX as u64)).unwrap_or(i32::MAX as u32)
 }
@@ -510,7 +521,12 @@ mod tests {
         assert_eq!(page_objects(&pdf), 0, "nothing visible without inflating");
         assert_eq!(pdf_pages(&pdf), 30);
         assert_eq!(
-            estimate(MediaType::Pdf, pdf.len() as u64, Some(pdf_pages(&pdf))),
+            estimate(
+                MediaType::Pdf,
+                pdf.len() as u64,
+                Some(pdf_pages(&pdf)),
+                None
+            ),
             90_000
         );
     }
@@ -565,14 +581,31 @@ mod tests {
     #[test]
     fn estimates_tokens_by_kind() {
         assert_eq!(
-            estimate(MediaType::Text, 10, None),
+            estimate(MediaType::Text, 10, None, None),
             3,
             "bytes / 4, rounded up"
         );
-        assert_eq!(estimate(MediaType::Markdown, 4_000, None), 1_000);
-        assert_eq!(estimate(MediaType::Pdf, 1_000_000, Some(12)), 36_000);
-        assert_eq!(estimate(MediaType::Png, 9_000_000, None), 1_600);
-        assert_eq!(estimate(MediaType::Wav, 1_000_000, None), 0);
-        assert_eq!(estimate(MediaType::Pdf, 1, Some(u32::MAX)), i32::MAX as u32);
+        assert_eq!(estimate(MediaType::Markdown, 4_000, None, None), 1_000);
+        assert_eq!(estimate(MediaType::Pdf, 1_000_000, Some(12), None), 36_000);
+        assert_eq!(estimate(MediaType::Png, 9_000_000, None, None), 1_600);
+        assert_eq!(
+            estimate(MediaType::Wav, 1_000_000, None, Some(300_000)),
+            9_600,
+            "a 5-minute clip at 32 tokens a second"
+        );
+        assert_eq!(
+            estimate(MediaType::Mpeg, 1_000, None, Some(1)),
+            1,
+            "rounded up"
+        );
+        assert_eq!(
+            estimate(MediaType::Wav, 1_000_000, None, None),
+            0,
+            "unmeasured project audio"
+        );
+        assert_eq!(
+            estimate(MediaType::Pdf, 1, Some(u32::MAX), None),
+            i32::MAX as u32
+        );
     }
 }

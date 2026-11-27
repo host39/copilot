@@ -839,7 +839,7 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
 
     assert_eq!(
         store
-            .delete_after(other, chat.id(), first.id())
+            .delete_after(other, chat.id(), first.id(), &[])
             .await
             .unwrap(),
         0,
@@ -847,7 +847,7 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
     );
     assert_eq!(
         store
-            .delete_after(owner, chat.id(), kept.id())
+            .delete_after(owner, chat.id(), kept.id(), &[])
             .await
             .unwrap(),
         0,
@@ -855,7 +855,7 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
     );
     assert_eq!(
         store
-            .delete_after(owner, chat.id(), second.id())
+            .delete_after(owner, chat.id(), second.id(), &[])
             .await
             .unwrap(),
         1
@@ -879,7 +879,7 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
         at(NOW + 1),
     );
     store
-        .replace_tail(owner, chat.id(), second.id(), &edited)
+        .replace_tail(owner, chat.id(), second.id(), &edited, &[])
         .await
         .unwrap();
     assert_eq!(
@@ -903,7 +903,7 @@ async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
     );
     assert!(
         store
-            .replace_tail(other, chat.id(), first.id(), &foreign)
+            .replace_tail(other, chat.id(), first.id(), &foreign, &[])
             .await
             .is_err(),
         "the chat belongs to someone else"

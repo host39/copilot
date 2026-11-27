@@ -88,7 +88,8 @@ impl FileService {
 
     /// Stores an upload after checking, in order: the owner belongs to the caller, the size
     /// limit, the type (extension plus magic bytes), the length of audio for a chat (at most
-    /// `AUDIO_CLIP_MAX_SECS`, and measurable), and the caller's storage quota. Records the SHA-256, the token estimate, and the page count of PDFs.
+    /// `AUDIO_CLIP_MAX_SECS`, and measurable), and the caller's storage quota. Records the
+    /// SHA-256, the token estimate (audio by how long it plays), and the page count of PDFs.
     pub async fn upload(
         &self,
         actor: &Actor,
@@ -110,18 +111,20 @@ impl FileService {
             .with_context("maxUploadMb", self.limits.max_upload_mb));
         }
         let media_type = MediaType::detect(name, &bytes)?;
-        let clip = matches!(owner, FileOwner::Chat(_)) && media_type.kind() == FileKind::Audio;
+        let audio = media_type.kind() == FileKind::Audio;
+        let clip = audio && matches!(owner, FileOwner::Chat(_));
         // Linear in the upload's size, which may be up to 1,000 MB: off the request's task.
         let content = bytes.clone();
-        let (checked, page_count, sha256) = offload(&*self.worker, move || {
-            let checked = if clip {
-                check_clip(media_type, &content)
+        let (checked, played_ms, page_count, sha256) = offload(&*self.worker, move || {
+            let played = if audio {
+                duration_ms(media_type, &content)
             } else {
-                Ok(())
+                None
             };
+            let checked = if clip { check_clip(played) } else { Ok(()) };
             let pages = (media_type.kind() == FileKind::Pdf).then(|| pdf_pages(&content));
             let sha256: [u8; 32] = Sha256::digest(&content).into();
-            (checked, pages, sha256)
+            (checked, played, pages, sha256)
         })
         .await;
         checked?;
@@ -135,7 +138,7 @@ impl FileService {
             media_type,
             size_bytes,
             sha256,
-            token_estimate: estimate(media_type, size_bytes, page_count),
+            token_estimate: estimate(media_type, size_bytes, page_count, played_ms),
             page_count,
         };
         let file = StoredFile::create(actor.user_id, owner, name, measured, self.clock.now())?;
@@ -293,9 +296,9 @@ impl FileService {
 /// Audio a chat sends to a model plays for at most `AUDIO_CLIP_MAX_SECS`, and a file whose
 /// length cannot be measured is refused rather than trusted. Project audio never reaches a
 /// model, so only the upload size limits it.
-fn check_clip(media: MediaType, bytes: &[u8]) -> DomainResult<()> {
+fn check_clip(played_ms: Option<u64>) -> DomainResult<()> {
     let limit = u64::from(AUDIO_CLIP_MAX_SECS) * 1_000;
-    match duration_ms(media, bytes) {
+    match played_ms {
         Some(played) if played <= limit => Ok(()),
         Some(_) => Err(DomainError::validation(format!(
             "Audio in a chat can be at most {} minutes long.",
@@ -591,6 +594,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(longest.media_type(), "audio/wav");
+        assert_eq!(
+            longest.token_estimate(),
+            9_600,
+            "five minutes at 32 tokens a second count toward the context window"
+        );
 
         let error = f
             .files

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use copilot_core::{
-    Chat, ChatRepository, FileId, FileOwner, FileRepository, Measured, MediaType, Project,
-    ProjectRepository, StoredFile, UserId,
+    Chat, ChatRepository, FileId, FileOwner, FileRepository, Measured, MediaType, Message,
+    MessageRepository, Part, Project, ProjectRepository, StoredFile, UserId,
 };
 use copilot_database::{DbPool, PgStore};
 
@@ -241,4 +241,90 @@ async fn uploads_at_once_never_pass_the_quota_together(pool: DbPool) {
             .await
             .unwrap()
     );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn tail_changes_delete_the_orphans_the_chat_still_owns(pool: DbPool) {
+    let store = store(pool).await;
+    let files: &dyn FileRepository = &store;
+    let owner = user(&store).await;
+    let chat = Chat::create(owner, at(0));
+    ChatRepository::insert(&store, &chat).await.unwrap();
+    let other_chat = Chat::create(owner, at(0));
+    ChatRepository::insert(&store, &other_chat).await.unwrap();
+    let research = project(&store, owner, "Research").await;
+    let to = FileOwner::Chat(chat.id());
+    let spoken = text_file(owner, to, "spoken.md", b"one", 1);
+    let draft = text_file(owner, to, "draft.md", b"two", 2);
+    let moved = text_file(
+        owner,
+        FileOwner::Project(research.id()),
+        "moved.md",
+        b"three",
+        3,
+    );
+    let elsewhere = text_file(
+        owner,
+        FileOwner::Chat(other_chat.id()),
+        "else.md",
+        b"four",
+        4,
+    );
+    for file in [&spoken, &draft, &moved, &elsewhere] {
+        assert!(
+            files
+                .create(file, Bytes::from_static(b"x"), u64::MAX)
+                .await
+                .unwrap()
+        );
+    }
+    let say = |text: &str, seconds| {
+        Message::user(
+            owner,
+            chat.id(),
+            vec![Part::Text {
+                text: text.to_owned(),
+            }],
+            at(seconds),
+        )
+    };
+    let first = say("one", 5);
+    store.append(owner, &first).await.unwrap();
+    store.append(owner, &say("two", 6)).await.unwrap();
+
+    let orphans = [spoken.id(), moved.id(), elsewhere.id()];
+    assert_eq!(
+        store
+            .delete_after(owner, chat.id(), first.id(), &orphans)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        files.get(owner, spoken.id()).await.unwrap(),
+        None,
+        "deleted"
+    );
+    assert_eq!(
+        files.content(owner, spoken.id()).await.unwrap(),
+        None,
+        "with its bytes"
+    );
+    for kept in [&draft, &moved, &elsewhere] {
+        assert!(
+            files.get(owner, kept.id()).await.unwrap().is_some(),
+            "{} stays: unnamed, moved, or another chat's",
+            kept.name()
+        );
+    }
+
+    let edited = say("one, edited", 7);
+    store
+        .replace_tail(owner, chat.id(), first.id(), &edited, &[draft.id()])
+        .await
+        .unwrap();
+    assert_eq!(files.get(owner, draft.id()).await.unwrap(), None);
+    assert_eq!(store.history(owner, chat.id()).await.unwrap(), vec![edited]);
+    assert_eq!(files.usage(owner).await.unwrap(), 9, "moved and elsewhere");
 }

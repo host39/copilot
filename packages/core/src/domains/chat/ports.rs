@@ -8,7 +8,7 @@ use crate::domains::chat::entities::{ApprovedTool, Chat};
 use crate::domains::chat::message::{CallDecision, Message};
 use crate::shared::constants::DEFAULT_PAGE_SIZE;
 use crate::shared::errors::DomainResult;
-use crate::shared::ids::{ChatId, MessageId, ProjectId, ScheduleId, UserId};
+use crate::shared::ids::{ChatId, FileId, MessageId, ProjectId, ScheduleId, UserId};
 
 #[async_trait]
 pub trait ChatRepository: Send + Sync {
@@ -47,17 +47,25 @@ pub trait MessageRepository: Send + Sync {
     async fn append(&self, user: UserId, message: &Message) -> DomainResult<()>;
     async fn update(&self, user: UserId, message: &Message) -> DomainResult<()>;
     /// Edit and resend, in one transaction: deletes `from` and every later message of the
-    /// chat, then appends `message`.
+    /// chat, and those of `orphans` the chat still owns (files only the deleted messages
+    /// named), then appends `message`.
     async fn replace_tail(
         &self,
         user: UserId,
         chat: ChatId,
         from: MessageId,
         message: &Message,
+        orphans: &[FileId],
     ) -> DomainResult<()>;
-    /// Deletes every message of the chat after `after`; returns how many.
-    async fn delete_after(&self, user: UserId, chat: ChatId, after: MessageId)
-    -> DomainResult<u64>;
+    /// Deletes every message of the chat after `after`, and those of `orphans` the chat still
+    /// owns, in one transaction; returns how many messages.
+    async fn delete_after(
+        &self,
+        user: UserId,
+        chat: ChatId,
+        after: MessageId,
+        orphans: &[FileId],
+    ) -> DomainResult<u64>;
     /// One guarded update, applied only while the message is `awaiting_approval`: each listed
     /// pending call becomes `approved` or `denied` and the message becomes `complete`
     /// (`Message::decided` is the reference). `false` when the message was not awaiting

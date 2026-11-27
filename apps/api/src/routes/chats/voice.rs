@@ -401,6 +401,22 @@ async fn spoken_replies_stream_audio_and_keep_a_wav_file(pool: DbPool) {
         &json!({ "role": "assistant", "content": "Hello there." }),
         "the transcript only, never the provider's audio id"
     );
+
+    // Editing the first question drops the spoken reply after it, file and all.
+    let question = history[0]["id"].as_str().expect("an id").to_owned();
+    script(&provider, answer("Hi.")).await;
+    let edit = json!({ "text": "Say hi", "editFrom": question });
+    let all = turn(&app, &token, &chat, "messages", Some(edit))
+        .await
+        .rest()
+        .await;
+    assert_eq!(all.last().map(|event| &event["type"]), Some(&json!("done")));
+    let (status, _, _) = bytes(&app, &format!("/api/files/{file}/content"), &token).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "no message names the spoken reply any more"
+    );
 }
 
 #[sqlx::test(migrations = false)]

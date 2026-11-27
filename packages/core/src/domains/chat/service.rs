@@ -8,7 +8,7 @@ mod prepare;
 use std::sync::Arc;
 
 use crate::domains::chat::entities::Chat;
-use crate::domains::chat::message::Message;
+use crate::domains::chat::message::{Message, Role};
 use crate::domains::chat::ports::{
     ChatQuery, ChatRepository, ChatSummary, MessageRepository, Page, SearchHit,
     TurnContextRepository,
@@ -24,7 +24,7 @@ use crate::ports::secret_cipher::SecretCipher;
 use crate::shared::actor::Actor;
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId};
+use crate::shared::ids::{ChatId, FileId, ModelId, ProjectId, ScheduleId};
 use crate::shared::net::PrivateNetwork;
 use crate::shared::reasoning::ReasoningLevel;
 
@@ -279,7 +279,8 @@ impl ChatService {
 
     /// Save as project, in one transaction: a project from the standalone chat (name = title,
     /// instructions, default model, reasoning, enabled tool servers, and built-in tools), the
-    /// chat's attachments moved into it as project files, the chat moved into it, and the chat's
+    /// chat's attachments (the files its user messages sent) moved into it as project files, the
+    /// chat moved into it, and the chat's
     /// instructions and tool overrides cleared so nothing is sent twice. Of two saves of the same
     /// chat at once, one creates the project and the other fails with `CHAT_IN_PROJECT`.
     pub async fn save_as_project(&self, actor: &Actor, id: ChatId) -> DomainResult<Project> {
@@ -304,7 +305,21 @@ impl ChatService {
             .with_reasoning(chat.reasoning())
             .with_builtin_tools(chat.builtin_tools().map(<[_]>::to_vec).unwrap_or_default())
             .with_tool_servers(servers);
-        if !self.stores.projects.insert_with_chat(&project, id).await? {
+        // Spoken replies, tool images, and unsent uploads stay with the chat.
+        let history = self.stores.messages.history(actor.user_id, id).await?;
+        let mut attachments: Vec<FileId> = history
+            .iter()
+            .filter(|message| message.role() == Role::User)
+            .flat_map(Message::files)
+            .collect();
+        attachments.sort_unstable_by_key(|id| id.uuid());
+        attachments.dedup();
+        if !self
+            .stores
+            .projects
+            .insert_with_chat(&project, id, &attachments)
+            .await?
+        {
             // Saved or moved by another request since it was read, or deleted (then `404`).
             self.get(actor, id).await?;
             return Err(in_project());
@@ -866,10 +881,22 @@ mod tests {
             )
             .await
             .unwrap();
-        f.chats
-            .prepare(&caller, chat.id(), send("Review the NDA"))
+        let draft = f
+            .files
+            .upload(
+                &caller,
+                FileOwner::Chat(chat.id()),
+                "draft.txt",
+                Bytes::from_static(b"Not sent"),
+            )
             .await
             .unwrap();
+        let attached = crate::domains::chat::TurnInput::Send {
+            text: "Review the NDA".to_owned(),
+            file_ids: vec![file.id()],
+            edit_from: None,
+        };
+        f.chats.prepare(&caller, chat.id(), attached).await.unwrap();
 
         let project = f.chats.save_as_project(&caller, chat.id()).await.unwrap();
         assert_eq!(project.name(), "Review the NDA");
@@ -891,6 +918,11 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id(), file.id(), "moved, not copied");
         assert!(files[0].included());
+        assert_eq!(
+            f.files.get(&caller, draft.id()).await.unwrap().owner(),
+            FileOwner::Chat(chat.id()),
+            "only what a user message sent moves; an unsent upload stays with the chat"
+        );
         assert_eq!(
             moved.tool_selection(Some(&project)),
             ToolSelection {
@@ -958,18 +990,29 @@ mod tests {
             ProjectRepository::delete(self.store.as_ref(), user, id).await
         }
 
-        async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
+        async fn insert_with_chat(
+            &self,
+            project: &Project,
+            chat: ChatId,
+            attachments: &[FileId],
+        ) -> DomainResult<bool> {
             let user = self.owner.user_id;
             match self.meanwhile {
                 Meanwhile::Saved => {
                     let first = Project::create(user, "First", project.created_at())?;
-                    assert!(self.store.insert_with_chat(&first, chat).await?);
+                    assert!(
+                        self.store
+                            .insert_with_chat(&first, chat, attachments)
+                            .await?
+                    );
                 }
                 Meanwhile::Deleted => {
                     assert!(ChatRepository::delete(self.store.as_ref(), user, chat).await?);
                 }
             }
-            self.store.insert_with_chat(project, chat).await
+            self.store
+                .insert_with_chat(project, chat, attachments)
+                .await
         }
     }
 

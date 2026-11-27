@@ -13,7 +13,7 @@ use crate::domains::chat::{
 use crate::domains::file::FileOwner;
 use crate::domains::schedule::{Schedule, ScheduleParts};
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, MessageId, ToolServerId, UserId};
+use crate::shared::ids::{ChatId, FileId, MessageId, ToolServerId, UserId};
 use crate::testing::schedule::parts as schedule_parts;
 use crate::testing::store::{MemoryStore, Tables, duplicate};
 
@@ -218,12 +218,14 @@ impl MessageRepository for MemoryStore {
         chat: ChatId,
         from: MessageId,
         message: &Message,
+        orphans: &[FileId],
     ) -> DomainResult<()> {
         let mut tables = self.tables();
         if let Some(seq) = tables.seq(user, chat, from) {
             tables
                 .messages
                 .retain(|stored_seq, stored| stored.chat_id() != chat || *stored_seq < seq);
+            tables.drop_orphans(user, chat, orphans);
         }
         tables.append_message(user, message)
     }
@@ -233,6 +235,7 @@ impl MessageRepository for MemoryStore {
         user: UserId,
         chat: ChatId,
         after: MessageId,
+        orphans: &[FileId],
     ) -> DomainResult<u64> {
         let now = self.now();
         let mut tables = self.tables();
@@ -243,6 +246,7 @@ impl MessageRepository for MemoryStore {
         tables
             .messages
             .retain(|stored_seq, stored| stored.chat_id() != chat || *stored_seq <= seq);
+        tables.drop_orphans(user, chat, orphans);
         let deleted = (before - tables.messages.len()) as u64;
         if deleted > 0 {
             tables.touch_chat(chat, now);
@@ -398,6 +402,13 @@ impl Tables {
     }
 
     /// A message write moves the chat's `updated_at`.
+    /// Deletes the files of `ids` that `chat` of `user` still owns.
+    fn drop_orphans(&mut self, user: UserId, chat: ChatId, ids: &[FileId]) {
+        self.files.retain(|id, (file, _)| {
+            !(ids.contains(id) && file.user_id() == user && file.owner() == FileOwner::Chat(chat))
+        });
+    }
+
     fn touch_chat(&mut self, id: ChatId, at: DateTime<Utc>) {
         if let Some(chat) = self.chats.get_mut(&id) {
             *chat = Chat::restore(ChatParts {

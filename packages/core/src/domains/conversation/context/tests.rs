@@ -163,7 +163,7 @@ impl Setup {
             media_type: media.as_str().to_owned(),
             size_bytes,
             sha256: [7; 32],
-            token_estimate: crate::domains::file::estimate(media, size_bytes, Some(1)),
+            token_estimate: crate::domains::file::estimate(media, size_bytes, Some(1), None),
             page_count: (media == MediaType::Pdf).then_some(1),
             included: true,
             created_at: now(),

@@ -1,5 +1,5 @@
 use copilot_core::{
-    BuiltinTool, Chat, ChatRepository, Project, ProjectId, ProjectParts, ProjectQuery,
+    BuiltinTool, Chat, ChatRepository, FileId, Project, ProjectId, ProjectParts, ProjectQuery,
     ProjectRepository, ReasoningLevel, ServerOverride, ToolServerId, UserId,
 };
 use copilot_database::{DbPool, PgStore};
@@ -370,12 +370,19 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
         }]);
     ChatRepository::insert(&store, &chat).await.unwrap();
     let attachment = file_in(&store, owner, None, Some(chat.id())).await;
+    let spoken = file_in(&store, owner, None, Some(chat.id())).await;
 
     let project = Project::create(owner, "Saved", at(7))
         .unwrap()
         .with_instructions("Be brief.")
         .with_tool_servers(vec![docs]);
-    assert!(store.insert_with_chat(&project, chat.id()).await.unwrap());
+    let attachments = [FileId::new(attachment)];
+    assert!(
+        store
+            .insert_with_chat(&project, chat.id(), &attachments)
+            .await
+            .unwrap()
+    );
 
     let read = ProjectRepository::get(&store, owner, project.id())
         .await
@@ -403,11 +410,27 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
     assert_eq!(project_id, Some(project.id().uuid()));
     assert_eq!(chat_id, None);
     assert!(included, "an attachment becomes an included project file");
+    let (project_id, chat_id): (Option<Uuid>, Option<Uuid>) =
+        sqlx::query_as("SELECT project_id, chat_id FROM files WHERE id = $1")
+            .bind(spoken)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        (project_id, chat_id),
+        (None, Some(chat.id().uuid())),
+        "a file that is not an attachment stays with the chat"
+    );
 
     let theirs = Chat::create(other, at(0));
     ChatRepository::insert(&store, &theirs).await.unwrap();
     let stolen = Project::create(owner, "Stolen", at(8)).unwrap();
-    assert!(!store.insert_with_chat(&stolen, theirs.id()).await.unwrap());
+    assert!(
+        !store
+            .insert_with_chat(&stolen, theirs.id(), &[])
+            .await
+            .unwrap()
+    );
     assert_eq!(
         ProjectRepository::get(&store, owner, stolen.id())
             .await
@@ -441,9 +464,10 @@ async fn two_saves_of_one_chat_at_once_create_one_project(pool: DbPool) {
         .execute(&mut *holder)
         .await
         .unwrap();
+    let attachments = [FileId::new(attachment)];
     let (saved_first, saved_second, ()) = tokio::join!(
-        store.insert_with_chat(&first, chat.id()),
-        store.insert_with_chat(&second, chat.id()),
+        store.insert_with_chat(&first, chat.id(), &attachments),
+        store.insert_with_chat(&second, chat.id(), &attachments),
         async {
             lock_waiters(&store, 2).await;
             holder.commit().await.unwrap();
@@ -471,7 +495,11 @@ async fn two_saves_of_one_chat_at_once_create_one_project(pool: DbPool) {
     assert_eq!(files, Some(winner.uuid()), "the files went with the chat");
     assert!(
         !store
-            .insert_with_chat(&Project::create(owner, "Third", at(3)).unwrap(), chat.id())
+            .insert_with_chat(
+                &Project::create(owner, "Third", at(3)).unwrap(),
+                chat.id(),
+                &[]
+            )
             .await
             .unwrap(),
         "a chat in a project is not saved again"

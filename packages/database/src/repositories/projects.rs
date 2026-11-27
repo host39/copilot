@@ -5,8 +5,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    BuiltinTool, ChatId, DomainError, DomainResult, ModelId, Project, ProjectId, ProjectParts,
-    ProjectQuery, ProjectRepository, ReasoningLevel, ToolServerId, UserId,
+    BuiltinTool, ChatId, DomainError, DomainResult, FileId, ModelId, Project, ProjectId,
+    ProjectParts, ProjectQuery, ProjectRepository, ReasoningLevel, ToolServerId, UserId,
 };
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -219,7 +219,12 @@ impl ProjectRepository for PgStore {
         Ok(deleted > 0)
     }
 
-    async fn insert_with_chat(&self, project: &Project, chat: ChatId) -> DomainResult<bool> {
+    async fn insert_with_chat(
+        &self,
+        project: &Project,
+        chat: ChatId,
+        attachments: &[FileId],
+    ) -> DomainResult<bool> {
         let key = "database.projects.save-chat.failed";
         let user = project.user_id().uuid();
         let mut tx = self.pool().begin().await.map_err(failed(key))?;
@@ -248,12 +253,15 @@ impl ProjectRepository for PgStore {
             .execute(&mut *tx)
             .await
             .map_err(failed(key))?;
+        let attachments: Vec<Uuid> = attachments.iter().map(|id| id.uuid()).collect();
         sqlx::query(
-            "UPDATE files SET project_id = $3, chat_id = NULL WHERE chat_id = $1 AND user_id = $2",
+            "UPDATE files SET project_id = $3, chat_id = NULL \
+             WHERE chat_id = $1 AND user_id = $2 AND id = ANY($4)",
         )
         .bind(chat.uuid())
         .bind(user)
         .bind(project.id().uuid())
+        .bind(&attachments)
         .execute(&mut *tx)
         .await
         .map_err(failed(key))?;

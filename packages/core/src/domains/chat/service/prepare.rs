@@ -306,10 +306,12 @@ impl ChatService {
             .await?;
 
         match edited {
-            Some((from, _)) => {
+            Some((from, position)) => {
+                let (kept, removed) = loaded.history.split_at(position);
+                let orphans = orphans(removed, kept.iter().chain([&message]));
                 self.stores
                     .messages
-                    .replace_tail(user, chat.id(), from, &message)
+                    .replace_tail(user, chat.id(), from, &message, &orphans)
                     .await?;
             }
             None => {
@@ -341,13 +343,19 @@ impl ChatService {
                 "There is no message to answer yet.",
             ));
         };
-        let planned = &loaded.history[..=last];
+        let (planned, removed) = loaded.history.split_at(last + 1);
         let staged = self
             .stage(actor, &chat, &loaded, RunMode::Interactive, planned, None)
             .await?;
+        let orphans = orphans(removed, planned.iter());
         self.stores
             .messages
-            .delete_after(actor.user_id, chat.id(), loaded.history[last].id())
+            .delete_after(
+                actor.user_id,
+                chat.id(),
+                loaded.history[last].id(),
+                &orphans,
+            )
             .await?;
         self.finish(actor, chat, loaded, staged, RunMode::Interactive)
             .await
@@ -407,9 +415,10 @@ impl ChatService {
                 snapshot,
             )
             .await?;
+        let orphans = orphans(&history[failed..], planned.iter());
         self.stores
             .messages
-            .delete_after(actor.user_id, chat.id(), history[failed - 1].id())
+            .delete_after(actor.user_id, chat.id(), history[failed - 1].id(), &orphans)
             .await?;
         self.finish(actor, chat, loaded, staged, RunMode::Interactive)
             .await
@@ -886,13 +895,28 @@ fn model_pause(model: &Model, provider: &Provider) -> Option<ScheduledTurn> {
     Some(ScheduledTurn::Paused { reason, message })
 }
 
+/// The files that only `removed` name (attachments, spoken replies, tool images): none of
+/// `kept` names them. Regenerate, Retry, and Edit delete them with the messages, so they no
+/// longer count toward the storage quota. Unsent uploads are named by no message and stay.
+fn orphans<'a>(removed: &[Message], kept: impl Iterator<Item = &'a Message>) -> Vec<FileId> {
+    let kept: HashSet<FileId> = kept.flat_map(Message::named_files).collect();
+    let mut seen = HashSet::new();
+    removed
+        .iter()
+        .flat_map(Message::named_files)
+        .filter(|id| !kept.contains(id) && seen.insert(*id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
     use chrono::Duration;
 
     use super::*;
-    use crate::domains::chat::message::{Approval, ToolCallPart, ToolResultPart, ToolStatus};
+    use crate::domains::chat::message::{
+        Approval, ResultContent, ToolCallPart, ToolResultPart, ToolStatus,
+    };
     use crate::domains::chat::ports::{ChatQuery, MessageRepository};
     use crate::domains::chat::service::NewChat;
     use crate::domains::chat::service::fixture::{
@@ -1352,6 +1376,53 @@ mod tests {
             "every call has a result before the next request"
         );
         assert_eq!(turn.history[3].text_content(), "Never mind");
+    }
+
+    #[test]
+    fn orphans_are_files_only_the_removed_messages_name() {
+        let (user, chat, now) = (actor().user_id, ChatId::generate(), chrono::Utc::now());
+        let file = |file_id| Part::File {
+            file_id,
+            name: "a.txt".to_owned(),
+            media_type: "text/plain".to_owned(),
+        };
+        let audio = |file_id| Part::Audio {
+            file_id,
+            format: "wav".to_owned(),
+            transcript: None,
+            duration_ms: Some(1_000),
+        };
+        let [kept, replaced, spoken, image] = [(); 4].map(|()| FileId::generate());
+        let earlier = Message::user(user, chat, vec![file(kept)], now);
+        let edited = Message::user(user, chat, vec![file(kept), file(replaced)], now);
+        let answer = Message::user(user, chat, vec![audio(spoken)], now);
+        let tools = Message::tool(
+            user,
+            chat,
+            vec![ToolResultPart {
+                call_id: crate::shared::ids::CallId::generate(),
+                status: ToolStatus::Ok,
+                is_error: false,
+                content: vec![
+                    ResultContent::Image { file_id: image },
+                    ResultContent::Image { file_id: image },
+                ],
+                truncated: false,
+            }],
+            now,
+        );
+        let removed = [edited, answer, tools];
+        assert_eq!(
+            orphans(&removed, [&earlier].into_iter()),
+            [replaced, spoken, image],
+            "each once, without the file an earlier message still names"
+        );
+        let resent = Message::user(user, chat, vec![file(replaced)], now);
+        assert_eq!(
+            orphans(&removed, [&earlier, &resent].into_iter()),
+            [spoken, image],
+            "an edit that keeps an attachment keeps its file"
+        );
     }
 
     #[tokio::test]
