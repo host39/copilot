@@ -533,7 +533,7 @@ pub async fn decide(
     params(("id" = Uuid, Path, description = "The chat's id"), StreamQuery),
     responses(
         (status = OK, description = "The running turn's events after `after` (from the start without it), then live ones, ending with `done`", content_type = "text/event-stream", body = ChatStreamEvent),
-        (status = NO_CONTENT, description = "No turn is running: read the messages"),
+        (status = NO_CONTENT, description = "No turn is running, or it is still being prepared (the caller's `GET /api/events` streams hear `run.started` when it starts): read the messages"),
         (status = BAD_REQUEST, description = "`after` is not a number", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse)
     )
