@@ -92,15 +92,27 @@ describe("android", () => {
     "src-tauri/gen/android/app/src/main/java/com/host39/copilot/MainActivity.kt"
   );
 
-  test("release APKs are signed with the debug key, so they install by sideloading", () => {
+  test("release APKs use the release keystore when CI provides one, else the debug key", () => {
     // The release block is the last build type, so it runs to the end of `buildTypes`.
-    const release = gradle.split('getByName("release")')[1]?.split("compileOptions")[0] ?? "";
-    expect(release).toContain('signingConfig = signingConfigs.getByName("debug")');
+    const release = gradle.split('getByName("release") {')[1]?.split("compileOptions")[0] ?? "";
+    expect(release).toContain(
+      'signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")'
+    );
+    // The keystore and its passwords come from the environment, never from the repository.
+    const signing = gradle.split("signingConfigs {")[1]?.split("buildTypes")[0] ?? "";
+    for (const variable of [
+      "ANDROID_KEYSTORE_PASSWORD",
+      "ANDROID_KEY_ALIAS",
+      "ANDROID_KEY_PASSWORD",
+    ]) {
+      expect(signing).toContain(`System.getenv("${variable}")`);
+    }
+    expect(gradle).not.toMatch(/storePassword = "/);
   });
 
   test("release APKs keep cleartext off in the WebView; API calls go through the plugin", () => {
     expect(gradle).toContain('manifestPlaceholders["usesCleartextTraffic"] = "false"');
-    const release = gradle.split('getByName("release")')[1]?.split("compileOptions")[0] ?? "";
+    const release = gradle.split('getByName("release") {')[1]?.split("compileOptions")[0] ?? "";
     expect(release).not.toContain("usesCleartextTraffic");
   });
 
@@ -183,11 +195,23 @@ describe("capability", () => {
       typeof entry === "string" ? entry : entry.identifier
     );
     expect(identifiers.sort()).toEqual([
+      "allow-save-file",
       "core:app:allow-exit",
       "core:app:default",
       "http:default",
       "opener:allow-open-url",
     ]);
+  });
+
+  test("gives the web view no file system or dialog commands of its own", () => {
+    // Downloads go through the app's `save_file` command, which always asks with the save dialog.
+    const identifiers = capability.permissions.map((entry) =>
+      typeof entry === "string" ? entry : entry.identifier
+    );
+    expect(identifiers.filter((id) => /^(fs|dialog):/.test(id))).toEqual([]);
+    expect(read("src-tauri/build.rs")).toContain(
+      'tauri_build::AppManifest::new().commands(&["save_file"])'
+    );
   });
 
   test("lets the HTTP plugin reach any server the user connects to, on any port", () => {
@@ -199,13 +223,39 @@ describe("capability", () => {
     expect(scope("opener:allow-open-url")).toEqual(["http://*", "https://*", "mailto:*"]);
   });
 
-  test("ships only the HTTP and opener plugins", () => {
+  test("ships only the HTTP, opener, dialog, and file system plugins, and the navigation guard", () => {
     const manifest = read("src-tauri/Cargo.toml");
     const dependencies = manifest.split("[dependencies]")[1]?.split(/^\[/m)[0] ?? "";
     const crates = [...dependencies.matchAll(/^([a-z0-9-]+)\s*=/gm)].map((match) => match[1]);
-    expect(crates).toEqual(["tauri", "tauri-plugin-http", "tauri-plugin-opener"]);
+    expect(crates).toEqual([
+      "percent-encoding",
+      "tauri",
+      "tauri-plugin-dialog",
+      "tauri-plugin-fs",
+      "tauri-plugin-http",
+      "tauri-plugin-opener",
+    ]);
     const plugins = [...read("src-tauri/src/lib.rs").matchAll(/\.plugin\((\w+)::init\(\)\)/g)];
-    expect(plugins.map((match) => match[1])).toEqual(["tauri_plugin_http", "tauri_plugin_opener"]);
+    expect(plugins.map((match) => match[1])).toEqual([
+      "tauri_plugin_http",
+      "tauri_plugin_opener",
+      "tauri_plugin_dialog",
+      "tauri_plugin_fs",
+      "navigation",
+    ]);
+  });
+});
+
+describe("navigation", () => {
+  const navigation = read("src-tauri/src/navigation.rs");
+
+  test("the main web view stays on the bundle; other web links open in the system browser", () => {
+    // The rules themselves have Rust unit tests (`navigation.rs`).
+    expect(navigation).toContain('"tauri" => url.host_str() == Some("localhost")');
+    expect(navigation).toContain('"http" => url.host_str() == Some("tauri.localhost")');
+    expect(navigation).toContain("webview.opener().open_url(url.as_str(), None::<&str>)");
+    // The dev server is allowed only under `tauri dev`, never in a built app.
+    expect(navigation).toContain("let dev = if tauri::is_dev() {");
   });
 });
 

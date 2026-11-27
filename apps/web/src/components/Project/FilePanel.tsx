@@ -232,8 +232,7 @@ function FileRow({
     onError: (failure) => setError(describeError(failure).message),
   });
   const download = useMutation({
-    mutationFn: () => fetchFileContent(file.id),
-    onSuccess: (blob) => saveBlob(blob, file.name),
+    mutationFn: async () => saveBlob(await fetchFileContent(file.id), file.name),
     onError: (failure) => setError(describeError(failure).message),
   });
   const included = include.isPending ? (include.variables ?? file.included) : file.included;

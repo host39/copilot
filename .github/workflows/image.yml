@@ -14,6 +14,7 @@ on:
       - Cargo.lock
       - pnpm-lock.yaml
       - .github/workflows/image.yml
+      - scripts/footprint.sh
   workflow_dispatch:
 
 concurrency:
@@ -42,6 +43,9 @@ jobs:
           echo "DB_PASSWORD=$(openssl rand -hex 24)" >>deploy/.env
           echo "DB_SERVER_PASSWORD=$(openssl rand -hex 24)" >>deploy/.env
           docker compose -f deploy/compose.yml up -d --build
+
+      - name: Image footprint
+        run: bash scripts/footprint.sh image copilot:local
 
       - name: Wait for the server
         run: |

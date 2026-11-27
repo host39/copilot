@@ -7,8 +7,7 @@ import { LuPaperclip } from "react-icons/lu";
 /** A file in a message: its name, which downloads it (bytes come with the token). */
 export function FileChip({ fileId, name }: { fileId: string; name: string }) {
   const download = useMutation({
-    mutationFn: () => fetchFileContent(fileId),
-    onSuccess: (blob) => saveBlob(blob, name),
+    mutationFn: async () => saveBlob(await fetchFileContent(fileId), name),
   });
   return (
     <span className="inline-flex flex-col">

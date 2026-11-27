@@ -11,6 +11,7 @@ type Step = {
   uses?: string;
   run?: string;
   with?: Record<string, unknown>;
+  env?: Record<string, string>;
 };
 type Job = { "runs-on": string; steps: Step[] };
 type Workflow = {
@@ -157,10 +158,38 @@ describe("native-android", () => {
     expect(recipe("android-build")).not.toContain("--debug");
   });
 
-  test("checks that the APK is debug-signed, arm64-only, and named com.host39.copilot", () => {
+  test("tag builds sign with the release keystore from the secrets, and fail without it", () => {
+    const keystore = android.steps.find((step) => step.name === "Release keystore");
+    expect(keystore?.if).toBe("startsWith(github.ref, 'refs/tags/')");
+    expect(keystore?.env).toMatchObject({
+      KEYSTORE_BASE64: `\${{ secrets.ANDROID_KEYSTORE_BASE64 }}`,
+    });
+    expect(keystore?.run).toContain("exit 1");
+    expect(keystore?.run).toContain('echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks"');
+    const build = android.steps.find((step) => step.name === "Build the arm64 APK");
+    for (const secret of [
+      "ANDROID_KEYSTORE_PASSWORD",
+      "ANDROID_KEY_ALIAS",
+      "ANDROID_KEY_PASSWORD",
+    ]) {
+      // Only tag builds see the passwords; every other build gets an empty value.
+      expect(build?.env?.[secret]).toBe(
+        `\${{ startsWith(github.ref, 'refs/tags/') && secrets.${secret} || '' }}`
+      );
+    }
+    const gradle = readFileSync("src-tauri/gen/android/app/build.gradle.kts", "utf8");
+    expect(gradle).toContain('System.getenv("ANDROID_KEYSTORE_PATH")');
+    expect(gradle).toContain(
+      'signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")'
+    );
+  });
+
+  test("checks the signature (release on tags, debug otherwise), arm64 only, and the package", () => {
     const commands = scripts(android);
     expect(commands).toContain('apksigner" verify --print-certs');
     expect(commands).toContain("grep -q 'CN=Android Debug'");
+    expect(commands).toContain('echo "::error::The tag build is signed with a debug key"');
+    expect(commands).toContain("Signer certificate SHA-256");
     expect(commands).toContain(
       'test "$(cut -d/ -f2 "$RUNNER_TEMP/libs.txt" | sort -u)" = arm64-v8a'
     );

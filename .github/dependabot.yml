@@ -21,3 +21,15 @@ updates:
     directory: /
     schedule:
       interval: monthly
+
+  # Base images are pinned by digest (Dockerfile, deploy/compose.yml); these propose new digests
+  # for the same tags in reviewed pull requests.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /deploy
+    schedule:
+      interval: weekly
