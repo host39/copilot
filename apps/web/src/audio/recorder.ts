@@ -40,14 +40,27 @@ export function unsupported(support: MicSupport): string | null {
   return null;
 }
 
+/** Where the page runs: a browser, or the native shell on Android or the desktop. */
+export type MicHost = "browser" | "android" | "desktop";
+
+/** Where a blocked microphone is allowed again. */
+const UNBLOCK: Record<MicHost, string> = {
+  browser: "Allow the microphone for this site in the browser's settings, then try again.",
+  // After "Don't allow" (twice on recent Android), the app may not ask again: only the settings do.
+  android:
+    "Allow the microphone for Copilot in Android's settings (Apps, Copilot, Permissions), then try again.",
+  // The Linux shell grants the microphone itself, so only the system can block it.
+  desktop: "Check that the system allows apps to use the microphone, then try again.",
+};
+
 /** What to tell the user when the microphone could not start (`getUserMedia` and its errors). */
-export function micProblem(error: unknown): string {
+export function micProblem(error: unknown, host: MicHost = "browser"): string {
   const name =
     typeof error === "object" && error !== null && "name" in error ? String(error.name) : "";
   switch (name) {
     case "NotAllowedError":
     case "SecurityError":
-      return "Microphone access is blocked. Allow the microphone for this site in the browser's settings, then try again.";
+      return `Microphone access is blocked. ${UNBLOCK[host]}`;
     case "NotFoundError":
     case "OverconstrainedError":
       return "No microphone was found. Connect one and try again.";

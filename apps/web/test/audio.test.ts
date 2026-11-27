@@ -210,6 +210,22 @@ describe("recorder messages", () => {
     expect(micProblem("odd")).toBe("Recording could not start.");
   });
 
+  test("a blocked microphone points to the settings that unblock it on each host", () => {
+    const blocked = Object.assign(new Error("x"), { name: "NotAllowedError" });
+    expect(micProblem(blocked, "browser")).toBe(
+      "Microphone access is blocked. Allow the microphone for this site in the browser's settings, then try again."
+    );
+    expect(micProblem(blocked, "android")).toBe(
+      "Microphone access is blocked. Allow the microphone for Copilot in Android's settings (Apps, Copilot, Permissions), then try again."
+    );
+    expect(micProblem(blocked, "desktop")).toBe(
+      "Microphone access is blocked. Check that the system allows apps to use the microphone, then try again."
+    );
+    // Only the advice on a blocked microphone depends on the host.
+    const missing = Object.assign(new Error("x"), { name: "NotFoundError" });
+    expect(micProblem(missing, "android")).toBe(micProblem(missing, "browser"));
+  });
+
   test("a page without a secure connection, a microphone API, or AudioWorklet cannot record", () => {
     const all = { secure: true, mediaDevices: true, worklet: true };
     expect(unsupported(all)).toBeNull();

@@ -4,6 +4,7 @@
 
 import {
   type Ending,
+  type MicHost,
   micProblem,
   micSupport,
   type Recording,
@@ -11,6 +12,7 @@ import {
   unsupported,
 } from "@web/audio/recorder";
 import { clipName } from "@web/audio/wav";
+import { isAndroid, isNative } from "@web/config";
 import { log } from "@web/logging";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
@@ -82,6 +84,12 @@ export function clipOutcome(
   return { keep: true, note: null };
 }
 
+/** Where this page runs, for the advice on a blocked microphone. */
+export function micHost(): MicHost {
+  if (isAndroid()) return "android";
+  return isNative() ? "desktop" : "browser";
+}
+
 /**
  * The recorder: `start` asks for the microphone, `stop` hands the clip to `onClip` as a WAV file,
  * `cancel` drops it. Leaving the page drops a recording in progress and releases the microphone.
@@ -143,7 +151,7 @@ export function useRecorder(onClip: (file: File) => void) {
     } catch (error) {
       if (attempt.current !== mine) return;
       dispatch({ type: "reset" });
-      setNote({ text: micProblem(error), problem: true });
+      setNote({ text: micProblem(error, micHost()), problem: true });
       log("warn", "web.voice.record.failed", {
         error: error instanceof Error ? error.name : String(error),
       });

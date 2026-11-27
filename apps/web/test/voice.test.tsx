@@ -10,7 +10,7 @@ import { MessageList } from "@web/components/Chat/MessageList";
 import { VOICE_MESSAGE } from "@web/components/Chat/messages";
 import { draftBody } from "@web/components/Chat/StartChat";
 import { AudioPart, RecordingBar, recordingTime, SpeakToggle } from "@web/components/Chat/Voice";
-import { clipOutcome, MIN_CLIP_MS, type MicState, mic } from "@web/hooks/useRecorder";
+import { clipOutcome, MIN_CLIP_MS, type MicState, mic, micHost } from "@web/hooks/useRecorder";
 import { messageFiles, speaksReplies } from "@web/routes/chat/page";
 import type { ViewMessage } from "@web/routes/chat/stream";
 import { audioFormat, draftMessage, speaks } from "@web/routes/chat/turn";
@@ -287,5 +287,24 @@ describe("Speak replies", () => {
     // A run attached to on opening the chat stays quiet.
     expect(speaks(delta, false, 0)).toBe(false);
     expect(speaks({ type: "done", seq: 5 }, true, 0)).toBe(false);
+  });
+});
+
+describe("microphone host", () => {
+  test("is the browser on the web, Android in the Android app, and the desktop in the Linux app", () => {
+    const real = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const agent = (userAgent: string) =>
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+    try {
+      agent("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/142.0");
+      expect(micHost()).toBe("browser");
+      Object.defineProperty(globalThis, "isTauri", { value: true, configurable: true });
+      expect(micHost()).toBe("android");
+      agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)");
+      expect(micHost()).toBe("desktop");
+    } finally {
+      Reflect.deleteProperty(globalThis, "isTauri");
+      if (real) Object.defineProperty(globalThis, "navigator", real);
+    }
   });
 });
