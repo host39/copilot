@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other track ch
 
 ## Status
 
-Part 1 done (P2.D.1 to P2.D.5): Settings and the first-run setup. Part 2 (projects and files, sidebar and chat list, search, the non-streaming chat view) is open.
+Part 1 done (P2.D.1 to P2.D.5): Settings and the first-run setup. Part 2 (projects and files, sidebar and chat list, search, the non-streaming chat view) is open. Last green CI: `b917908` (Code quality, run 45918865624), which holds every part 1 commit.
 
 ## Sub-Steps
 
