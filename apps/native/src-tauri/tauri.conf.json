@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Copilot",
+  "version": "../package.json",
+  "identifier": "com.host39.copilot",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @copilot/web dev",
+    "devUrl": "http://localhost:4000",
+    "beforeBuildCommand": "pnpm --filter @copilot/web build",
+    "frontendDist": "../../web/dist",
+    "removeUnusedCommands": true
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Copilot",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 360,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "A self-hosted chat client for any model provider",
+    "longDescription": "Copilot for the desktop and Android: sign in to your own Copilot server and chat with the models it connects to.",
+    "license": "PolyForm-Noncommercial-1.0.0",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
