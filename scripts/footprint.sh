@@ -11,11 +11,12 @@
 # image in image.yml.
 set -euo pipefail
 
-# Budgets in bytes.
+# Budgets in bytes. The image is measured as `docker image inspect` reports it on the runner
+# (44.5 MB at P6.1); the first load was 152.8 kB gzip.
 SERVER_MAX=$((40 * 1024 * 1024))
 MIGRATE_MAX=$((30 * 1024 * 1024))
 WEB_FIRST_LOAD_MAX=$((170 * 1000))
-IMAGE_MAX=$((200 * 1000 * 1000))
+IMAGE_MAX=$((55 * 1000 * 1000))
 
 rows=()
 failed=0

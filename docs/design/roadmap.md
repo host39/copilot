@@ -142,7 +142,7 @@ When generated contract files conflict, rerun `make contracts`; never merge them
 
 - [ ] P6.1 Multi-lens review (correctness, security, layering rules, UX, footprint) and fixes. Security also reviews P1.6, P1.7, P2.A, P2.C, and Track R (L2 to L4) when each finishes.
 - [ ] P6.2 Docs: README, `docs/env.md`, self-hosting with compose and a reverse proxy, ADR updates.
-- [ ] P6.3 CI green on GitHub; footprint measured against the P1.1 baseline.
+- [ ] P6.3 CI green on GitHub; footprint measured against the P1.1 baseline. Measured by the final review (P6.1), against P1.1 (`99130cc`, same counting method): unique crates (`cargo tree --workspace -e normal`) 208 to 237 (with the dev-only fake-llm), the server's graph (`-p copilot-api`) 170 to 229, `Cargo.lock` 295 to 344 packages; the web bundle 409.2 kB (131.9 kB gzip) to 1042.6 kB (330.8 kB gzip), of which the first load (the JS and CSS `index.html` loads) is 152.8 kB gzip; the server binary grew 3.66 times from 8.0 MiB; image 178.6 MB as the reviewer measured it (44.5 MB as `docker image inspect` reports it on the CI runner, the figure `scripts/footprint.sh` checks), idle RSS 21.3 MB (5 threads, 2 idle pool connections), cold start 62 to 75 ms to the first `/health` 200; no ML crate or package, `ring` the only native C code, no `aws-lc-rs`. `scripts/footprint.sh` (P6.1 client) checks the release binaries, the first load, and the image in CI against budgets above these sizes; P6.3 tightens them after the footprint fixes.
 
 ## Notes for the Developer
 

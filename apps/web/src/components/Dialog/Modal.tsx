@@ -110,10 +110,12 @@ export function Modal({
       aria-labelledby={titleId}
       onCancel={(event) => {
         if (event.target !== event.currentTarget) return;
-        if (closeRequest(blocked, dirty) !== "close") event.preventDefault();
+        const next = closeRequest(blocked, dirty);
+        // A plain close goes on: the browser closes the dialog and `onClose` below tells the page.
+        if (next === "close") return;
+        event.preventDefault();
         // Escape again answers the question with Keep editing.
-        if (asking) setAsking(false);
-        else request();
+        if (next === "ask") setAsking(!asking);
       }}
       onClose={(event) => {
         if (event.target !== event.currentTarget) return;
