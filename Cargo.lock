@@ -467,6 +467,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "copilot-core",
+ "copilot-logger",
  "copilot-security",
  "futures-util",
  "reqwest",
@@ -474,6 +475,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -331,6 +331,21 @@ impl ServerHandler for TestServer {
                 ])
             }
             "fail" => CallToolResult::error(vec![ContentBlock::text("the disk is full")]),
+            // Only listed when a test adds it: sends its `data` argument as a log notification
+            // during the call, as untrusted server text the client receives. (MCP deprecates
+            // logging, but servers still send it.)
+            "notify" => {
+                let data = argument(&request, "data").cloned().unwrap_or(Value::Null);
+                #[allow(deprecated)]
+                let notification = rmcp::model::LoggingMessageNotificationParam::new(
+                    rmcp::model::LoggingLevel::Info,
+                    data,
+                );
+                #[allow(deprecated)]
+                let sent = context.peer.notify_logging_message(notification).await;
+                sent.map_err(|_| ErrorData::internal_error("notification failed", None))?;
+                CallToolResult::success(vec![ContentBlock::text("notified")])
+            }
             other => CallToolResult::success(vec![ContentBlock::text(format!("{other} ran"))]),
         };
         Ok(result.into())

@@ -972,7 +972,8 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 1. Provider and MCP credentials go only in headers (Gemini uses `x-goog-api-key` or bearer, never `?key=`).
 2. Outbound errors are logged after `reqwest::Error::without_url()`.
 3. Authorization headers, secret values, prompts, tool arguments, and results are never logged at `info`; logs carry ids, tool names, durations, statuses, and byte counts. The request logger writes a query string as its parameter names only (`GET /api/search?q=...` logs `q`), at every level.
-4. The readonly role sees only the tables and columns in [Readonly Role](#readonly-role).
+4. Library events that carry untrusted text are dropped at every level: `copilot-logger` silences the `rmcp` target (it logs a failed connection's URL and peer address, every server notification with its contents, and the server's instructions); copilot-mcp's `mcp.*` events say what happened with the server id.
+5. The readonly role sees only the tables and columns in [Readonly Role](#readonly-role).
 
 ### Limits
 

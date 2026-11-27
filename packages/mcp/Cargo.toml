@@ -28,6 +28,9 @@ axum = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 # The tests connect through the real hardened clients, as the composition root injects them.
 copilot-security = { workspace = true }
+# `tests/logs.rs` checks what reaches the log through the filter the logger installs.
+copilot-logger = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
 
 [lints]
 workspace = true
