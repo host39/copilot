@@ -25,6 +25,20 @@ const RUSTAUTH = [
 
 const ADAPTERS = ["copilot-mcp", "copilot-providers", "copilot-security"];
 
+/** Every crate that is part of the product (the image builds from these). */
+const PRODUCT = [
+  "copilot-api",
+  "copilot-contracts",
+  "copilot-core",
+  "copilot-database",
+  "copilot-logger",
+  "copilot-middleware",
+  ...ADAPTERS,
+];
+
+/** Dev-only binaries under `tools/` (never in the image). */
+const TOOLS = ["fake-llm"];
+
 /** Outbound adapters implement core ports only: no HTTP server, database, or identity crates. */
 function adapterRule(crate) {
   return {
@@ -137,6 +151,21 @@ export default {
         "sqlx",
       ],
     },
+    {
+      name: "fake-llm-standalone",
+      severity: "error",
+      comment:
+        "tools/fake-llm is a dev-only fake of the providers and an MCP server: axum, tokio, serde, rmcp and the like only, never a Copilot crate, rustauth, or sqlx",
+      from: "fake-llm",
+      to: [...PRODUCT, ...RUSTAUTH, "sqlx"],
+    },
+    ...PRODUCT.map((crate) => ({
+      name: `${crate.replace("copilot-", "")}-no-dev-tools`,
+      severity: "error",
+      comment: `${crate} must not depend on the dev-only tools/ crates, so they stay out of the release build and the image`,
+      from: crate,
+      to: TOOLS,
+    })),
   ],
   limited: [
     {

@@ -60,6 +60,7 @@ make dev-web        # web only on :4000
 | `make dev` | Start Postgres, then run API + web in parallel |
 | `make dev-api` | Start Postgres, then run the API only |
 | `make dev-web` | Run the web dev server only |
+| `make fake-llm` | Run the fake model and MCP server on `:4010` (see [Development](#development)) |
 | `make migrate` | Apply migrations + readonly grants (and the server role's, with `DB_SERVER_PASSWORD`) |
 | `make seed` | Apply local SQL seed files |
 | `make migrations` | Scaffold a migration pair (`name=create_widgets`) |
@@ -78,6 +79,26 @@ make dev-web        # web only on :4000
 | `make clean` | Wipe build output, dependencies, and the database volume |
 
 After `make update` or `make update-latest`, run `make check` to catch breaking changes.
+
+---
+
+## Development
+
+### Fake Model Server
+
+`make fake-llm` runs `tools/fake-llm`, a scriptable fake of both provider formats plus a small MCP server, on `http://127.0.0.1:4010` with the key `fake-key`. It lets you try every part of a chat without a real key: add an OpenAI-compatible connection (preset Custom, base URL `http://127.0.0.1:4010/v1`) or an Anthropic one (preset Custom, base URL `http://127.0.0.1:4010`), and a tool server at `http://127.0.0.1:4010/mcp` (tools `echo` and `add`). Words in your message pick the answer:
+
+| Message | Answer |
+| --- | --- |
+| `hello` (anything else) | `You said: hello`, streamed in chunks with usage |
+| `failed 403`, `failed 429`, `failed 500` | That HTTP status with the provider's error body (`429` with `Retry-After`) |
+| `midstream error` | Some text, then a broken stream |
+| `slow`, `long`, `think` | Slow chunks, a long Markdown reply, reasoning first |
+| `tool echo {"text": "hi"}` | A call to the tool server's `echo` (approve it to get `Tool said: hi`) |
+| `refuse` | A refusal |
+| `audio` (model `fake-audio`, Speak replies on) | A short tone as streamed audio with a transcript |
+
+The loopback address needs a connection that may reach private addresses: with the default `ALLOW_PRIVATE_NETWORK=admins`, use the administrator account. Every keyword, model, setting, and check is in [tools/fake-llm/README.md](./tools/fake-llm/README.md).
 
 ---
 
@@ -116,6 +137,7 @@ Pass `--skip-git-init` to keep your own git setup.
 | `packages/mcp` | `copilot-mcp` | MCP client over Streamable HTTP (rmcp) |
 | `packages/security` | `copilot-security` | Secret sealing and the hardened outbound HTTP client |
 | `packages/contracts` | `copilot-contracts` + `@copilot/contracts` | Shared DTOs: OpenAPI schemas, TypeScript bindings, Zod schemas |
+| `tools/fake-llm` | `fake-llm` | Dev only: a scriptable fake model server (OpenAI-compatible and Anthropic) with a small MCP server |
 
 ---
 

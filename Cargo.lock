@@ -788,6 +788,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-llm"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "http-body-util",
+ "rmcp",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
