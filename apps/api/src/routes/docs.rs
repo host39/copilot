@@ -16,8 +16,7 @@ use crate::config::AppState;
 #[openapi(
     info(
         title = "Copilot API",
-        version = "0.0.0",
-        description = "HTTP API built from the Copilot starter."
+        description = "The API of Copilot, a self-hosted chat app: providers, chats, projects, files, tools, and schedules."
     ),
     tags(
         (name = "health", description = "Liveness and readiness checks"),
@@ -116,6 +115,11 @@ mod tests {
     async fn serves_the_openapi_document() {
         let doc = document().await;
         assert_eq!(doc["info"]["title"], "Copilot API");
+        assert_eq!(
+            doc["info"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "the release version from the workspace"
+        );
         assert_eq!(
             doc["info"]["license"]["name"],
             "PolyForm-Noncommercial-1.0.0"

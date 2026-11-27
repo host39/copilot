@@ -197,6 +197,7 @@ Accounts, sessions, passwords, roles, and user administration come from [lib-rus
 | Topic | Where |
 | --- | --- |
 | Self-hosting: compose, secrets, proxy, upgrades, backups, logs | [docs/self-hosting.md](./docs/self-hosting.md) |
+| Release notes and upgrade notes | [CHANGELOG.md](./CHANGELOG.md) |
 | Environment variables | [docs/env.md](./docs/env.md) |
 | Footprint: sizes, crates, memory | [docs/footprint.md](./docs/footprint.md) |
 | Product and architecture design | [docs/design/copilot.md](./docs/design/copilot.md), build plan in [docs/design/roadmap.md](./docs/design/roadmap.md) |

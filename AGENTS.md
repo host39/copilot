@@ -66,6 +66,7 @@ Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency)
 - Log with `tracing` macros and dotted keys; no `println!` / `eprintln!` / `dbg!` (Clippy denies them) and no `console.*` outside `apps/web/src/logging.ts` (Biome denies it).
 - TypeScript uses alias imports only (no `./` or `../`); Rust uses `crate::` paths (no `super::` outside test modules).
 - Write schema changes as new migrations (`make migrations name=<name>`) and apply them with `make migrate`. Do not edit a migration after it has been applied to a shared or deployed database: sqlx checksums applied migrations and refuses to run when one changes.
+- Record every change an operator or user notices under "Unreleased" in `CHANGELOG.md`, with upgrade notes for anything an operator must do (a migration, a new or changed environment variable, a changed default).
 - Dev uses `apps/api/.env.local` (API port **3000**); the web dev server runs on **4000**.
 
 ## Where to Look

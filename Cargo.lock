@@ -363,7 +363,7 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "copilot-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-contracts"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-database"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-logger"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "copilot-core",
  "thiserror",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-middleware"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "copilot-contracts",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-providers"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "copilot-security"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "fake-llm"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
