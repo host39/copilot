@@ -52,6 +52,9 @@ jobs:
       - name: Build web
         run: pnpm --filter @copilot/web build
 
+      - name: Web footprint
+        run: bash scripts/footprint.sh web apps/web/dist
+
   # Everything that needs Rust or Postgres.
   rust:
     name: Rust and Postgres
@@ -61,7 +64,7 @@ jobs:
       CARGO_TERM_COLOR: always
     services:
       postgres:
-        image: postgres:18.1
+        image: postgres:18.1@sha256:1090bc3a8ccfb0b55f78a494d76f8d603434f7e4553543d6e807bc7bd6bbd17f
         env:
           POSTGRES_DB: copilot
           POSTGRES_USER: postgres
@@ -137,64 +140,24 @@ jobs:
       - name: Build API (release)
         run: cargo build --release --locked -p copilot-api -p copilot-database
 
+      - name: Binary footprint
+        run: bash scripts/footprint.sh binaries target/release
+
       # A build of its own, so fake-llm's rmcp server features never reach the API binaries.
       - name: Build fake-llm (release)
         run: cargo build --release --locked -p fake-llm
 
-      - name: Upload binaries for the smoke test
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: smoke-binaries
-          path: |
-            target/release/server
-            target/release/migrate
-            target/release/fake-llm
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Run Bruno smoke tests
-        run: make test-bruno
-
-  # The API against tools/fake-llm over HTTP (scripts/smoke.sh): register, OpenAI-compatible and
-  # Anthropic connections, streamed replies, a provider error, and an approved MCP tool call. It
-  # runs the rust job's release binaries, so it needs no Rust toolchain.
-  smoke:
-    name: Smoke test
-    needs: rust
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:18.1
-        env:
-          POSTGRES_DB: copilot
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d copilot"
-          --health-interval 2s
-          --health-retries 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Download binaries
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: smoke-binaries
-          path: bin
-
+      # The API against tools/fake-llm over HTTP (scripts/smoke.sh): register, OpenAI-compatible
+      # and Anthropic connections, streamed replies, a provider error, and an approved MCP tool
+      # call, on the release binaries just built and a throwaway database on the Postgres service.
+      # It runs here rather than in a job of its own, so the binaries of a pull request (a fork's
+      # included) never become an artifact in this repository's run list.
       # curl and jq come with the runner image; psql creates and drops the throwaway database.
-      - name: Check tools
+      - name: Run the smoke test
         run: |
           command -v psql || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
           command -v jq curl
+          SMOKE_BIN_DIR=target/release bash scripts/smoke.sh
 
-      - name: Run the smoke test
-        run: |
-          chmod +x bin/server bin/migrate bin/fake-llm
-          SMOKE_BIN_DIR=bin bash scripts/smoke.sh
+      - name: Run Bruno smoke tests
+        run: make test-bruno

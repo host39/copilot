@@ -162,7 +162,7 @@ describe("native-android", () => {
     const keystore = android.steps.find((step) => step.name === "Release keystore");
     expect(keystore?.if).toBe("startsWith(github.ref, 'refs/tags/')");
     expect(keystore?.env).toMatchObject({
-      KEYSTORE_BASE64: "${{ secrets.ANDROID_KEYSTORE_BASE64 }}",
+      KEYSTORE_BASE64: `\${{ secrets.ANDROID_KEYSTORE_BASE64 }}`,
     });
     expect(keystore?.run).toContain("exit 1");
     expect(keystore?.run).toContain('echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks"');
