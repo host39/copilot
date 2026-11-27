@@ -125,7 +125,7 @@ When generated contract files conflict, rerun `make contracts`; never merge them
 ## Phase 4: Voice
 
 - [ ] P4.1 Audio parts: `input_audio` for OpenAI-compatible models (and Gemini if the spike confirmed it); audio out (`audio.delta`, transcript as text, WAV saved as a chat file, Speak replies toggle). Tests: wiremock fixtures for audio deltas and transcripts.
-- [ ] P4.2 Web push to talk (AudioWorklet, 16 kHz mono WAV, 5-minute cap) and playback of streamed and saved audio.
+- [x] P4.2 Web push to talk (AudioWorklet, 16 kHz mono WAV, 5-minute cap) and playback of streamed and saved audio. Done as: [`tracks/p4-2.md`](./tracks/p4-2.md), P4.2a to P4.2d. The microphone (only for `audio_in` models) records through a worklet in `public/` (the CSP allows only same-origin scripts), the page resamples with a box filter and encodes 16 kHz mono PCM16 WAV in TypeScript, and a clip stops at exactly 5 minutes with a visible timer, Cancel, and Stop; the clip is attached like a picked file with a player on its chip, so it is previewed, uploaded as a chat file, and sent as an audio part. A blocked, missing, or busy microphone, or plain HTTP, gets a message that says what to do. Speak replies (only for `audio_out` models) sits in the composer and is the chat's `voiceReplies`; the `audio.delta` events of turns started on the page play through Web Audio with a 0.1 second lead, and saved recordings and spoken replies play once fetched with the token, one sound at a time. Tests: Rstest tests for the WAV encoder (header, sample conversion, length cap), the resampler, the worklet, the player queue, the recorder states, and the voice controls.
 
 ## Phase 5: Native Apps
 
