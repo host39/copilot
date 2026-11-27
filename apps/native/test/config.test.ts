@@ -120,6 +120,35 @@ describe("android", () => {
     );
   });
 
+  test("turns off backup and device transfer, which would copy the stored session token", () => {
+    const manifest = read("src-tauri/gen/android/app/src/main/AndroidManifest.xml");
+    const application = /<application\b[^>]*>/.exec(manifest)?.[0] ?? "";
+    expect(application).toContain('android:allowBackup="false"');
+    expect(application).toContain('android:fullBackupContent="false"');
+    expect(application).toContain('android:dataExtractionRules="@xml/data_extraction_rules"');
+
+    const rules = read("src-tauri/gen/android/app/src/main/res/xml/data_extraction_rules.xml");
+    expect(rules).not.toContain("<include");
+    const domains = [
+      "root",
+      "file",
+      "database",
+      "sharedpref",
+      "external",
+      "device_root",
+      "device_file",
+      "device_database",
+      "device_sharedpref",
+    ];
+    for (const section of ["cloud-backup", "device-transfer"]) {
+      const body = rules.split(`<${section}>`)[1]?.split(`</${section}>`)[0] ?? "";
+      const excluded = [...body.matchAll(/<exclude domain="([a-z_]+)" path="\." \/>/g)].map(
+        (match) => match[1]
+      );
+      expect(excluded).toEqual(domains);
+    }
+  });
+
   test("the page sits between the system bars and above the keyboard", () => {
     expect(activity).toContain("enableEdgeToEdge()");
     expect(activity).toContain("setOnApplyWindowInsetsListener");

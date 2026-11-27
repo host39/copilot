@@ -2,9 +2,14 @@ name: Native apps
 
 # Builds the Tauri shell (apps/native) around the production web build and uploads each bundle as a
 # workflow artifact: the .deb and the AppImage built on Ubuntu 24.04 (glibc 2.39 floor), and the
-# debug-signed arm64 APK. Runs on version tags, on demand, and when the shell or the web app it
-# bundles changes. The workflow-level path filter skips the run entirely otherwise, so no
-# path-filter job is needed; tag pushes ignore path filters and always build.
+# debug-signed arm64 APK. Runs on version tags, on demand, and when the shell, the web app it
+# bundles, or what builds them changes (the Make targets, the toolchains, the pnpm lockfile that
+# pins the Tauri CLI and its JS packages, and the contracts the web app imports). The
+# workflow-level path filter skips the run entirely otherwise, so no path-filter job is needed;
+# tag pushes ignore path filters and always build.
+#
+# Pull requests from forks build and check the bundles but upload none: their artifacts would sit
+# in this repository's run list under the same names as trusted builds.
 on:
   push:
     branches: ["main", "claude/**"]
@@ -12,12 +17,26 @@ on:
     paths:
       - apps/native/**
       - apps/web/**
+      - packages/contracts/**
       - .github/workflows/native.yml
+      - Makefile
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
+      - rust-toolchain.toml
   pull_request:
     paths:
       - apps/native/**
       - apps/web/**
+      - packages/contracts/**
       - .github/workflows/native.yml
+      - Makefile
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
+      - rust-toolchain.toml
   workflow_dispatch:
 
 concurrency:
@@ -123,6 +142,7 @@ jobs:
 
       # One file per artifact, not zipped: the artifact is named after the file and downloads as it.
       - name: Upload the .deb
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ${{ steps.bundles.outputs.deb }}
@@ -131,6 +151,7 @@ jobs:
           retention-days: ${{ env.RETENTION_DAYS }}
 
       - name: Upload the AppImage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ${{ steps.bundles.outputs.appimage }}
@@ -230,6 +251,11 @@ jobs:
             echo "::error::The APK asks for the camera"
             exit 1
           fi
+          # No backup or device transfer of the WebView's storage, which holds the session token.
+          "$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk" >"$RUNNER_TEMP/manifest.txt"
+          grep -E ':(allowBackup|fullBackupContent|dataExtractionRules)\(' "$RUNNER_TEMP/manifest.txt"
+          grep -qE ':allowBackup\(0x[0-9a-f]+\)=false' "$RUNNER_TEMP/manifest.txt"
+          grep -qE ':dataExtractionRules\(0x[0-9a-f]+\)=@0x[0-9a-f]+' "$RUNNER_TEMP/manifest.txt"
           out="$RUNNER_TEMP/Copilot_${version}_arm64.apk"
           cp "$apk" "$out"
           {
@@ -240,6 +266,7 @@ jobs:
           echo "apk=$out" >>"$GITHUB_OUTPUT"
 
       - name: Upload the APK
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ${{ steps.apk.outputs.apk }}

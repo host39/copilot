@@ -48,14 +48,14 @@ The version comes from `version` in `package.json`; Android's version code is de
 
 ## CI
 
-`.github/workflows/native.yml` ("Native apps") builds both apps on version tags (`v*`), on manual dispatch (Actions, Native apps, Run workflow), and on pushes to `main` and `claude/**` and pull requests that change `apps/native/**`, `apps/web/**`, or the workflow. Other changes skip the run. Each bundle is a workflow artifact of its own, named after the file and downloaded as that file (not zipped); tag builds keep them 90 days, other builds 14.
+`.github/workflows/native.yml` ("Native apps") builds both apps on version tags (`v*`), on manual dispatch (Actions, Native apps, Run workflow), and on pushes to `main` and `claude/**` and pull requests that change `apps/native/**`, `apps/web/**`, `packages/contracts/**` (bundled by the web app), the workflow, or what the build reads from the root (`Makefile`, `package.json`, `pnpm-lock.yaml`, which pins the Tauri CLI and its JS packages, `pnpm-workspace.yaml`, `.nvmrc`, `rust-toolchain.toml`). Other changes skip the run. Each bundle is a workflow artifact of its own, named after the file and downloaded as that file (not zipped); tag builds keep them 90 days, other builds 14. Pull requests from forks build and check the bundles but upload none, so an installable file in the run list always comes from code in this repository.
 
 | Job | Runner | Artifacts |
 | --- | --- | --- |
 | Linux bundles (`native-linux`) | `ubuntu-24.04`, pinned so the bundles need glibc 2.39 or newer, not the newest image's | `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage` |
 | Android APK (`native-android`) | `ubuntu-latest`, with the image's Android SDK, NDK 29, and Java 21 | `Copilot_<version>_arm64.apk` |
 
-Before uploading, the Linux job runs `make native-lint` and `make native-test` and checks the `.deb`'s version, its WebKitGTK dependency, and the newest glibc symbol in the binary, and that the AppImage is an x86-64 type 2 AppImage. The Android job checks that the APK is signed with a debug certificate, holds native code for `arm64-v8a` only, carries the package name `com.host39.copilot` and the version from `package.json`, and asks for `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` but not `CAMERA`. Each job writes the artifact sizes to its run summary. `test/workflow.test.ts` keeps the workflow's triggers, runners, and checks in place.
+Before uploading, the Linux job runs `make native-lint` and `make native-test` and checks the `.deb`'s version, its WebKitGTK dependency, and the newest glibc symbol in the binary, and that the AppImage is an x86-64 type 2 AppImage. The Android job checks that the APK is signed with a debug certificate, holds native code for `arm64-v8a` only, carries the package name `com.host39.copilot` and the version from `package.json`, asks for `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` but not `CAMERA`, and turns off backup (`allowBackup` false and `dataExtractionRules` set in the compiled manifest). Each job writes the artifact sizes to its run summary. `test/workflow.test.ts` keeps the workflow's triggers, runners, and checks in place.
 
 Each runner signs with a debug key of its own, so an APK from a later run does not install over one from an earlier run: uninstall first (see [Android](#android)).
 
@@ -84,11 +84,12 @@ The manifest also marks the microphone as not required, so devices without one c
 
 ## Android
 
-The committed project differs from what `tauri android init` writes in three places. Re-apply them after regenerating it:
+The committed project differs from what `tauri android init` writes in four places. Re-apply them after regenerating it:
 
 1. `app/build.gradle.kts`: the `release` build type is signed with the SDK's debug key (`signingConfig = signingConfigs.getByName("debug")`). The APK installs by sideloading without a release keystore; app stores refuse it. Each machine (and each CI runner) has its own debug key, so an APK built elsewhere cannot update an installed one in place: uninstall first, which also forgets the stored server and session. A release keystore replaces this before any store release.
 2. `MainActivity.kt` pads the WebView's parent by the system bar, display cutout, and keyboard insets. Android 15 and later draw apps edge to edge, and the WebView does not offset the page by itself.
 3. `AndroidManifest.xml` declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` and a microphone feature that is not required (see [Microphone](#microphone)).
+4. `AndroidManifest.xml` turns off backup and device-to-device transfer: `android:allowBackup="false"` and `android:fullBackupContent="false"` (Android 11 and older), and `android:dataExtractionRules="@xml/data_extraction_rules"` (Android 12 and later), whose `res/xml/data_extraction_rules.xml` excludes every domain from `cloud-backup` and `device-transfer`. The WebView keeps its `localStorage` in the app's data folder, and that holds the session token and the server address; a backup restored on another phone would carry a token that still works. After a phone change, connect and sign in again.
 
 Release builds keep `usesCleartextTraffic="false"` for the WebView. That does not affect `http://` servers on the LAN, because API calls go through the plugin, not the WebView.
 
@@ -99,7 +100,7 @@ Regenerating:
 pnpm --filter @copilot/native tauri icon ../web/public/icons/icon.svg
 rm -rf apps/native/src-tauri/icons/ios apps/native/src-tauri/icons/Square*Logo.png apps/native/src-tauri/icons/StoreLogo.png
 
-# Android project (overwrites the three customizations above)
+# Android project (overwrites the four customizations above)
 pnpm --filter @copilot/native tauri android init
 ```
 
@@ -121,7 +122,7 @@ The owner's checkpoint P5.4 covers what only a real device shows: section 12 of 
 ### Setup
 
 1. **Server.** On a computer on the same network as the phone, set `HOST=0.0.0.0` in `apps/api/.env.local`, then run `make dev-api` and, in another terminal, `make fake-llm`. Sign in as the administrator (the first account) and add the fake server in Settings, Providers: OpenAI-compatible, Custom, base URL `http://127.0.0.1:4010/v1`, key `fake-key`. Its `fake-audio` model takes and returns audio (`tools/fake-llm/README.md`); a real OpenAI-compatible audio model works too.
-2. **Builds.** Download `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage`, and `Copilot_<version>_arm64.apk` from the latest green "Native apps" run (Actions, Native apps, the run, Artifacts), or build them (`make native-build`, `make android-build`).
+2. **Builds.** Download `Copilot_<version>_amd64.deb`, `Copilot_<version>_amd64.AppImage`, and `Copilot_<version>_arm64.apk` from the latest green "Native apps" run of a **push** to `main`, a `v*` tag, or one of your own `claude/...` branches (Actions, Native apps, filter by Event `push` and the branch, the run, Artifacts), never from a pull request's run, or build them (`make native-build`, `make android-build`). Runs for pull requests from forks upload no bundles, but filtering by event and branch makes sure the files came from code in this repository.
 3. **Install.**
    - `.deb`: `sudo apt install ./Copilot_<version>_amd64.deb`, then start Copilot from the app menu.
    - AppImage: `chmod +x Copilot_<version>_amd64.AppImage` and run it.

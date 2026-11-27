@@ -1,11 +1,17 @@
 // The CI workflow that builds the native apps (.github/workflows/native.yml): when it runs, on which
 // runners, and what it builds, checks, and uploads.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import { parse } from "yaml";
 
-type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
+type Step = {
+  name?: string;
+  if?: string;
+  uses?: string;
+  run?: string;
+  with?: Record<string, unknown>;
+};
 type Job = { "runs-on": string; steps: Step[] };
 type Workflow = {
   on: {
@@ -49,13 +55,42 @@ describe("native workflow triggers", () => {
     expect(workflow.on).toHaveProperty("workflow_dispatch");
   });
 
-  test("runs on pushes and pull requests that change the shell or the web app it bundles", () => {
+  test("runs on pushes and pull requests that change the shell, the web app, or their build", () => {
     for (const paths of [workflow.on.push.paths, workflow.on.pull_request.paths]) {
       expect(paths).toEqual(
-        expect.arrayContaining(["apps/native/**", "apps/web/**", ".github/workflows/native.yml"])
+        expect.arrayContaining([
+          "apps/native/**",
+          "apps/web/**",
+          ".github/workflows/native.yml",
+          // The web app bundles the contracts.
+          "packages/contracts/**",
+          // The jobs run Make targets; the lockfile pins the Tauri CLI and its JS packages.
+          "Makefile",
+          "package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          ".nvmrc",
+          "rust-toolchain.toml",
+        ])
       );
     }
     expect(workflow.on.pull_request.paths).toEqual(workflow.on.push.paths);
+  });
+
+  test("every path the filter names exists, so a rename cannot silently skip the builds", () => {
+    for (const path of workflow.on.push.paths) {
+      expect(existsSync(`../../${path.replace(/\/\*\*$/, "")}`)).toBe(true);
+    }
+  });
+
+  test("uploads no bundle built from a fork's pull request", () => {
+    const steps = [...uploads(linux), ...uploads(android)];
+    expect(steps).toHaveLength(3);
+    for (const step of steps) {
+      expect(step.if).toBe(
+        "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+      );
+    }
   });
 
   test("never cancels a tag's build for a newer push", () => {
@@ -144,6 +179,13 @@ describe("native-android", () => {
       'if grep -q "android.permission.CAMERA" "$RUNNER_TEMP/badging.txt"; then'
     );
     expect(commands).not.toContain("! grep");
+  });
+
+  test("checks that the APK turns off backup and device transfer", () => {
+    const commands = scripts(android);
+    expect(commands).toContain('aapt2" dump xmltree --file AndroidManifest.xml "$apk"');
+    expect(commands).toContain("grep -qE ':allowBackup\\(0x[0-9a-f]+\\)=false'");
+    expect(commands).toContain("grep -qE ':dataExtractionRules\\(0x[0-9a-f]+\\)=@0x[0-9a-f]+'");
   });
 
   test("uploads the APK as an artifact", () => {
