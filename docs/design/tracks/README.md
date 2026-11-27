@@ -1,6 +1,6 @@
 # Phase 2 Tracks
 
-Phase 2 of the [roadmap](../roadmap.md) runs four tracks in parallel, each in its own git worktree and branch, all starting from the `p1-frozen` tag. This folder holds one status file per track (`a.md`, `b.md`, `c.md`, `d.md`) and one for the integration step (`f.md`, with the interface-change requests still open after Phase 2), plus `p2-review.md` for the fixes after the Phase 2 reviews and `p3-1.md` for the run registry and chat flows of Phase 3. Tracks never edit the roadmap; the integrator (P2.F) ticks the Phase 2 boxes there after merging.
+Phase 2 of the [roadmap](../roadmap.md) runs four tracks in parallel, each in its own git worktree and branch, all starting from the `p1-frozen` tag. This folder holds one status file per track (`a.md`, `b.md`, `c.md`, `d.md`) and one for the integration step (`f.md`, with the interface-change requests still open after Phase 2), plus `p2-review.md` for the fixes after the Phase 2 reviews, `p3-1.md` for the run registry and chat flows of Phase 3, and `p3-3.md` for the web streaming and conversation features. Tracks never edit the roadmap; the integrator (P2.F) ticks the Phase 2 boxes there after merging.
 
 ## Ownership
 

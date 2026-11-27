@@ -22,7 +22,8 @@ import {
 import { keys } from "@web/api/routes/keys";
 import { clearToken, setToken } from "@web/auth/token";
 import { Markdown, nodeText } from "@web/components/Chat/Markdown";
-import { callStatus, MessageList, resultText } from "@web/components/Chat/MessageList";
+import { MessageList } from "@web/components/Chat/MessageList";
+import { callStatus, resultText } from "@web/components/Chat/ToolCard";
 import { inlineImage, safeLink, transformUrl } from "@web/components/Chat/urls";
 import { Menu } from "@web/components/Menu/Menu";
 import { ModelPicker, Sheet } from "@web/components/ModelPicker/ModelPicker";
@@ -402,7 +403,9 @@ describe("saved messages", () => {
     expect(callStatus({ ...call, approval: "pending" }, undefined).label).toBe("Needs approval");
     expect(callStatus({ ...call, approval: "denied" }, undefined).label).toBe("Denied");
     expect(callStatus(call, { ...result, status: "timeout" }).label).toBe("Timed out");
-    expect(resultText(result)).toBe("3 results\n[image]");
+    expect(callStatus(call, undefined, true).label).toBe("Running");
+    expect(callStatus(call, undefined).label).toBe("No result");
+    expect(resultText(result)).toBe("3 results");
     const messages = [
       message("0196f6a4-7c1e-7d2a-9b3c-4d5e6f708501", "assistant", [call]),
       message("0196f6a4-7c1e-7d2a-9b3c-4d5e6f708502", "tool", [result]),
@@ -443,7 +446,8 @@ describe("saved messages", () => {
     expect(html).toContain("search_web");
     expect(html).toContain("Done");
     expect(html).toContain("&quot;query&quot;: &quot;trains&quot;");
-    expect(html).toContain("The result was cut to the size limit.");
+    expect(html).toContain("The result is shortened here.");
+    expect(html).toContain("Image 1");
     expect(html).toContain("<strong>8:15</strong>");
     expect(html).toContain("Stopped.");
     expect(html).not.toContain('id="message-0196f6a4-7c1e-7d2a-9b3c-4d5e6f708502"');

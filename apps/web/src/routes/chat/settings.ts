@@ -91,7 +91,7 @@ export function insertInstructions(current: string, addition: string): string {
 }
 
 /** The tool results of a chat by call id, for the history's tool calls. */
-export function toolResults(messages: MessageResponse[]) {
+export function toolResults(messages: Pick<MessageResponse, "parts">[]) {
   const results = new Map<
     string,
     Extract<MessageResponse["parts"][number], { type: "toolResult" }>
@@ -109,7 +109,7 @@ export function toolResults(messages: MessageResponse[]) {
  * while either is unknown.
  */
 export function contextUse(
-  messages: MessageResponse[],
+  messages: Pick<MessageResponse, "role" | "usage">[],
   model: Pick<ModelResponse, "contextWindow"> | undefined
 ): { used: number; window: number; percent: number } | null {
   const window = model?.contextWindow ?? null;
