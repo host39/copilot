@@ -46,10 +46,10 @@ Versions from the crates.io API (`https://crates.io/api/v1/crates/<name>`) on 20
 | `sse-stream` | 0.3.0 | 2026-09-18 | none declared | **Use** |
 | `eventsource-stream` | 0.2.3 | 2022-02-17 | none | Reject (stale, `nom` 7) |
 | `reqwest-eventsource` | 0.6.0 | 2024-03-29 | none | Reject (reqwest ^0.12) |
-| `futures-core` | 0.3.34 | 2026-08-11 | 1.71 (futures family) | **Use** in `copilot-core` (port types) |
+| `futures-core` | 0.3.34 | 2026-08-11 | 1.71 (futures family) | Not used (P6.1: `futures-util` covers the port types; removed from the workspace) |
 | `futures-util` | 0.3.34 | 2026-08-11 | 1.71 | **Use** in adapters |
 | `futures` (facade) | 0.3.34 | 2026-08-11 | 1.71 | Not needed directly |
-| `tokio-stream` | 0.1.19 | 2026-07-22 | 1.71 | **Use** (`ReceiverStream`) |
+| `tokio-stream` | 0.1.19 | 2026-07-22 | 1.71 | Not used (P6.1: the run registry streams through `futures-util`; removed from the workspace) |
 | `tokio-util` | 0.7.20 | 2026-10-09 | 1.85 | **Use** (`CancellationToken`) |
 | `bytes` | 1.12.2 | 2026-11-17 | 1.57 | **Use** |
 | `async-stream` | 0.3.6 | 2024-10-01 | 1.65 | Not needed |
@@ -68,7 +68,7 @@ Versions from the crates.io API (`https://crates.io/api/v1/crates/<name>`) on 20
 | `base64` | 0.23.1 | 2026-08-04 | 1.71.0 | **Use** |
 | `argon2` | 0.6.0 | 2026-08-27 | 1.85 | **Use** |
 | `sha2` | 0.11.2 | 2026-11-25 | 1.88 | **Use** |
-| `mime_guess` | 2.0.5 | 2024-06-29 | none | **Use**, no default features |
+| `mime_guess` | 2.0.5 | 2024-06-29 | none | Not used (P6.1: core detects types from the extension and magic bytes; removed from the workspace) |
 | `wiremock` (dev) | 0.6.5 | 2025-08-24 | none (edition 2024) | **Use** |
 | `tower-http` | 0.7.1 | 2026-08-31 | 1.65 | Add the `limit` feature |
 | `axum` | 0.8.9 | 2026-04-14 | 1.80 | Add the `multipart` feature where uploads live |
@@ -85,16 +85,13 @@ base64 = "0.23.1"
 bytes = "1.12.2"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 croner = { version = "5.0.1", default-features = false, features = ["std", "jiff"] }
-futures-core = "0.3.34"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 getrandom = "0.4.3"
 jiff = { version = "1.0.3", default-features = false, features = ["std", "tzdb-zoneinfo", "tzdb-bundle-always"] }
-mime_guess = { version = "2.0.5", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "multipart"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.11.2"
 sse-stream = { version = "0.3.0", default-features = false }
-tokio-stream = { version = "0.1.19", default-features = false }
 tokio-util = { version = "0.7.20", default-features = false }
 wiremock = "0.6.5"
 ```
@@ -111,11 +108,11 @@ Suggested placement (matches the crate plan in `docs/design/copilot.md`):
 
 | Crate | New dependencies |
 | --- | --- |
-| `copilot-core` | `futures-core`, `chrono`, `uuid`, `croner`, `jiff`, `miniz_oxide` (all pure libraries, allowed by the design's boundary note) |
+| `copilot-core` | `chrono`, `uuid`, `croner`, `jiff`, `miniz_oxide`, `idna_adapter` 1.1 (pinned: the unicode-rs back end of `url`'s IDNA mapping instead of ICU4X, about twenty crates fewer) (all pure libraries, allowed by the design's boundary note) |
 | `copilot-providers` | `reqwest`, `sse-stream`, `futures-util`, `bytes`, `base64`, `tokio-util`; dev: `wiremock`, `tokio` |
 | `copilot-security` | `aes-gcm`, `argon2`, `sha2`, `getrandom`, `base64` |
 | `copilot-storage` | `sha2`, `bytes`, `tokio-util` (add its `io` feature only if streaming files with `ReaderStream`) |
-| `copilot-api` | `axum` `multipart`, `rustls` (provider install), `tokio-stream`, `mime_guess` |
+| `copilot-api` | `axum` `multipart`, `rustls` (provider install), `hyper` and `hyper-util` (the HTTP/1 server with a header read timeout, already in the tree through axum) |
 | `copilot-middleware` | `tower-http` `limit` |
 | `copilot-database` | none (sqlx features already present) |
 
@@ -362,3 +359,7 @@ Independent re-check on 2026-11-26 against crate tarballs from `static.crates.io
 - `@microsoft/fetch-event-source`: npm `time` shows 2.0.1 on 2021-04-25 as the last publish; `src/fetch.ts` aborts on every `visibilitychange` and calls `create()` again with the same init (method and body) unless `openWhenHidden`. Confirmed.
 - BCD `api/ReadableStream.json` `@@asyncIterator` and `values`: Chrome 124, Firefox 110, Safari 27 (Safari 27 released 2026-09-14 per BCD `browsers/safari.json`). Confirmed; WebKitGTK mapping remains **UNVERIFIED**.
 - Not re-checked here: the measured crate counts, web bundle sizes, and download numbers.
+
+## P6.1 Trim
+
+The final review removed what no crate used: the workspace entries `futures-core`, `mime_guess`, and `tokio-stream`, `tokio-util` in `copilot-providers`, and reqwest's `multipart` feature (only the API reads multipart, through axum). `idna_adapter` is pinned to 1.1 in `copilot-core`, which keeps `url` on the unicode-rs IDNA back end and drops the ICU4X crates (twenty fewer packages in `Cargo.lock`). `sse-stream` stays at two versions (0.3 in `copilot-providers`, 0.2.6 through rmcp): moving the providers to 0.2 is not worth the risk before the first release.

@@ -1,6 +1,6 @@
 # Container Deployment
 
-One image holds everything: the `server` binary (the API, which also serves the web app), the `migrate` binary (lib-rustauth's `auth` migrations, then Copilot's, plus the optional readonly grants), and the web bundle at `/app/web`. The [`Dockerfile`](../Dockerfile) at the repository root builds it in three stages: the web bundle with Node and pnpm, the Rust release binaries, and a `debian:bookworm-slim` runtime that runs as an unprivileged user. Copilot runs exactly one server process per install ([ADR-005](./adr/005-copilot-architecture.md)).
+One image holds everything: the `server` binary (the API, which also serves the web app), the `migrate` binary (lib-rustauth's `auth` migrations, then Copilot's, plus the optional readonly grants), and the web bundle at `/app/web`. The [`Dockerfile`](../Dockerfile) at the repository root builds it in three stages: the web bundle with Node and pnpm (with `.gz` and `.br` copies the server sends to browsers that accept them), the Rust binaries in the `dist` profile (release with fat LTO, one codegen unit, and no symbols), and a distroless `cc-debian12` runtime (glibc, CA roots, and tzdata; no shell) that runs as its unprivileged `nonroot` user. With no shell in the image, inspect a running container with `docker compose logs` rather than `exec`. Copilot runs exactly one server process per install ([ADR-005](./adr/005-copilot-architecture.md)).
 
 ## Compose
 

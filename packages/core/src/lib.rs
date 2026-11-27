@@ -7,6 +7,9 @@
 //! This crate must not depend on HTTP, database, crypto, logging, or identity implementations.
 //! Callers arrive as an [`Actor`] that `apps/api` builds from lib-rustauth's user.
 
+// Only pinned (see Cargo.toml): `url` uses it.
+use idna_adapter as _;
+
 pub mod domains;
 pub mod ports;
 pub mod shared;

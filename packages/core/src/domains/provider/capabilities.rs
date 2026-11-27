@@ -79,16 +79,20 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// Detected capabilities of a listed model: reported values first, then preset defaults.
+    /// Google's OpenAI-compatible listing reports nothing, and its current models all read
+    /// images and PDFs and think, so the `gemini` preset starts with `vision`, `pdf`, and
+    /// `reasoning` on (and so with the larger reasoning output default).
     pub fn defaults(preset: Preset, remote: &RemoteModel) -> Self {
         let reported = &remote.reported;
-        let pdf_default = matches!(preset, Preset::OpenAi | Preset::OpenRouter);
+        let gemini = preset == Preset::Gemini;
+        let pdf_default = gemini || matches!(preset, Preset::OpenAi | Preset::OpenRouter);
         Self {
-            vision: reported.vision.unwrap_or(false),
+            vision: reported.vision.unwrap_or(gemini),
             pdf: reported.pdf.unwrap_or(pdf_default),
             tools: reported.tools.unwrap_or(true),
             audio_in: reported.audio_in.unwrap_or(false),
             audio_out: reported.audio_out.unwrap_or(false),
-            reasoning: reported.reasoning.unwrap_or(false),
+            reasoning: reported.reasoning.unwrap_or(gemini),
             reasoning_levels: reported.reasoning_levels.clone().unwrap_or_default(),
             default_reasoning: reported.default_reasoning,
         }
@@ -288,13 +292,34 @@ mod tests {
     }
 
     #[test]
-    fn turns_pdf_on_for_the_openai_and_openrouter_presets() {
+    fn turns_pdf_on_for_the_openai_openrouter_and_gemini_presets() {
         for preset in Preset::ALL {
             let capabilities =
                 Capabilities::defaults(preset, &remote(ReportedCapabilities::default()));
-            let expected = matches!(preset, Preset::OpenAi | Preset::OpenRouter);
+            let expected = matches!(preset, Preset::OpenAi | Preset::OpenRouter | Preset::Gemini);
             assert_eq!(capabilities.pdf, expected, "{preset}");
         }
+    }
+
+    #[test]
+    fn gemini_models_start_with_vision_and_reasoning() {
+        let capabilities =
+            Capabilities::defaults(Preset::Gemini, &remote(ReportedCapabilities::default()));
+        assert!(capabilities.vision && capabilities.pdf && capabilities.reasoning);
+        assert!(
+            !capabilities.reasoning_levels.is_empty(),
+            "the picker offers levels"
+        );
+        assert!(
+            !capabilities.audio_in && !capabilities.audio_out,
+            "off until enabled"
+        );
+        let openai =
+            Capabilities::defaults(Preset::OpenAi, &remote(ReportedCapabilities::default()));
+        assert!(
+            !openai.vision && !openai.reasoning,
+            "other presets keep text plus tools"
+        );
     }
 
     #[test]

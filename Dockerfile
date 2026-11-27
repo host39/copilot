@@ -19,34 +19,34 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --ignore-scripts
 COPY apps/web apps/web
 COPY packages/contracts packages/contracts
-RUN pnpm --filter @copilot/web build
+COPY scripts/compress-web.mjs scripts/
+RUN pnpm --filter @copilot/web build && node scripts/compress-web.mjs apps/web/dist
 
-# Rust binaries (release).
+# Rust binaries (the `dist` profile: release with fat LTO, one codegen unit, and no symbols).
 FROM rust:1-slim-bookworm@sha256:bb875b0f8ce726053e259034848c471840e96bfe591fd52556178ae9a05e6126 AS rust
 WORKDIR /app
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked -p copilot-api -p copilot-database \
+    cargo build --profile dist --locked -p copilot-api -p copilot-database \
     && mkdir -p /out \
-    && cp target/release/server target/release/migrate /out/
+    && cp target/dist/server target/dist/migrate /out/
 
-# Runtime: Debian slim with CA roots (for providers and tool servers), as an unprivileged user.
-FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS runtime
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home app
+# Runtime: distroless (glibc, libgcc, CA roots for providers and tool servers, tzdata; no shell
+# or package manager), as its unprivileged `nonroot` user.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 
 COPY --from=rust /out/ /usr/local/bin/
 COPY --from=web /app/apps/web/dist /app/web
 
-USER app
+USER nonroot
+# Buffers of 1 MiB and more (an upload's bytes) come from mmap and go back to the system when
+# freed, so the server shrinks to its idle size after a burst.
 ENV HOST=0.0.0.0 \
     PORT=3000 \
-    WEB_DIR=/app/web
+    WEB_DIR=/app/web \
+    MALLOC_MMAP_THRESHOLD_=1048576
 EXPOSE 3000
 
 # `migrate` (rustauth's `auth` migrations, then Copilot's) runs once before `server`; the compose

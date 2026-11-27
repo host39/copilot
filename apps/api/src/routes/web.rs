@@ -1,6 +1,10 @@
 //! The web bundle (`WEB_DIR`): any `GET` or `HEAD` outside `/api` that no route matched gets the
 //! file at that path, or `index.html`, so React Router paths survive a reload. Responses carry
 //! the web Content-Security-Policy ("Rendering Untrusted Output" in `docs/design/copilot.md`).
+//! A file's Brotli or gzip copy (`.br`, `.gz`, written by `scripts/compress-web.mjs` in the image
+//! build) is sent as it is to a client that accepts it, so nothing is compressed at run time.
+//! Files under `/static/` have content-hashed names and may be cached for a year; `index.html`
+//! is revalidated on every load.
 
 use std::path::Path;
 
@@ -22,20 +26,31 @@ frame-ancestors 'none'";
 
 /// The files of the bundle in `dir`, with `index.html` for paths that name no file.
 pub fn files(dir: &Path) -> ServeDir<ServeFile> {
-    ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))
+    let index = ServeFile::new(dir.join("index.html"))
+        .precompressed_br()
+        .precompressed_gzip();
+    ServeDir::new(dir)
+        .precompressed_br()
+        .precompressed_gzip()
+        .fallback(index)
 }
+
+/// `Cache-Control` of the content-hashed files under `/static/`.
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 /// The fallback for paths no route matched: the bundle for `GET` and `HEAD` outside `/api`, the
 /// JSON `404` otherwise.
 pub async fn serve(mut files: ServeDir<ServeFile>, request: Request) -> Response {
     let path = request.uri().path();
     let api = path == "/api" || path.starts_with("/api/");
+    let hashed = path.starts_with("/static/");
     if api || !matches!(*request.method(), Method::GET | Method::HEAD) {
         return not_found().await;
     }
     match files.try_call(request).await {
         Ok(response) => {
             let mut response = response.map(Body::new);
+            let found = response.status().is_success();
             let headers = response.headers_mut();
             let html = headers
                 .get(CONTENT_TYPE)
@@ -46,6 +61,8 @@ pub async fn serve(mut files: ServeDir<ServeFile>, request: Request) -> Response
             if html {
                 // A new deploy changes the asset names `index.html` points at.
                 headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            } else if hashed && found {
+                headers.insert(CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE));
             }
             response
         }
@@ -157,10 +174,59 @@ mod tests {
                 .contains("javascript")
         );
         assert_eq!(headers[CONTENT_SECURITY_POLICY], CSP);
-        assert!(
-            headers.get(CACHE_CONTROL).is_none(),
-            "hashed assets may be cached"
+        assert_eq!(
+            headers[CACHE_CONTROL], IMMUTABLE,
+            "hashed assets are cached for a year"
         );
+        let (status, headers, _) =
+            text(bundle.app().await, Method::GET, "/static/js/gone.js").await;
+        assert_eq!(status, StatusCode::OK, "the index for a name that is gone");
+        assert_eq!(headers[CACHE_CONTROL], "no-cache");
+    }
+
+    #[tokio::test]
+    async fn precompressed_copies_go_to_clients_that_accept_them() {
+        let bundle = Bundle::new("spa-precompressed");
+        std::fs::write(bundle.0.join("static/js/app.js.gz"), b"gzip bytes").expect("gzip");
+        std::fs::write(bundle.0.join("static/js/app.js.br"), b"brotli bytes").expect("brotli");
+        let app = bundle.app().await;
+        let fetch = |encoding: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder().uri("/static/js/app.js");
+                if let Some(encoding) = encoding {
+                    request = request.header("accept-encoding", encoding);
+                }
+                let response = app
+                    .oneshot(request.body(Body::empty()).expect("request"))
+                    .await
+                    .expect("infallible");
+                let headers = response.headers().clone();
+                let bytes = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .expect("body")
+                    .to_bytes();
+                (headers, bytes)
+            }
+        };
+        let (headers, body) = fetch(Some("gzip, br")).await;
+        assert_eq!(headers["content-encoding"], "br");
+        assert_eq!(body.as_ref(), b"brotli bytes");
+        assert!(
+            headers[CONTENT_TYPE]
+                .to_str()
+                .expect("ascii")
+                .contains("javascript"),
+            "the type of the original file"
+        );
+        let (headers, body) = fetch(Some("gzip")).await;
+        assert_eq!(headers["content-encoding"], "gzip");
+        assert_eq!(body.as_ref(), b"gzip bytes");
+        let (headers, body) = fetch(None).await;
+        assert!(headers.get("content-encoding").is_none());
+        assert_eq!(body.as_ref(), b"console.log(1)");
     }
 
     #[tokio::test]

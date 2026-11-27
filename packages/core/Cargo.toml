@@ -28,6 +28,9 @@ tokio-util = { workspace = true }
 # The facade only; `copilot-logger` installs the subscriber.
 tracing = { workspace = true }
 url = { workspace = true }
+# `url`'s IDNA mapping on the unicode-rs back end (the idna crate documents this opt-in): 1.2
+# would pull in ICU4X, about twenty crates. Named here so `cargo update` keeps it.
+idna_adapter = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

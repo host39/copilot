@@ -47,12 +47,14 @@ http-body-util = "0.1.3"
 hyper = { version = "1.13.0", default-features = false }
 # The outbound clients check the peer address of each new connection (`connect::HttpInfo`).
 hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "tokio"] }
+# 1.1 is the unicode-rs back end of `idna`; see `packages/core/Cargo.toml`.
+idna_adapter = "~1.1"
 jiff = { version = "1.0.3", default-features = false, features = ["std", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 # Inflates PDF object streams to count their pages (pure Rust, no unsafe in the inflater).
 miniz_oxide = "0.9.1"
 # Dev only: a throwaway CA and certificate for the outbound clients' TLS test.
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "multipart"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream"] }
 # MCP client over Streamable HTTP only: the default features are server-side, and rmcp's `reqwest`
 # feature would enable reqwest's aws-lc-rs provider.
 rmcp = { version = "3.12.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
@@ -89,3 +91,16 @@ dbg_macro = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
 todo = "warn"
+
+# Release builds drop their symbols (the server binary is about a third smaller); a panic still
+# unwinds, because a panicked run's streams end by catching it (`helpers::turns`).
+[profile.release]
+strip = true
+
+# What the image ships (`cargo build --profile dist`, see the Dockerfile): whole-program
+# optimisation on top, about half the size of `release` at the same speed (opt-level 3 keeps
+# Argon2 fast), for a slower build that CI pays only when it builds the image.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
