@@ -228,6 +228,18 @@ pub struct DecisionsRequest {
     pub decisions: Vec<CallDecision>,
 }
 
+/// Query of `GET /chats/{id}/stream`: reattach to the running turn.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, IntoParams, PartialEq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, optional_fields))]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct StreamQuery {
+    /// The last `seq` the client has: the stream starts after it, without repeating any text. A
+    /// `seq` the running turn never sent replays the turn from the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+}
+
 /// Query of `GET /search`: chat titles and message text.
 #[derive(Clone, Debug, Default, Deserialize, Eq, IntoParams, PartialEq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, optional_fields))]

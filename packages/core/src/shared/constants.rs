@@ -95,6 +95,10 @@ pub const BYTES_PER_TOKEN: u64 = 4;
 pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
 pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
 pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
+/// On shutdown, live runs get this long to finish on their own; then they are cancelled and get
+/// up to `SHUTDOWN_DRAIN_SECS` more to save their partial answers. Stopping a run (or deleting
+/// its chat or project) waits up to `SHUTDOWN_DRAIN_SECS` for it to save too.
+pub const SHUTDOWN_GRACE_SECS: u64 = 5;
 pub const SHUTDOWN_DRAIN_SECS: u64 = 10;
 
 /// Defaults of `MAX_UPLOAD_MB` and `MAX_STORAGE_MB_PER_USER` (read by `AppConfig::parse`).

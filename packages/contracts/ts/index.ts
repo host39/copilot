@@ -76,6 +76,7 @@ import type { SearchQuery } from "@contracts/generated/SearchQuery";
 import type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 import type { ServerTool } from "@contracts/generated/ServerTool";
 import type { SettingsResponse } from "@contracts/generated/SettingsResponse";
+import type { StreamQuery } from "@contracts/generated/StreamQuery";
 import type { ToolChanges } from "@contracts/generated/ToolChanges";
 import type { ToolMode } from "@contracts/generated/ToolMode";
 import type { ToolOverride } from "@contracts/generated/ToolOverride";
@@ -159,6 +160,7 @@ export type { SearchQuery } from "@contracts/generated/SearchQuery";
 export type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 export type { ServerTool } from "@contracts/generated/ServerTool";
 export type { SettingsResponse } from "@contracts/generated/SettingsResponse";
+export type { StreamQuery } from "@contracts/generated/StreamQuery";
 export type { ToolChanges } from "@contracts/generated/ToolChanges";
 export type { ToolMode } from "@contracts/generated/ToolMode";
 export type { ToolOverride } from "@contracts/generated/ToolOverride";
@@ -796,6 +798,10 @@ export const callDecisionSchema = z.object({
 export const decisionsRequestSchema = z.object({
   decisions: z.array(callDecisionSchema),
 }) satisfies z.ZodType<DecisionsRequest>;
+
+export const streamQuerySchema = z.object({
+  after: count.optional(),
+}) satisfies z.ZodType<StreamQuery>;
 
 export const searchQuerySchema = z.object({
   q: z.string(),

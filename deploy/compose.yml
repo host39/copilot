@@ -78,6 +78,9 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    # On SIGTERM, answers being written get 5 seconds to finish, then up to 10 to save what
+    # they have (SHUTDOWN_GRACE_SECS, SHUTDOWN_DRAIN_SECS); Docker's default of 10 would cut that.
+    stop_grace_period: 20s
 
 # A fixed subnet, so the gateway the server sees is known (AUTH_TRUSTED_PROXIES). If it
 # overlaps a network of this host, set COPILOT_SUBNET and COPILOT_GATEWAY, and

@@ -227,10 +227,10 @@ The pure address policy (`net::is_allowed(ip, scope)`, std only) lives in core, 
 
 ### Shutdown and Recovery
 
-- `ApiContext` owns a root `CancellationToken`; the shutdown future cancels it.
-- Every run uses a child token, so the engine saves partial output as `cancelled` and emits `done`. SSE bodies end when the root token fires (`take_until(root.cancelled_owned())`), so `with_graceful_shutdown` does not hang on open streams. The scheduler loop exits.
-- `ApiContext::close` waits for the registry to drain (at most `SHUTDOWN_DRAIN_SECS`, 10) before closing the pool.
-- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)).
+- `ApiContext` owns a root `CancellationToken` and the `RunRegistry`.
+- On SIGINT or SIGTERM the server stops accepting connections and the registry drains (`RunRegistry::drain`): new runs fail with `SERVER_STOPPING` (422) at once, live runs get `SHUTDOWN_GRACE_SECS` (5) to finish on their own (their streams end with `done`), then the root token fires. Every run uses a child token, so the engine saves partial output as `cancelled` and emits `done`; runs get up to `SHUTDOWN_DRAIN_SECS` (10) more to save. SSE bodies end when the root token fires (`take_until(root.cancelled_owned())`), so `with_graceful_shutdown` does not hang on open streams. The scheduler loop exits.
+- `ApiContext::close` finishes the same drain (its times count from the signal) before closing the pool. The compose file gives the container `stop_grace_period: 20s`, above the 15 seconds the two waits may take.
+- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."), without moving their chats (nothing turns unread). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)), and Retry answers an interrupted answer again.
 
 ## Identity (lib-rustauth)
 
@@ -557,9 +557,9 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 
 `RunRegistry` (in `apps/api/src/helpers/runs.rs`, an `AppState` field) maps `chat_id` to a run: owner, run id, a `tokio::sync::broadcast` sender, a replay buffer of the current run's events, and a child `CancellationToken` of the root shutdown token.
 
-- `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`). User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
-- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
-- Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. Handlers load the chat with the caller's `UserId` before touching the registry.
+- `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`); once shutdown has begun it fails with `SERVER_STOPPING`. User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
+- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event, and goes out with it as the SSE `id`. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas; each merged delta also keeps where each of its deltas ended (4 bytes per delta). `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. With `?after=<seq>` (a client that lost its connection) the stream starts after that `seq`, cutting a merged delta to the text after it, so nothing is repeated or skipped; a `seq` the running turn never sent (one from an earlier run) replays the turn from the start. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
+- Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. It answers `204` once the run has saved its partial answer as `cancelled` (at most `SHUTDOWN_DRAIN_SECS`), and also for an idle chat. Handlers load the chat with the caller's `UserId` before touching the registry, so another user's chat is a `404`, never `CHAT_BUSY`, and its run is never attached or stopped.
 - The registry also fans out the per-user `GET /api/events` stream.
 
 ### Adapter Rules
@@ -641,7 +641,7 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Models | `GET /models` (enabled and available, for the picker), `PATCH /models/{id}` (`enabled`, `displayName`, `capabilityOverrides`, `contextWindow`, `maxOutputTokens`) |
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
-| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
+| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204; `after`), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
 | Search | `GET /search?q=` (titles and message text; returns `chatId`, `chatTitle`, `messageId`, `snippet`) |
 | Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list) |
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |
@@ -1056,7 +1056,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `CONTEXT_WARN_RATIO` | 0.8 |
 | `TOKENS_PER_PDF_PAGE`, `TOKENS_PER_IMAGE`, `BYTES_PER_TOKEN` | 3000, 1600, 4 |
 | `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300, 16000 |
-| `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 10 |
+| `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_GRACE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 5, 10 |
 
 ## Native Apps
 

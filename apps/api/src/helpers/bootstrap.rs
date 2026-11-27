@@ -5,6 +5,9 @@
 use std::sync::Arc;
 
 use axum::Router;
+use std::time::Duration;
+
+use copilot_core::shared::constants::{SHUTDOWN_DRAIN_SECS, SHUTDOWN_GRACE_SECS};
 use copilot_core::{
     BoxError, ChatEngine, ChatRepositories, ChatService, Clock, FileService, LlmGateway,
     ModelService, ProjectService, ProviderService, ScheduleService, SecretCipher, SettingsService,
@@ -22,7 +25,7 @@ use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
 use crate::helpers::uploads::UploadSlots;
-use crate::{AppDependencies, create_app};
+use crate::{App, AppDependencies, assemble};
 
 pub struct ApiContext {
     pub config: AppConfig,
@@ -30,6 +33,8 @@ pub struct ApiContext {
     pub db: DbPool,
     /// The root token: cancelling it ends open streams, runs, and background tasks.
     pub shutdown: CancellationToken,
+    /// The live runs, drained on shutdown.
+    pub runs: Arc<RunRegistry>,
     purge: JoinHandle<()>,
 }
 
@@ -48,30 +53,56 @@ impl ApiContext {
         let identity = Identity::start(db.clone(), &config.identity).await?;
         let shutdown = CancellationToken::new();
         let purge = identity.purge(shutdown.clone());
-        let app = create_app(AppDependencies {
+        let App { router, state } = assemble(AppDependencies {
             config: config.clone(),
             db: db.clone(),
             identity,
             adapters: Adapters::create()?,
             shutdown: shutdown.clone(),
         });
+        recover(&state).await?;
 
         Ok(Self {
             config,
-            app,
+            app: router,
             db,
             shutdown,
+            runs: Arc::clone(&state.runs),
             purge,
         })
     }
 
-    /// Releases resources. Call once the server has stopped accepting requests.
+    /// Stops the runs ([`drain`]), then releases resources. Call once the server has stopped
+    /// accepting requests.
     pub async fn close(self) {
+        drain(&self.runs).await;
         self.shutdown.cancel();
         if let Err(error) = self.purge.await {
             tracing::warn!(error = %error, "api.server.task.failed");
         }
         copilot_database::close(&self.db).await;
+    }
+}
+
+/// Marks the answers a stopped process left `streaming` as interrupted (`error`), before the
+/// server takes requests. The next request of such a chat synthesizes results for their calls,
+/// and Retry answers again.
+pub async fn recover(state: &AppState) -> Result<u64, BoxError> {
+    let recovered = state.chats.recover().await?;
+    if recovered > 0 {
+        tracing::info!(messages = recovered, "api.server.recovered");
+    }
+    Ok(recovered)
+}
+
+/// Shuts the run registry down: no new runs, `SHUTDOWN_GRACE_SECS` for live runs to finish,
+/// then they are cancelled (saving their partial answers as `cancelled`) and get
+/// `SHUTDOWN_DRAIN_SECS` more. Safe to call more than once: the times count from the first call.
+pub async fn drain(runs: &RunRegistry) {
+    let grace = Duration::from_secs(SHUTDOWN_GRACE_SECS);
+    let limit = Duration::from_secs(SHUTDOWN_DRAIN_SECS);
+    if !runs.drain(grace, limit).await {
+        tracing::warn!("api.server.drain.incomplete");
     }
 }
 

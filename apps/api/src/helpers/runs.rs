@@ -8,16 +8,16 @@
 //! (`seq`), keeps it in the run's replay buffer, and broadcasts it to the attached streams. The
 //! buffer merges consecutive deltas of one part into one event that carries the last merged
 //! `seq`, so it grows with the answer's text (which the engine caps), not with the number of
-//! deltas; a replay may skip `seq` values but never text.
-//! Disconnecting a stream never cancels the run; the root shutdown token does (each run gets a
-//! child token).
+//! deltas; a replay may skip `seq` values but never text. Each merged event also keeps where
+//! each of its deltas ended (4 bytes per delta), so a stream can start after any `seq` the run
+//! sent without repeating or skipping text ([`RunRegistry::attach`]).
 //!
-//! The walking skeleton (P1.9) attaches the stream of the request that started the run.
-//! [`RunRegistry::stop`] cancels a run and waits for it to end (deleting a project stops the
-//! runs of its chats first). P3.1 adds reattaching (`GET /chats/{id}/stream`), the stop route,
-//! and the per-user event stream.
+//! Disconnecting a stream never cancels the run; [`RunRegistry::stop`] and shutdown do (each run
+//! gets a child of the root shutdown token). [`RunRegistry::drain`] stops new runs, gives the
+//! live ones a moment to finish, then cancels them and waits for them to save.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -25,8 +25,9 @@ use copilot_contracts::ChatStreamEvent;
 use copilot_core::shared::constants::MAX_ACTIVE_RUNS_PER_USER;
 use copilot_core::{ChatId, DomainError, DomainResult, TurnEvent, TurnSink, UserId};
 use futures_util::stream::{self, Stream};
-use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, watch};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -38,13 +39,24 @@ const CHANNEL_CAPACITY: usize = 256;
 pub const CHAT_BUSY: &str = "CHAT_BUSY";
 /// The error code of a user with `MAX_ACTIVE_RUNS_PER_USER` runs.
 pub const TOO_MANY_RUNS: &str = "TOO_MANY_RUNS";
+/// The error code of a run asked for while the server shuts down.
+pub const SERVER_STOPPING: &str = "SERVER_STOPPING";
 
 /// The live runs, by chat. Cheap to share (`Arc`).
 #[derive(Debug)]
 pub struct RunRegistry {
-    runs: Mutex<HashMap<ChatId, Entry>>,
+    runs: Mutex<Runs>,
     shutdown: CancellationToken,
     max_per_user: usize,
+    /// How many runs are live, for [`RunRegistry::drain`].
+    live: watch::Sender<usize>,
+}
+
+#[derive(Debug, Default)]
+struct Runs {
+    entries: HashMap<ChatId, Entry>,
+    /// When draining started: no new runs from then on.
+    closing: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -55,6 +67,8 @@ struct Entry {
     cancel: CancellationToken,
     /// Cancelled when the slot is released.
     released: CancellationToken,
+    /// The run's events, for streams that attach later.
+    state: Arc<Mutex<Buffer>>,
 }
 
 impl RunRegistry {
@@ -65,9 +79,10 @@ impl RunRegistry {
 
     fn with_limit(shutdown: CancellationToken, max_per_user: usize) -> Self {
         Self {
-            runs: Mutex::new(HashMap::new()),
+            runs: Mutex::new(Runs::default()),
             shutdown,
             max_per_user,
+            live: watch::Sender::new(0),
         }
     }
 
@@ -75,13 +90,23 @@ impl RunRegistry {
     /// another user's chat is a `404`, never `CHAT_BUSY`.
     pub fn reserve(self: &Arc<Self>, owner: UserId, chat: ChatId) -> DomainResult<Reservation> {
         let mut runs = self.lock();
-        if runs.contains_key(&chat) {
+        if runs.closing.is_some() {
+            return Err(DomainError::business_rule(
+                "The server is restarting. Try again in a moment.",
+                SERVER_STOPPING,
+            ));
+        }
+        if runs.entries.contains_key(&chat) {
             return Err(DomainError::business_rule(
                 "This chat is already answering. Stop it or wait for it to finish.",
                 CHAT_BUSY,
             ));
         }
-        let active = runs.values().filter(|entry| entry.owner == owner).count();
+        let active = runs
+            .entries
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .count();
         if active >= self.max_per_user {
             return Err(DomainError::business_rule(
                 format!("{active} chats are already answering. Wait for one to finish or stop it."),
@@ -90,27 +115,41 @@ impl RunRegistry {
         }
         let run = Uuid::now_v7();
         let cancel = self.shutdown.child_token();
-        runs.insert(
+        let sink = Arc::new(RunSink::new(Arc::clone(self), chat, run));
+        runs.entries.insert(
             chat,
             Entry {
                 owner,
                 run,
                 cancel: cancel.clone(),
                 released: CancellationToken::new(),
+                state: Arc::clone(&sink.state),
             },
         );
+        self.live.send_replace(runs.entries.len());
         Ok(Reservation {
             registry: Arc::clone(self),
             chat,
             run,
-            sink: Arc::new(RunSink::new(Arc::clone(self), chat, run)),
+            sink,
             cancel,
         })
+    }
+
+    /// The running turn of `chat`: its events after `after` (all of them for `0`, or for a
+    /// `seq` the run never sent), then live ones, ending with `done`. `None` when the chat is
+    /// idle. Load the chat with the caller's id first.
+    pub fn attach(&self, chat: ChatId, after: u64) -> Option<Subscription> {
+        // The buffer is locked after the registry lock is released: the sink takes them the
+        // other way round when `done` releases the slot.
+        let state = Arc::clone(&self.lock().entries.get(&chat)?.state);
+        Some(subscribe(&state, after))
     }
 
     /// The chats of `owner` that are answering now.
     pub fn chats(&self, owner: UserId) -> Vec<ChatId> {
         self.lock()
+            .entries
             .iter()
             .filter(|(_, entry)| entry.owner == owner)
             .map(|(chat, _)| *chat)
@@ -123,7 +162,7 @@ impl RunRegistry {
     pub async fn stop(&self, chat: ChatId, wait: Duration) -> bool {
         let released = {
             let runs = self.lock();
-            let Some(entry) = runs.get(&chat) else {
+            let Some(entry) = runs.entries.get(&chat) else {
                 return true;
             };
             entry.cancel.cancel();
@@ -134,21 +173,54 @@ impl RunRegistry {
             .is_ok()
     }
 
+    /// Shuts the registry down: new runs fail with `SERVER_STOPPING` from now on; live runs get
+    /// `grace` to finish on their own, then the shutdown token cancels them (each saves its
+    /// partial answer as `cancelled`), and they get `limit` more to save. Both times count from
+    /// the first call, so calling it again waits only for what is left. `false` when a run was
+    /// still live at the end. New runs are refused from the call on, before the future is
+    /// polled.
+    pub fn drain(&self, grace: Duration, limit: Duration) -> impl Future<Output = bool> + '_ {
+        let started = *self.lock().closing.get_or_insert_with(Instant::now);
+        async move {
+            if tokio::time::timeout_at(started + grace, self.idle())
+                .await
+                .is_err()
+            {
+                tracing::info!(runs = *self.live.borrow(), "api.runs.drain.cancelling");
+            }
+            self.shutdown.cancel();
+            tokio::time::timeout_at(started + grace + limit, self.idle())
+                .await
+                .is_ok()
+        }
+    }
+
+    /// Resolves once no run is live.
+    async fn idle(&self) {
+        let mut live = self.live.subscribe();
+        // The sender lives as long as `self`, so waiting never fails.
+        let _ = live.wait_for(|count| *count == 0).await;
+    }
+
     /// Whether `chat` is answering.
     pub fn is_running(&self, chat: ChatId) -> bool {
-        self.lock().contains_key(&chat)
+        self.lock().entries.contains_key(&chat)
     }
 
     fn release(&self, chat: ChatId, run: Uuid) {
         let mut runs = self.lock();
-        if runs.get(&chat).is_some_and(|entry| entry.run == run)
-            && let Some(entry) = runs.remove(&chat)
+        if runs
+            .entries
+            .get(&chat)
+            .is_some_and(|entry| entry.run == run)
+            && let Some(entry) = runs.entries.remove(&chat)
         {
             entry.released.cancel();
+            self.live.send_replace(runs.entries.len());
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<ChatId, Entry>> {
+    fn lock(&self) -> MutexGuard<'_, Runs> {
         self.runs.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -176,7 +248,7 @@ impl Reservation {
 
     /// The run's events so far, then live ones, ending with `done`.
     pub fn subscribe(&self) -> Subscription {
-        self.sink.subscribe()
+        subscribe(&self.sink.state, 0)
     }
 }
 
@@ -210,21 +282,27 @@ struct Buffer {
 /// A part of a message: its id and its index.
 type PartKey = (Uuid, u32);
 
-/// A buffered event. A text or reasoning delta may hold several merged deltas of its part; it
-/// starts `start` bytes into the part's text.
+/// A buffered event. A text or reasoning delta may hold several merged deltas of its part (with
+/// the `seq` values `first` to its own); it starts `start` bytes into the part's text, and
+/// `ends` holds where each merged delta ended, counted from `start`.
 #[derive(Clone, Debug)]
 struct Buffered {
     event: ChatStreamEvent,
     start: usize,
+    first: u64,
+    ends: Vec<u32>,
 }
 
 impl Buffer {
     /// Keeps `event`, merging a delta into the previous one when both belong to the same part.
     fn keep(&mut self, event: &ChatStreamEvent) {
+        let seq = event.seq();
         let Some((key, text)) = delta(event) else {
             self.events.push(Buffered {
                 event: event.clone(),
                 start: 0,
+                first: seq,
+                ends: Vec::new(),
             });
             return;
         };
@@ -234,14 +312,44 @@ impl Buffer {
         if let Some(last) = self.events.last_mut()
             && same_part(&last.event, event)
         {
-            merge(&mut last.event, text, event.seq());
+            merge(&mut last.event, text, seq);
+            let end = last.ends.last().copied().unwrap_or_default();
+            last.ends.push(end.saturating_add(width(text)));
             return;
         }
         self.events.push(Buffered {
             event: event.clone(),
             start,
+            first: seq,
+            ends: vec![width(text)],
         });
     }
+
+    /// The bytes of each part's text that the events up to `after` carried.
+    fn sent(&self, after: u64) -> HashMap<PartKey, usize> {
+        let mut sent = HashMap::new();
+        for entry in self.events.iter().filter(|entry| entry.first <= after) {
+            let Some((key, text)) = delta(&entry.event) else {
+                continue;
+            };
+            let length = if entry.event.seq() <= after {
+                text.len()
+            } else {
+                let merged = usize::try_from(after - entry.first).unwrap_or(usize::MAX);
+                entry
+                    .ends
+                    .get(merged)
+                    .map_or(text.len(), |end| *end as usize)
+            };
+            sent.insert(key, entry.start + length);
+        }
+        sent
+    }
+}
+
+/// The length of a delta's text for [`Buffered::ends`] (an answer is far below 4 GiB).
+fn width(text: &str) -> u32 {
+    u32::try_from(text.len()).unwrap_or(u32::MAX)
 }
 
 /// The part and text of a text or reasoning delta.
@@ -289,6 +397,10 @@ fn cut(mut event: ChatStreamEvent, skip: usize) -> ChatStreamEvent {
     event
 }
 
+fn is_done(event: &ChatStreamEvent) -> bool {
+    matches!(event, ChatStreamEvent::Done { .. })
+}
+
 impl RunSink {
     fn new(registry: Arc<RunRegistry>, chat: ChatId, run: Uuid) -> Self {
         let (sender, _) = broadcast::channel(CHANNEL_CAPACITY);
@@ -311,18 +423,6 @@ impl RunSink {
         lock(&self.state).done
     }
 
-    fn subscribe(&self) -> Subscription {
-        let buffer = lock(&self.state);
-        Subscription {
-            replay: buffer.events.iter().cloned().collect(),
-            receiver: buffer.sender.subscribe(),
-            state: Arc::clone(&self.state),
-            last: 0,
-            delivered: HashMap::new(),
-            finished: false,
-        }
-    }
-
     /// Events in the replay buffer.
     #[cfg(test)]
     fn buffered(&self) -> usize {
@@ -338,7 +438,7 @@ impl TurnSink for RunSink {
         }
         buffer.seq += 1;
         let event = serializer::event(event, buffer.seq);
-        buffer.done = matches!(event, ChatStreamEvent::Done { .. });
+        buffer.done = is_done(&event);
         if buffer.done {
             self.registry.release(self.chat, self.run);
         }
@@ -352,17 +452,49 @@ fn lock(state: &Mutex<Buffer>) -> MutexGuard<'_, Buffer> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A stream of the run's events after `after` (see [`RunRegistry::attach`]).
+fn subscribe(state: &Arc<Mutex<Buffer>>, after: u64) -> Subscription {
+    let buffer = lock(state);
+    // A `seq` this run never sent belongs to another run: replay this one from the start.
+    let after = if after > buffer.seq { 0 } else { after };
+    Subscription {
+        replay: buffer.events.iter().map(Replayed::new).collect(),
+        receiver: buffer.sender.subscribe(),
+        state: Arc::clone(state),
+        last: after,
+        delivered: buffer.sent(after),
+        finished: false,
+    }
+}
+
 /// One attached stream: the replay buffer first, then live events, without gaps or repeats.
 #[derive(Debug)]
 pub struct Subscription {
-    replay: VecDeque<Buffered>,
+    replay: VecDeque<Replayed>,
     receiver: broadcast::Receiver<ChatStreamEvent>,
     state: Arc<Mutex<Buffer>>,
-    /// The `seq` of the last event sent.
+    /// The `seq` of the last event sent (or that the client already had).
     last: u64,
-    /// The bytes of each part's text sent so far, to cut a merged delta it has partly sent.
+    /// The bytes of each part's text sent so far (or that the client already had), to cut a
+    /// merged delta it has partly sent.
     delivered: HashMap<PartKey, usize>,
     finished: bool,
+}
+
+/// A buffered event on its way to one stream.
+#[derive(Debug)]
+struct Replayed {
+    event: ChatStreamEvent,
+    start: usize,
+}
+
+impl Replayed {
+    fn new(entry: &Buffered) -> Self {
+        Self {
+            event: entry.event.clone(),
+            start: entry.start,
+        }
+    }
 }
 
 impl Subscription {
@@ -381,6 +513,11 @@ impl Subscription {
         let event = loop {
             if let Some(entry) = self.replay.pop_front() {
                 if entry.event.seq() <= self.last {
+                    if is_done(&entry.event) {
+                        // The client already had the whole run.
+                        self.finished = true;
+                        return None;
+                    }
                     continue;
                 }
                 if let Some(event) = self.rest(entry) {
@@ -398,7 +535,7 @@ impl Subscription {
                         .events
                         .iter()
                         .filter(|entry| entry.event.seq() > last)
-                        .cloned()
+                        .map(Replayed::new)
                         .collect();
                 }
                 Err(RecvError::Closed) => return None,
@@ -408,12 +545,12 @@ impl Subscription {
         if let Some((key, text)) = delta(&event) {
             *self.delivered.entry(key).or_default() += text.len();
         }
-        self.finished = matches!(event, ChatStreamEvent::Done { .. });
+        self.finished = is_done(&event);
         Some(event)
     }
 
     /// The part of a buffered event this stream has not sent yet (`None` when it sent it all).
-    fn rest(&self, entry: Buffered) -> Option<ChatStreamEvent> {
+    fn rest(&self, entry: Replayed) -> Option<ChatStreamEvent> {
         let Some((key, text)) = delta(&entry.event) else {
             return Some(entry.event);
         };
@@ -670,6 +807,140 @@ mod tests {
             seen.last().map(ChatStreamEvent::seq),
             Some(CHANNEL_CAPACITY as u64 * 2 + 1)
         );
+    }
+
+    /// A live run that streamed `message.started`, then `pieces` as text deltas of one part;
+    /// with its chat and message.
+    fn streamed(registry: &Arc<RunRegistry>, pieces: &[&str]) -> (Reservation, ChatId, MessageId) {
+        let chat = ChatId::generate();
+        let reservation = registry.reserve(UserId::new(Uuid::now_v7()), chat).unwrap();
+        let sink = reservation.sink();
+        let message = MessageId::generate();
+        sink.emit(TurnEvent::MessageStarted {
+            message_id: message,
+            role: Role::Assistant,
+            window_start_id: None,
+        });
+        for piece in pieces {
+            sink.emit(delta(message, 0, piece));
+        }
+        (reservation, chat, message)
+    }
+
+    #[tokio::test]
+    async fn attaching_after_any_seq_sends_exactly_the_rest() {
+        let registry = registry(3);
+        let pieces = ["Hel", "lo", ", wor", "ld", "!"];
+        let (reservation, chat, _) = streamed(&registry, &pieces);
+        let sink = reservation.sink();
+        sink.emit(TurnEvent::Done);
+        assert_eq!(sink.buffered(), 3, "started, one merged delta, done");
+        // `done` released the chat, so a new stream gets nothing; an earlier attach is followed.
+        assert!(registry.attach(chat, 0).is_none(), "idle after done");
+
+        let full = "Hello, world!";
+        for after in 0..=7u64 {
+            let events: Vec<ChatStreamEvent> =
+                reservation_stream(&reservation, after).collect().await;
+            let (text, _) = texts(&events);
+            // seq 1 is `message.started`; deltas are 2 to 6.
+            let had: usize = pieces
+                .iter()
+                .take(usize::try_from(after.saturating_sub(1)).unwrap())
+                .map(|piece| piece.len())
+                .sum();
+            if after < 7 {
+                assert_eq!(text, full[had..], "after {after}");
+                assert_eq!(events.last().map(ChatStreamEvent::seq), Some(7));
+                assert!(events.iter().all(|event| event.seq() > after));
+            } else {
+                assert!(events.is_empty(), "the client had the whole run");
+            }
+        }
+    }
+
+    fn reservation_stream(
+        reservation: &Reservation,
+        after: u64,
+    ) -> impl Stream<Item = ChatStreamEvent> + Send {
+        subscribe(&reservation.sink.state, after).into_stream()
+    }
+
+    #[tokio::test]
+    async fn attaching_follows_a_live_run_and_a_foreign_seq_replays_from_the_start() {
+        let registry = registry(3);
+        let (reservation, chat, message) = streamed(&registry, &["one ", "two "]);
+        let sink = reservation.sink();
+        let resumed = registry.attach(chat, 2).expect("live").into_stream();
+        let foreign = registry.attach(chat, 99).expect("live").into_stream();
+        sink.emit(delta(message, 0, "three"));
+        sink.emit(TurnEvent::Done);
+
+        let (text, seqs) = texts(&resumed.collect::<Vec<_>>().await);
+        assert_eq!(text, "two three");
+        assert_eq!(seqs, vec![3, 4]);
+        let replayed: Vec<ChatStreamEvent> = foreign.collect().await;
+        assert_eq!(replayed.first().map(ChatStreamEvent::seq), Some(1));
+        assert_eq!(texts(&replayed).0, "one two three");
+    }
+
+    #[tokio::test]
+    async fn draining_refuses_new_runs_then_cancels_the_live_ones() {
+        let shutdown = CancellationToken::new();
+        let registry = Arc::new(RunRegistry::new(shutdown.clone()));
+        let user = UserId::new(Uuid::now_v7());
+        let quick = registry.reserve(user, ChatId::generate()).unwrap();
+        let slow = registry.reserve(user, ChatId::generate()).unwrap();
+        let finished = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(quick);
+        });
+        let saved = tokio::spawn({
+            let cancel = slow.cancel();
+            async move {
+                cancel.cancelled().await;
+                drop(slow);
+            }
+        });
+        let drained = registry.drain(Duration::from_millis(200), Duration::from_secs(5));
+        let refused = registry.reserve(user, ChatId::generate()).unwrap_err();
+        assert_eq!(refused.code(), SERVER_STOPPING);
+        assert!(drained.await, "every run ended");
+        assert!(shutdown.is_cancelled(), "the slow run was cancelled");
+        finished.await.unwrap();
+        saved.await.unwrap();
+        assert!(
+            registry
+                .drain(Duration::from_secs(60), Duration::from_secs(60))
+                .await,
+            "again: nothing to wait for"
+        );
+    }
+
+    #[tokio::test]
+    async fn draining_reports_a_run_that_never_ends() {
+        let registry = registry(3);
+        let stuck = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+        assert!(
+            !registry
+                .drain(Duration::from_millis(10), Duration::from_millis(10))
+                .await
+        );
+        assert!(stuck.cancel().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn draining_with_no_runs_cancels_at_once() {
+        let shutdown = CancellationToken::new();
+        let registry = RunRegistry::new(shutdown.clone());
+        assert!(
+            registry
+                .drain(Duration::from_secs(60), Duration::from_secs(60))
+                .await
+        );
+        assert!(shutdown.is_cancelled());
     }
 
     #[tokio::test]
