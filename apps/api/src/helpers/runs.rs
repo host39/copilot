@@ -67,8 +67,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::helpers::streams::{Streams, Ticket};
-use crate::routes::chats::serializer;
-use crate::routes::convert::ToDto;
+use crate::wire::convert::ToDto;
+use crate::wire::serializer;
 
 /// Events a slow stream may fall behind before it catches up from the replay buffer.
 const CHANNEL_CAPACITY: usize = 256;

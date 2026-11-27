@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
-use crate::routes::convert::{ToCore, ToDto};
 use crate::routes::path::{Id, Params};
+use crate::wire::convert::{ToCore, ToDto};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()

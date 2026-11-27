@@ -17,7 +17,7 @@ use crate::domains::tool::selection::{
 };
 use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::clock::Clock;
-use crate::ports::secret_cipher::{SECRET_UNREADABLE, SecretCipher};
+use crate::ports::secret_cipher::SecretCipher;
 use crate::ports::tool_host::{ToolEndpoint, ToolHost, ToolListing};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
@@ -164,14 +164,11 @@ impl ToolService {
 
     pub async fn get(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolServerDetails> {
         let server = self.load(actor, id).await?;
-        let credentials = match server.headers_sealed() {
-            None => KeyState::Missing,
-            Some(sealed) => match self.cipher.open(sealed, &server.headers_context()) {
-                Ok(_) => KeyState::Set,
-                Err(error) if error.code() == SECRET_UNREADABLE => KeyState::Unreadable,
-                Err(error) => return Err(error),
-            },
-        };
+        let credentials = KeyState::check(
+            &*self.cipher,
+            server.headers_sealed(),
+            &server.headers_context(),
+        )?;
         Ok(ToolServerDetails {
             server,
             credentials,
@@ -768,7 +765,7 @@ mod tests {
         let details = f.service.get(&caller, server.id()).await.unwrap();
         assert_eq!(details.credentials, KeyState::Unreadable);
         let error = f.service.test(&caller, server.id()).await.unwrap_err();
-        assert_eq!(error.code(), SECRET_UNREADABLE);
+        assert_eq!(error.code(), crate::ports::secret_cipher::SECRET_UNREADABLE);
     }
 
     #[tokio::test]

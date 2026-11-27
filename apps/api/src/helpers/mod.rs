@@ -5,6 +5,7 @@ pub mod scheduler;
 pub mod serve;
 pub mod slots;
 pub mod streams;
+pub mod turns;
 pub mod worker;
 
 #[cfg(test)]

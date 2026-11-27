@@ -17,7 +17,7 @@
 pub mod cursor;
 #[cfg(test)]
 pub(crate) mod flows;
-pub mod serializer;
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -25,39 +25,35 @@ pub(crate) mod tools;
 #[cfg(test)]
 mod voice;
 
-use std::convert::Infallible;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use copilot_contracts::{
     ChatListQuery, ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest,
     DecisionsRequest, DetailsResponse, ErrorResponse, ListResponse, MessageResponse, PageResponse,
     ProjectResponse, SendMessageRequest, StreamQuery, ToolOverride, UpdateChatRequest, UserEvent,
 };
-use copilot_core::shared::constants::{
-    DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
-};
+use copilot_core::shared::constants::{DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS};
 use copilot_core::{
-    Actor, CallDecision, CallId, Chat, ChatId, ChatQuery, ChatUpdate, DomainError, FileId,
-    MessageId, ModelId, NewChat, PreparedTurn, ProjectId, RUN_DELETED, RUN_FAILED, RunMode,
-    RunOutcome, ScheduleId, ServerOverride, ToolServerId, TurnInput, TurnOutcome, TurnSink, UserId,
+    Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, DomainError, FileId, MessageId,
+    ModelId, NewChat, PreparedTurn, ProjectId, RUN_DELETED, RunOutcome, ScheduleId, ServerOverride,
+    ToolServerId, TurnInput, UserId,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
-use tokio::task::JoinHandle;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::config::AppState;
-use crate::helpers::auth::Caller;
+use crate::helpers::auth::{Caller, Session};
 use crate::helpers::runs::{Reservation, Subscription};
-use crate::routes::convert::ToCore;
+use crate::helpers::turns;
 use crate::routes::path::{Id, MessageIds, Params};
-use crate::routes::projects;
+use crate::routes::{projects, sse};
+use crate::wire::convert::ToCore;
+use crate::wire::serializer;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -84,6 +80,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 async fn start(
     state: &AppState,
     caller: &Actor,
+    session: Session,
     chat: ChatId,
     input: TurnInput,
 ) -> Result<Response, HttpError> {
@@ -100,87 +97,15 @@ async fn start(
     let events = task
         .await
         .map_err(|error| DomainError::internal("api.chats.prepare.panicked", error))??;
-    Ok(stream_response(state, events))
+    Ok(stream_response(state, session, events))
 }
 
 /// Starts the prepared turn in its reserved slot and returns its events. The run goes on when
 /// the client disconnects; it stops on shutdown. The slot is released when the run ends.
 fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Subscription {
     let events = reservation.subscribe();
-    launch(state, reservation, turn);
+    turns::launch(state, reservation, turn);
     events
-}
-
-/// Starts the prepared turn in its reserved slot ([`Reservation::start`]: streams may attach
-/// from now on) and runs it on a task of its own, and returns that task: its output is how the
-/// run ended, `None` when it failed with an error or panicked (dropping the reservation then
-/// ends its streams with `error` and `done`). Nothing cancels the run but
-/// [`RunRegistry::stop`] and shutdown; the slot is released when the run ends.
-///
-/// [`RunRegistry::stop`]: crate::helpers::runs::RunRegistry::stop
-pub(crate) fn launch(
-    state: &AppState,
-    reservation: Reservation,
-    turn: PreparedTurn,
-) -> JoinHandle<Option<TurnOutcome>> {
-    let engine = Arc::clone(&state.engine);
-    let chat = turn.chat.id();
-    // A turn the owner runs in a scheduled run's chat (after it paused for approval) records how
-    // that run ended; the scheduler records the run's own turn.
-    let follow = (turn.mode == RunMode::Interactive && turn.chat.schedule_id().is_some())
-        .then(|| (state.clone(), turn.chat.clone()));
-    reservation.serve(turn.provider.id());
-    reservation.start();
-    tokio::spawn(async move {
-        let task = tokio::spawn({
-            let sink: Arc<dyn TurnSink> = reservation.sink();
-            let cancel = reservation.cancel();
-            async move { engine.run(turn, sink, cancel).await }
-        });
-        let outcome = match task.await {
-            Ok(Ok(outcome)) => {
-                tracing::info!(chat_id = %chat, status = %outcome.status, "api.chats.run.finished");
-                Some(outcome)
-            }
-            Ok(Err(error)) => {
-                tracing::error!(chat_id = %chat, error = %error, "api.chats.run.failed");
-                None
-            }
-            Err(error) => {
-                tracing::error!(chat_id = %chat, error = %error, "api.chats.run.panicked");
-                None
-            }
-        };
-        // A run that panicked never sent `done`: dropping the reservation ends its streams.
-        drop(reservation);
-        if let Some((state, chat)) = follow {
-            let ended = outcome.as_ref().map_or_else(
-                || RunOutcome::Failed(RUN_FAILED.to_owned()),
-                RunOutcome::from,
-            );
-            follow_up(&state, &chat, ended).await;
-        }
-        outcome
-    })
-}
-
-/// Records how a scheduled run's chat ended after the run paused (see
-/// `ScheduleService::follow_up`), and tells the owner's event streams.
-async fn follow_up(state: &AppState, chat: &Chat, outcome: RunOutcome) {
-    let Some(schedule) = chat.schedule_id() else {
-        return;
-    };
-    match state.schedules.follow_up(chat, outcome).await {
-        Ok(()) => state.runs.publish(
-            chat.user_id(),
-            UserEvent::ScheduleUpdated {
-                schedule_id: schedule.uuid(),
-            },
-        ),
-        Err(error) => {
-            tracing::warn!(schedule_id = %schedule, error = %error, "api.chats.follow-up.failed");
-        }
-    }
 }
 
 /// Tells the owner's event streams that `chat` changed.
@@ -194,15 +119,12 @@ fn changed(state: &AppState, owner: UserId, chat: ChatId) {
 }
 
 /// A run's events as server-sent events, each with its `seq` as the event id. The body ends
-/// after `done`, or when the server shuts down.
-fn stream_response(state: &AppState, events: Subscription) -> Response {
+/// after `done`, when the server shuts down, or once the caller's session has ended.
+fn stream_response(state: &AppState, session: Session, events: Subscription) -> Response {
     let events = events
         .into_stream()
-        .map(|event| Ok::<_, Infallible>(sse(&event)))
-        .take_until(state.shutdown.clone().cancelled_owned());
-    Sse::new(events)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(SSE_KEEP_ALIVE_SECS)))
-        .into_response()
+        .map(|event| sse::event(&event, Some(event.seq())));
+    sse::respond(state, session, events)
 }
 
 /// A chat's tool server overrides as core reads them.
@@ -213,14 +135,6 @@ fn overrides(rows: Vec<ToolOverride>) -> Vec<ServerOverride> {
             enabled: row.enabled,
         })
         .collect()
-}
-
-/// One event as `id: <seq>` and `data: <json>`.
-fn sse(event: &ChatStreamEvent) -> Event {
-    Event::default()
-        .id(event.seq().to_string())
-        .json_data(event)
-        .unwrap_or_else(|_| Event::default().comment("event.unserializable"))
 }
 
 #[utoipa::path(
@@ -393,7 +307,7 @@ pub async fn delete(
     state.chats.delete(&caller, chat).await?;
     changed(&state, caller.user_id, chat);
     // A scheduled run's chat deleted while it waited for approval.
-    follow_up(&state, &found, RunOutcome::Ended(RUN_DELETED.to_owned())).await;
+    turns::follow_up(&state, &found, RunOutcome::Ended(RUN_DELETED.to_owned())).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -463,6 +377,7 @@ pub async fn messages(
 pub async fn send(
     State(state): State<AppState>,
     Caller(caller): Caller,
+    session: Session,
     Id(id): Id,
     JsonBody(body): JsonBody<SendMessageRequest>,
 ) -> Result<Response, HttpError> {
@@ -471,7 +386,7 @@ pub async fn send(
         file_ids: body.file_ids.into_iter().map(FileId::new).collect(),
         edit_from: body.edit_from.map(MessageId::new),
     };
-    start(&state, &caller, ChatId::new(id), input).await
+    start(&state, &caller, session, ChatId::new(id), input).await
 }
 
 #[utoipa::path(
@@ -491,9 +406,11 @@ pub async fn send(
 pub async fn regenerate(
     State(state): State<AppState>,
     Caller(caller): Caller,
+    session: Session,
     Id(id): Id,
 ) -> Result<Response, HttpError> {
-    start(&state, &caller, ChatId::new(id), TurnInput::Regenerate).await
+    let input = TurnInput::Regenerate;
+    start(&state, &caller, session, ChatId::new(id), input).await
 }
 
 #[utoipa::path(
@@ -513,9 +430,11 @@ pub async fn regenerate(
 pub async fn retry(
     State(state): State<AppState>,
     Caller(caller): Caller,
+    session: Session,
     Id(id): Id,
 ) -> Result<Response, HttpError> {
-    start(&state, &caller, ChatId::new(id), TurnInput::Retry).await
+    let input = TurnInput::Retry;
+    start(&state, &caller, session, ChatId::new(id), input).await
 }
 
 #[utoipa::path(
@@ -539,6 +458,7 @@ pub async fn retry(
 pub async fn decide(
     State(state): State<AppState>,
     Caller(caller): Caller,
+    session: Session,
     ids: MessageIds,
     JsonBody(body): JsonBody<DecisionsRequest>,
 ) -> Result<Response, HttpError> {
@@ -556,7 +476,7 @@ pub async fn decide(
         message_id: MessageId::new(ids.message),
         decisions,
     };
-    start(&state, &caller, ChatId::new(ids.chat), input).await
+    start(&state, &caller, session, ChatId::new(ids.chat), input).await
 }
 
 #[utoipa::path(
@@ -576,6 +496,7 @@ pub async fn decide(
 pub async fn stream(
     State(state): State<AppState>,
     Caller(caller): Caller,
+    session: Session,
     Id(id): Id,
     Params(query): Params<StreamQuery>,
 ) -> Result<Response, HttpError> {
@@ -583,7 +504,7 @@ pub async fn stream(
     // The caller's chat first: another user's chat is a 404 and its run is never attached.
     state.chats.get(&caller, chat).await?;
     Ok(match state.runs.attach(chat, query.after.unwrap_or(0)) {
-        Some(events) => stream_response(&state, events),
+        Some(events) => stream_response(&state, session, events),
         None => StatusCode::NO_CONTENT.into_response(),
     })
 }

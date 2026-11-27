@@ -6,7 +6,8 @@
 //!   of Copilot's `/api` routes.
 //! - [`Caller`] turns rustauth's `AuthUser` into core's [`Actor`].
 //! - [`Directory`] is core's `Accounts` port: the owners of scheduled runs, through rustauth's
-//!   `AuthService::users`, never by reading the `auth` tables.
+//!   `AuthService::users`, never by reading the `auth` tables. It also tells a long-lived stream
+//!   when its [`Session`] ended ([`Directory::ended`]).
 //! - [`to_domain`] maps `AuthError` into [`DomainError`] for the rustauth calls Copilot code makes
 //!   (the extractor and the composition root). rustauth's own routes and guard answer with
 //!   rustauth's mapping and the same error envelope.
@@ -18,9 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use std::convert::Infallible;
+
 use axum::extract::FromRequestParts;
+use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use copilot_contracts::ErrorResponse;
+use copilot_core::shared::constants::SESSION_RECHECK_SECS;
 use copilot_core::{Accounts, Actor, DomainError, DomainResult, UserId};
 use copilot_database::{DbPool, Env};
 use copilot_middleware::HttpError;
@@ -139,6 +144,46 @@ fn account(user: &User) -> Actor {
 /// query), so Copilot never reads lib-rustauth's tables beyond `auth.users (id)`.
 #[derive(Clone)]
 pub struct Directory(Arc<AuthService>);
+
+impl Directory {
+    /// Resolves once `session` has ended: signed out, revoked, expired, or its account disabled
+    /// or deleted. Checks every `SESSION_RECHECK_SECS` (the guard has just checked it); a check
+    /// that fails for another reason (the database is down) is not an end.
+    pub async fn ended(self, session: Session) {
+        let mut every = tokio::time::interval(Duration::from_secs(SESSION_RECHECK_SECS));
+        every.tick().await;
+        loop {
+            every.tick().await;
+            if let Err(AuthError::Unauthorized) = self.0.verify(&session.0).await {
+                tracing::info!("api.auth.stream.session-ended");
+                return;
+            }
+        }
+    }
+}
+
+/// The caller's session token (`Authorization: Bearer`), for a stream that stays open and checks
+/// it again ([`Directory::ended`]). Behind the guard the header is always there and valid.
+pub struct Session(String);
+
+impl<S: Send + Sync> FromRequestParts<S> for Session {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                let (scheme, token) = value.trim().split_once(' ')?;
+                scheme
+                    .eq_ignore_ascii_case("bearer")
+                    .then(|| token.trim().to_owned())
+            })
+            .unwrap_or_default();
+        Ok(Self(token))
+    }
+}
 
 #[async_trait]
 impl Accounts for Directory {

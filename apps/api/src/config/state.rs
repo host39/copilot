@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
+use crate::helpers::auth::Directory;
 use crate::helpers::runs::RunRegistry;
 use crate::helpers::slots::Slots;
 
@@ -37,6 +38,8 @@ pub struct AppState {
     pub uploads: Arc<Slots>,
     /// File downloads being sent, a few per user and in all.
     pub downloads: Arc<Slots>,
+    /// lib-rustauth's accounts and sessions, for streams that check their session again.
+    pub identity: Directory,
     /// Scheduled runs waiting to record how they ended; shutdown waits for them before the pool
     /// closes (`helpers::scheduler::settle`).
     pub tasks: TaskTracker,

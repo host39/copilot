@@ -607,7 +607,7 @@ Further adapter decisions (P2.B, details in `docs/design/tracks/b.md`):
 
 ## Stream Events
 
-Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` and `UserEvent` (`#[serde(tag = "type")]`, each variant with its dotted `rename` and `rename_all = "camelCase"` for its fields, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). Every `ChatStreamEvent` variant has a `seq` field, read with `ChatStreamEvent::seq()`. `apps/api/src/routes/chats/serializer.rs` maps one to the other, cuts tool output text for display to 8 KiB in total (`DISPLAY_MAX_BYTES`, on a character boundary, setting `truncated`), and builds `sse::Event::json_data`. Streams send a keep-alive comment every 15 seconds.
+Core emits `TurnEvent` (Uuid ids, full tool output, no serde). Contracts define `ChatStreamEvent` and `UserEvent` (`#[serde(tag = "type")]`, each variant with its dotted `rename` and `rename_all = "camelCase"` for its fields, ts-rs export, a Zod discriminated union in `packages/contracts/ts/index.ts`). Every `ChatStreamEvent` variant has a `seq` field, read with `ChatStreamEvent::seq()`. `apps/api/src/wire/serializer.rs` maps one to the other and cuts tool output text for display to 8 KiB in total (`DISPLAY_MAX_BYTES`, on a character boundary, setting `truncated`); `apps/api/src/routes/sse.rs` builds every event stream response (the run streams and `/api/events`): a keep-alive comment every 15 seconds, `Cache-Control: no-cache`, `X-Accel-Buffering: no`, and an end on shutdown or once the stream's session has ended (signed out, revoked, expired, or the account disabled or deleted), checked through rustauth every `SESSION_RECHECK_SECS` (60).
 
 ### Chat Stream
 
@@ -628,7 +628,7 @@ Every event has `type` and `seq` (per run).
 
 ### User Events
 
-`GET /api/events` is a per-user SSE stream that lets open clients refresh the sidebar without polling. A new stream first gets `run.started` for each of the user's chats answering now (a run starting as the stream connects may get it twice, so clients treat it as idempotent), then live events. Events carry no `seq` and are not replayed: a stream ends after `EVENTS_STREAM_MAX_SECS` (so a session signed out elsewhere stops hearing within that time), when it falls 64 events behind, when the user opens more than `EVENT_STREAMS_PER_USER` (the oldest ends), or on shutdown, and the client connects again and reads the chat list afresh. The web client reads the stream over `fetch` (with the token) and reconnects like `EventSource`: 1 second after the server closed it, after a failure with the reattach backoff (1, 2, 4, 8, then every 15 seconds), at once when the device is online again or the page visible, every 5 minutes while the server has no event stream (`404`, `501`), and never after a `401`. Each event refreshes the chat lists (the unread and needs-approval dots and the Scheduled count), the changed chat, or the schedules, never a chat's messages (that would mark the chat read); a chat page that follows no stream attaches on its chat's `run.started` and rereads its messages on `run.finished` or `approval.pending`.
+`GET /api/events` is a per-user SSE stream that lets open clients refresh the sidebar without polling. A new stream first gets `run.started` for each of the user's chats answering now (a run starting as the stream connects may get it twice, so clients treat it as idempotent), then live events. Events carry no `seq` and are not replayed: a stream ends after `EVENTS_STREAM_MAX_SECS`, within `SESSION_RECHECK_SECS` of its session ending, when it falls 64 events behind, when the user opens more than `EVENT_STREAMS_PER_USER` (the oldest ends), or on shutdown, and the client connects again and reads the chat list afresh. The web client reads the stream over `fetch` (with the token) and reconnects like `EventSource`: 1 second after the server closed it, after a failure with the reattach backoff (1, 2, 4, 8, then every 15 seconds), at once when the device is online again or the page visible, every 5 minutes while the server has no event stream (`404`, `501`), and never after a `401`. Each event refreshes the chat lists (the unread and needs-approval dots and the Scheduled count), the changed chat, or the schedules, never a chat's messages (that would mark the chat read); a chat page that follows no stream attaches on its chat's `run.started` and rereads its messages on `run.finished` or `approval.pending`.
 
 | `type` | Payload |
 | --- | --- |
@@ -1077,6 +1077,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300 (any audio in a chat), 16000 (the client's recording rate) |
 | `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_GRACE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 5, 10 |
 | `EVENTS_STREAM_MAX_SECS` | 900 |
+| `SESSION_RECHECK_SECS` | 60 (an open stream checks its session again this often) |
 
 ## Native Apps
 

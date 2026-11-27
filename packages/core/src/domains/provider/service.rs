@@ -13,7 +13,7 @@ use crate::domains::provider::values::{Preset, ProviderKind};
 use crate::domains::schedule::{MODEL_REMOVED, ScheduleRepository};
 use crate::ports::clock::Clock;
 use crate::ports::llm_gateway::{LlmGateway, ProviderTarget};
-use crate::ports::secret_cipher::{SECRET_UNREADABLE, SecretCipher};
+use crate::ports::secret_cipher::SecretCipher;
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::{
@@ -124,14 +124,11 @@ impl ProviderService {
     pub async fn get(&self, actor: &Actor, id: ProviderId) -> DomainResult<ProviderDetails> {
         let provider = self.load(actor, id).await?;
         let usage = self.providers.usage(actor.user_id, id).await?;
-        let key = match provider.api_key_sealed() {
-            None => KeyState::Missing,
-            Some(sealed) => match self.cipher.open(sealed, &provider.key_context()) {
-                Ok(_) => KeyState::Set,
-                Err(error) if error.code() == SECRET_UNREADABLE => KeyState::Unreadable,
-                Err(error) => return Err(error),
-            },
-        };
+        let key = KeyState::check(
+            &*self.cipher,
+            provider.api_key_sealed(),
+            &provider.key_context(),
+        )?;
         Ok(ProviderDetails {
             provider,
             usage,
@@ -677,7 +674,7 @@ mod tests {
             .unwrap();
         f.cipher.rotate();
         let error = f.service.refresh(&caller, provider.id()).await.unwrap_err();
-        assert_eq!(error.code(), SECRET_UNREADABLE);
+        assert_eq!(error.code(), crate::ports::secret_cipher::SECRET_UNREADABLE);
         assert!(
             f.gateway.targets().is_empty(),
             "the provider is never called"

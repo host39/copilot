@@ -38,7 +38,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 
 | Path | Role |
 | --- | --- |
-| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), per-user stream limits (`helpers/streams.rs`), OpenAPI routes under `/api` (core to wire mapping in `routes/convert.rs`), the web bundle (`WEB_DIR`), the `server` binary |
+| `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), turn launches shared by the routes and the scheduler (`helpers/turns.rs`), per-user stream limits (`helpers/streams.rs`), core to wire mapping (`wire/convert.rs`, `wire/serializer.rs`), OpenAPI routes under `/api` (server-sent events through `routes/sse.rs`), the web bundle (`WEB_DIR`), the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
 | `apps/native` | Tauri 2 shell for Linux and Android around the web build: `src-tauri` (the `copilot-native` crate, the capability, the committed Android project), configuration tests in `test/`; see `apps/native/README.md` |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |

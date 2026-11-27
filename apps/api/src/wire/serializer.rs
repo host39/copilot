@@ -13,7 +13,7 @@ use copilot_core::{
 };
 use serde_json::Value;
 
-use crate::routes::convert::ToDto;
+use crate::wire::convert::ToDto;
 
 /// Longest tool result text a stream event shows, in bytes; the stored result may be longer
 /// (up to `MCP_RESULT_MAX_BYTES`), and the messages route returns it whole.

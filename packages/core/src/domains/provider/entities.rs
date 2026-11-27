@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::domains::provider::capabilities::{Capabilities, CapabilityOverrides, Locks};
 use crate::domains::provider::values::{Dialect, Preset, ProviderKind};
 use crate::ports::llm_gateway::{ModelTarget, ProviderTarget};
-use crate::ports::secret_cipher::SealContext;
+use crate::ports::secret_cipher::{SECRET_UNREADABLE, SealContext, SecretCipher};
 use crate::shared::base_url::BaseUrl;
 use crate::shared::constants::NAME_MAX_CHARS;
 use crate::shared::errors::{DomainError, DomainResult};
@@ -54,6 +54,34 @@ pub enum KeyState {
     Set,
     /// A key is stored but no longer opens (the `SECRET_KEY` changed): "Key must be re-entered".
     Unreadable,
+}
+
+impl KeyState {
+    /// `Set` when a secret is stored, without opening it (lists and writes).
+    pub fn stored(sealed: Option<&[u8]>) -> Self {
+        if sealed.is_some() {
+            Self::Set
+        } else {
+            Self::Missing
+        }
+    }
+
+    /// Whether the stored secret opens under `context`: `Unreadable` when it no longer does
+    /// (`SECRET_UNREADABLE`); any other failure is returned.
+    pub fn check(
+        cipher: &dyn SecretCipher,
+        sealed: Option<&[u8]>,
+        context: &SealContext,
+    ) -> DomainResult<Self> {
+        let Some(sealed) = sealed else {
+            return Ok(Self::Missing);
+        };
+        match cipher.open(sealed, context) {
+            Ok(_) => Ok(Self::Set),
+            Err(error) if error.code() == SECRET_UNREADABLE => Ok(Self::Unreadable),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl Provider {

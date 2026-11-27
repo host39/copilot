@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::config::{AppConfig, AppState};
-use crate::helpers::auth::Identity;
+use crate::helpers::auth::{Directory, Identity};
 use crate::helpers::runs::RunRegistry;
 use crate::helpers::scheduler::{Scheduler, settle};
 use crate::helpers::slots::Slots;
@@ -160,9 +160,10 @@ pub fn wire(
     config: Arc<AppConfig>,
     db: DbPool,
     adapters: Adapters,
-    accounts: Arc<dyn Accounts>,
+    identity: Directory,
     shutdown: CancellationToken,
 ) -> AppState {
+    let accounts: Arc<dyn Accounts> = Arc::new(identity.clone());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let stores = ChatRepositories::shared(Arc::new(PgStore::new(db.clone(), clock.clone())));
     let cipher: Arc<dyn SecretCipher> = Arc::new(AesCipher::new(config.secret_key.clone()));
@@ -241,6 +242,7 @@ pub fn wire(
         runs: Arc::new(runs),
         uploads: Arc::new(Slots::uploads()),
         downloads: Arc::new(Slots::downloads()),
+        identity,
         tasks: TaskTracker::new(),
     }
 }

@@ -20,9 +20,9 @@ use utoipa_axum::routes;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
-use crate::routes::convert::{ToCore, ToDto};
 use crate::routes::models;
 use crate::routes::path::Id;
+use crate::wire::convert::{ToCore, ToDto};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -50,11 +50,7 @@ pub fn response(provider: &Provider, key: KeyState) -> ProviderResponse {
 
 /// `set` when a key is stored, without opening it.
 fn stored_key(provider: &Provider) -> KeyState {
-    if provider.has_key() {
-        KeyState::Set
-    } else {
-        KeyState::Missing
-    }
+    KeyState::stored(provider.api_key_sealed())
 }
 
 #[utoipa::path(

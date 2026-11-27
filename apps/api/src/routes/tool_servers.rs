@@ -19,8 +19,8 @@ use utoipa_axum::routes;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
-use crate::routes::convert::{ToCore, ToDto};
 use crate::routes::path::Id;
+use crate::wire::convert::{ToCore, ToDto};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -69,11 +69,7 @@ pub fn response(server: &ToolServer, credentials: KeyState) -> ToolServerRespons
 
 /// Whether credentials are stored, without opening them (lists and writes).
 fn stored(server: &ToolServer) -> KeyState {
-    if server.headers_sealed().is_some() {
-        KeyState::Set
-    } else {
-        KeyState::Missing
-    }
+    KeyState::stored(server.headers_sealed())
 }
 
 #[utoipa::path(

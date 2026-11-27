@@ -6,7 +6,7 @@
 //! `{id}` and `{messageId}`.
 
 pub mod chats;
-pub mod convert;
+
 pub mod docs;
 pub mod events;
 pub mod files;
@@ -18,6 +18,7 @@ pub mod providers;
 pub mod schedules;
 pub mod search;
 pub mod settings;
+pub mod sse;
 pub mod tool_servers;
 pub mod web;
 

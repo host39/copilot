@@ -18,14 +18,6 @@ pub struct TableDoc {
     pub omitted_columns: &'static [OmittedColumn],
 }
 
-pub const SCHEMA_OVERVIEW: &str = "Copilot's tables live in `public`; lib-rustauth's accounts and \
-     sessions live in `auth`, which the readonly role cannot read. The readonly role reads \
-     provider connections, models, tool servers, schedules, and file metadata, without sealed \
-     credentials, addresses that may carry one, or anything a user wrote or uploaded (schedule \
-     names, prompts, instructions, and errors; file names and hashes; cached tool lists). \
-     Instructions, projects, chats, messages, turn snapshots, file bytes, and the join tables \
-     stay private.";
-
 /// The tables the readonly role may read (docs/design/copilot.md, "Readonly Role"). Every other
 /// table, and every column listed in `omitted_columns`, stays unreadable.
 pub const SCHEMA_TABLES: &[TableDoc] = &[

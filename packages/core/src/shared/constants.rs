@@ -127,6 +127,9 @@ pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
 /// Sample rate the client records push-to-talk clips at (16 kHz mono PCM16 WAV).
 pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
 pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
+/// A stream left open checks its session again this often, and ends once the session has ended
+/// (signed out, revoked, expired, or the account disabled or deleted).
+pub const SESSION_RECHECK_SECS: u64 = 60;
 /// A `GET /api/events` stream ends after this long and the client connects again, so a session
 /// signed out elsewhere stops receiving events within this time.
 pub const EVENTS_STREAM_MAX_SECS: u64 = 900;
@@ -152,14 +155,3 @@ pub const DEFAULT_MAX_STORAGE_MB_PER_USER: u64 = 1_024;
 pub const NAME_MAX_CHARS: usize = 100;
 /// Longest file name (display only).
 pub const FILE_NAME_MAX_CHARS: usize = 255;
-
-/// Common durations.
-pub mod time {
-    use std::time::Duration;
-
-    pub const SECOND: Duration = Duration::from_secs(1);
-    pub const MINUTE: Duration = Duration::from_secs(60);
-    pub const HOUR: Duration = Duration::from_secs(60 * 60);
-    pub const DAY: Duration = Duration::from_secs(24 * 60 * 60);
-    pub const WEEK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-}

@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::AppState;
 use crate::helpers::runs::{Reservation, Slot};
-use crate::routes::chats;
+use crate::helpers::turns;
 
 /// Claims due schedules and starts their runs. Cheap to clone.
 #[derive(Clone)]
@@ -160,7 +160,7 @@ pub async fn fire(
         }
     };
     let cancel = reservation.cancel();
-    let task = chats::launch(state, reservation, turn);
+    let task = turns::launch(state, reservation, turn);
     let state = state.clone();
     state.tasks.clone().spawn(async move {
         let limit = Duration::from_secs(SCHEDULED_RUN_MAX_SECS);
