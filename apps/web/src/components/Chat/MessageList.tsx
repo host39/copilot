@@ -1,5 +1,6 @@
 import type { MessagePartDto, MessageResponse } from "@copilot/contracts";
 import type { Reply } from "@web/routes/chat/reply";
+import { messageAnchor } from "@web/routes/search/highlight";
 
 type MessageListProps = {
   messages: MessageResponse[];
@@ -40,7 +41,7 @@ export function MessageList({ messages, pending, reply }: MessageListProps) {
         .map((message) => {
           const text = messageText(message.parts);
           return (
-            <li key={message.id} className="space-y-1">
+            <li key={message.id} id={messageAnchor(message.id)} className="scroll-mt-4 space-y-1">
               {text ? <Bubble own={message.role === "user"}>{text}</Bubble> : null}
               {message.role === "assistant" && message.error ? (
                 <p className="field-error">{message.error}</p>
