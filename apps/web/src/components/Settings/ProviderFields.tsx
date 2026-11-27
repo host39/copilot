@@ -1,4 +1,5 @@
 import { TextField } from "@web/components/Form/TextField";
+import { ApiPicker } from "@web/components/Settings/ApiPicker";
 import { text } from "@web/forms";
 import { CHOICES, type Choice } from "@web/routes/settings/providers/presets";
 
@@ -23,8 +24,9 @@ function addressHint(pick: Choice): string {
 
 /**
  * The add-provider fields of Settings and the first-run setup: the preset as a radio group, then
- * what that preset needs (a key, an address, or both). Each field is keyed by the preset, so
- * switching presets never carries a key over to another provider.
+ * what that preset needs (a key, an address, or both, and the OpenAI API where the preset lets the
+ * user choose). Each field is keyed by the preset, so switching presets never carries a key over
+ * to another provider.
  */
 export function ProviderFields({
   pick,
@@ -93,11 +95,17 @@ export function ProviderFields({
           error={errors.apiKey}
         />
       ) : null}
+      {pick.api ? <ApiPicker key={`${pick.id}-api`} defaultValue={pick.api} /> : null}
     </>
   );
 }
 
 /** The add-provider fields of a submitted form, as `providerSchema` input. */
 export function providerValues(data: FormData) {
-  return { name: text(data, "name"), baseUrl: text(data, "baseUrl"), apiKey: text(data, "apiKey") };
+  return {
+    name: text(data, "name"),
+    baseUrl: text(data, "baseUrl"),
+    apiKey: text(data, "apiKey"),
+    api: text(data, "api") || undefined,
+  };
 }

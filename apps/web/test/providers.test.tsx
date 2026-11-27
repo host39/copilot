@@ -14,7 +14,12 @@ import { keys } from "@web/api/routes/keys";
 import { clearToken, setToken } from "@web/auth/token";
 import { fieldErrors } from "@web/forms";
 import path from "@web/routes/path";
-import { connectionSchema, dropsKey, sameOrigin } from "@web/routes/settings/provider/connection";
+import {
+  choosesApi,
+  connectionSchema,
+  dropsKey,
+  sameOrigin,
+} from "@web/routes/settings/provider/connection";
 import {
   filterModels,
   modelSchema,
@@ -139,9 +144,33 @@ describe("the add-provider form", () => {
           preset: "custom",
           name: "vLLM",
           baseUrl: "http://10.0.0.5:8000/v1",
+          api: "chat_completions",
         },
       }
     );
+  });
+
+  test("OpenAI and compatible servers choose an API; other presets send none", () => {
+    const filled = { name: "", baseUrl: "https://llm.example.com/v1", apiKey: "sk-1" };
+    expect(parse(providerSchema(pick("openai")), filled)).toEqual({
+      value: { kind: "openai", preset: "openai", name: "OpenAI", apiKey: "sk-1", api: "responses" },
+    });
+    expect(
+      parse(providerSchema(pick("openai")), { ...filled, api: "chat_completions" })
+    ).toMatchObject({ value: { api: "chat_completions" } });
+    expect(
+      parse(providerSchema(pick("custom-openai")), { ...filled, api: "responses" })
+    ).toMatchObject({ value: { preset: "custom", api: "responses" } });
+    expect(parse(providerSchema(pick("openai")), { ...filled, api: "completions" })).toEqual({
+      errors: { api: expect.any(String) },
+    });
+    for (const id of ["gemini", "openrouter", "anthropic", "custom-anthropic"]) {
+      const result = parse(providerSchema(pick(id)), { ...filled, api: "responses" });
+      expect(result.value).not.toHaveProperty("api");
+    }
+    expect(
+      parse(providerSchema(pick("ollama")), { ...filled, api: "responses" }).value
+    ).not.toHaveProperty("api");
   });
 
   test("Ollama takes an optional address and never sends a key", () => {
@@ -244,6 +273,26 @@ describe("the connection form", () => {
     expect(
       parse(connectionSchema(provider), { ...values, name: " Work ", apiKey: " sk-2 " })
     ).toEqual({ value: { name: "Work", apiKey: "sk-2" } });
+  });
+
+  test("sends the API only when it changed, and only where the preset chooses one", () => {
+    expect(parse(connectionSchema(provider), { ...values, api: "responses" })).toEqual({
+      value: {},
+    });
+    expect(parse(connectionSchema(provider), { ...values, api: "chat_completions" })).toEqual({
+      value: { api: "chat_completions" },
+    });
+    const gemini: ProviderResponse = { ...provider, preset: "gemini", api: "chat_completions" };
+    expect(choosesApi(gemini)).toBe(false);
+    expect(choosesApi({ ...provider, preset: "custom" })).toBe(true);
+    expect(choosesApi({ ...provider, kind: "anthropic", preset: "custom", api: null })).toBe(false);
+    expect(
+      parse(connectionSchema(gemini), {
+        ...values,
+        baseUrl: gemini.baseUrl,
+        api: "responses",
+      })
+    ).toEqual({ value: {} });
   });
 
   test("needs a name and an http address", () => {
@@ -447,6 +496,9 @@ describe("the provider screens", () => {
     expect(html).toContain("Anthropic-compatible");
     expect(html).toContain('name="apiKey"');
     expect(html).not.toContain('name="baseUrl"');
+    expect(html).toContain('name="api"');
+    expect(html).toMatch(/name="api" checked="" value="responses"/);
+    expect(html).toContain("Chat Completions");
   });
 
   test("a connection shows its settings, its models, and delete", () => {
@@ -459,6 +511,8 @@ describe("the provider screens", () => {
     ]);
     expect(html).toContain('value="https://api.openai.com/v1"');
     expect(html).toContain("Key stored");
+    expect(html).toContain("Responses API");
+    expect(html).toMatch(/name="api" checked="" value="responses"/);
     expect(html).toContain("Leave empty to keep the stored key");
     expect(html).toContain("2 of 2 turned on");
     expect(html).toContain("Tool use · 128K context");

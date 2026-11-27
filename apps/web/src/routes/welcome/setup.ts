@@ -102,6 +102,7 @@ export async function saveConnection(
       ? { baseUrl: body.baseUrl }
       : {}),
     ...(body.apiKey !== undefined ? { apiKey: body.apiKey } : {}),
+    ...(body.api !== undefined && body.api !== saved.api ? { api: body.api } : {}),
   };
   return Object.keys(changes).length === 0 ? saved : updateProvider(saved.id, changes);
 }
