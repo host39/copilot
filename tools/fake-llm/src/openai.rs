@@ -145,7 +145,7 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
 }
 
 /// The `401` for a request without the bearer key; `None` lets it through.
-fn refusal(state: &AppState, headers: &HeaderMap) -> Option<Response> {
+pub(crate) fn refusal(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     let expected = format!("Bearer {}", state.config.key);
     let given = headers
         .get(header::AUTHORIZATION)
@@ -515,7 +515,7 @@ fn counts(reply: &Reply) -> Value {
 }
 
 /// The answer to `failed <status>`: OpenAI's error body, and `Retry-After` on a `429`.
-fn failure(status: u16) -> Response {
+pub(crate) fn failure(status: u16) -> Response {
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let message = format!("The fake model was asked to fail with HTTP {status}.");
     let (kind, reason) = match status {
@@ -535,7 +535,7 @@ fn failure(status: u16) -> Response {
 }
 
 /// OpenAI's error body.
-fn error(status: StatusCode, message: &str, kind: &str, code: Option<&str>) -> Response {
+pub(crate) fn error(status: StatusCode, message: &str, kind: &str, code: Option<&str>) -> Response {
     let body = json!({
         "error": { "message": message, "type": kind, "param": null, "code": code },
     });

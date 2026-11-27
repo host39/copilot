@@ -181,6 +181,7 @@ describe("the setup steps", () => {
       kind: "openai",
       preset: "openai",
       name: "OpenAI",
+      api: "responses",
     });
   });
 });
@@ -213,9 +214,23 @@ describe("saving the connection", () => {
         preset: "openai",
         name: "OpenAI",
         baseUrl: provider.baseUrl,
+        api: "responses",
       })
     ).toEqual(provider);
     expect(calls).toEqual([]);
+  });
+
+  test("switches the saved one to another API", async () => {
+    serve(() => json({ data: { ...provider, api: "chat_completions" } }));
+    await saveConnection(provider, {
+      kind: "openai",
+      preset: "openai",
+      name: "OpenAI",
+      api: "chat_completions",
+    });
+    expect(calls).toEqual([
+      { url: `/api/providers/${ID}`, method: "PATCH", body: { api: "chat_completions" } },
+    ]);
   });
 
   test("replaces it when the preset changed", async () => {

@@ -22,7 +22,7 @@ Treat this note as a draft: the provider docs change often, and model names, ver
 | `anthropic` | Messages API, `POST /v1/messages`, named SSE events | Anthropic first-party (also LM Studio, llama.cpp, and vLLM expose `/v1/messages`, see the sections below) |
 | `openai_compat` | Chat Completions, `POST {base}/chat/completions`, data-only SSE | Ollama, vLLM, LM Studio, llama.cpp server, OpenRouter, Groq, Together, Gemini OpenAI endpoint, OpenAI models that do not need Responses for tools |
 | `gemini` | `generateContent` / `streamGenerateContent?alt=sse` | Google AI Studio Gemini API |
-| Later: `openai_responses` | Responses API, `POST {base}/responses`, typed SSE events | OpenAI GPT-6 family tool calling and reasoning summaries; Ollama, vLLM, LM Studio, llama.cpp, OpenRouter, Groq also serve it |
+| `openai_responses` (built in P7.1 as a per-connection API of the `openai` kind) | Responses API, `POST {base}/responses`, typed SSE events | OpenAI GPT-6 family tool calling and reasoning summaries; Ollama, vLLM, LM Studio, llama.cpp, OpenRouter, Groq also serve it |
 | Later: `gemini_interactions` | Interactions API, `POST /v1beta/interactions` with `store: false` | Gemini once `generateContent` is deprecated |
 
 Reasons for Chat Completions as the generic target: it is the only endpoint every listed server documents (sources in the [OpenAI-Compatible Section](#openai-compatible-chat-completions)), and it is stateless like our storage model. The cost is that OpenAI's newest models need a Responses adapter for tool calling.
@@ -321,7 +321,7 @@ Endpoint support across the targets:
 | Together | Yes | UNVERIFIED | UNVERIFIED | <https://docs.together.ai/docs/openai-api-compatibility> |
 | Gemini OpenAI endpoint | Yes | UNVERIFIED | UNVERIFIED | <https://aistudio.google.com/docs/openai> |
 
-**Decision:** the `openai_compat` adapter targets Chat Completions. Mark OpenAI first-party GPT-6 family models as "tools unavailable via this adapter" until an `openai_responses` adapter exists.
+**Decision:** the `openai_compat` adapter targets Chat Completions. Mark OpenAI first-party GPT-6 family models as "tools unavailable via this adapter" until an `openai_responses` adapter exists. **Update (P7.1):** the Responses adapter exists; the `openai` preset uses it by default and the lock applies only to `openai` connections switched to Chat Completions (see [OpenAI Responses API](#openai-responses-api)).
 
 ### Base URLs and Auth
 
@@ -490,6 +490,49 @@ OpenRouter `reasoning_details` items are `{"type": "reasoning.summary" | "reason
 **Parser rule:** reasoning text = `delta.reasoning` or else `delta.reasoning_content`; also collect `delta.reasoning_details`. Optionally split `<think>...</think>` out of `content` for servers in raw mode.
 
 **Chat UI:** show reasoning text collapsed; store `reasoning_details` (OpenRouter) and the raw reasoning string per assistant message so it can be replayed for the same provider. Replaying plain reasoning strings is optional for local servers.
+
+## OpenAI Responses API
+
+Verified against OpenAI's API reference on 2026-11-27 for roadmap step P7.1 (the adapter in `packages/providers/src/responses/`). Sources: <https://developers.openai.com/api/reference/resources/responses/methods/create>, <https://developers.openai.com/api/reference/resources/responses/streaming-events>, <https://developers.openai.com/api/docs/guides/reasoning>, <https://developers.openai.com/api/docs/guides/function-calling>, <https://developers.openai.com/api/docs/guides/file-inputs>, <https://developers.openai.com/api/docs/guides/migrate-to-responses>. Every page has a Markdown copy at the same URL plus `.md`.
+
+### Request
+
+`POST {base}/responses`, `Authorization: Bearer <key>`. The fields Copilot sends:
+
+- `model`, `stream: true`, `store: false` (default `true`: "response data will be stored for at least 30 days"), `instructions` ("A system (or developer) message inserted into the model's context"), `max_output_tokens` (includes reasoning tokens; `minimum: 16`).
+- `input`: a string or a list of items. Item types used: `message` (`role` `user`, `assistant`, `system`, or `developer`; `content` a string or a list of `input_text`, `input_image` with `image_url` "a fully qualified URL or base64 encoded image in a data URL" and `detail`, and `input_file` with `file_data`, `filename`, `file_id`, or `file_url`), `function_call` (`call_id`, `name`, `arguments` as a JSON string, optional `id` and `status`), `function_call_output` (`call_id`, `output` a string or a list of `input_text`, `input_image`, `input_file`), and `reasoning` (`id`, `summary` of `summary_text`, optional `content` of `reasoning_text`, `encrypted_content`). Assistant messages may carry `phase` (`commentary` or `final_answer`): "preserve and resend phase on all assistant messages".
+- `tools`: `{type: "function", name, description, parameters, strict}`. "If you omit `strict`, ... Responses requests will attempt to normalize your schema into strict mode when possible, and will fall back to non-strict" (function-calling guide); strict mode needs `additionalProperties: false` and every property required, so Copilot sends `strict: false` for MCP schemas. `tool_choice`: `auto`, `required`, `none`, or a named function. `parallel_tool_calls` defaults to `true`.
+- `reasoning`: `effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model dependent), `summary` (`auto`, `concise`, `detailed`), and `context` (`auto`, `current_turn`, `all_turns`: which earlier reasoning items the model renders; Copilot leaves it unset).
+- `include`: `reasoning.encrypted_content` "enables reasoning items to be used in multi-turn conversations when using the Responses API statelessly". The reasoning guide adds that in stateless mode "reasoning items in the response's `output` array include an `encrypted_content` property by default" and that the include value is "legacy" but still accepted. Copilot sends it with the reasoning settings (models with the `reasoning` capability).
+- **Audio:** the request schema has no `input_audio` part, and the migration guide lists audio for Responses as "Coming soon". Copilot locks `audio_in` and `audio_out` on Responses connections.
+- **PDFs:** `input_file` with `file_data` as `data:application/pdf;base64,...` (the file inputs guide's examples). Responses also takes other file types; Copilot sends only what core sends (PDFs to models with `pdf`).
+
+### Stateless Replay
+
+With `store: false`, the next request carries the whole history: the earlier output items verbatim, then the new input. "Any reasoning items returned in model responses with tool calls must also be passed back with tool call outputs" (function-calling guide). "When streaming, use the completed reasoning item and its `encrypted_content` from the `response.output_item.done` event ... The `encrypted_content` in `response.output_item.added` may be incomplete" (create reference). A reasoning item without `encrypted_content` makes the API look it up by id, which fails when nothing was stored ("Items are not persisted when `store` is set to false"; the message as the fake model server reproduces it, **UNVERIFIED** against a live request).
+
+### Streaming Events
+
+Each SSE event is named, and its data repeats the name in `type` with a `sequence_number`. The events Copilot reads:
+
+| Event | Fields used |
+| --- | --- |
+| `response.created`, `response.in_progress`, `response.queued` | Ignored |
+| `response.output_item.added` | `output_index`, `item` (`type` `message`, `reasoning`, `function_call` with `call_id` and `name`) |
+| `response.output_item.done` | `output_index`, the finished `item` (kept for replay) |
+| `response.content_part.added` / `.done` | Ignored (the item carries the parts) |
+| `response.output_text.delta` / `.done` | `output_index`, `delta` / `text` |
+| `response.refusal.delta` / `.done` | `delta` / `refusal` |
+| `response.reasoning_summary_part.added` / `.done` | Ignored |
+| `response.reasoning_summary_text.delta` / `.done` | `output_index`, `summary_index`, `delta` / `text` |
+| `response.reasoning_text.delta` / `.done` | Raw reasoning text (open models on compatible servers) |
+| `response.function_call_arguments.delta` / `.done` | `output_index`, `delta` / `arguments` |
+| `response.completed` | `response.output`, `response.usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`) |
+| `response.incomplete` | `response.incomplete_details.reason`: `max_output_tokens`, `max_messages`, `content_filter`, `steered` |
+| `response.failed` | `response.error.code` (`server_error`, `rate_limit_exceeded`, `invalid_prompt`, image errors, ...) and `message` |
+| `error` | `code`, `message`, `param` |
+
+Built-in tool events (`web_search_call`, `file_search_call`, `code_interpreter_call`, `image_generation_call`, MCP, shell, ...) never come: Copilot offers function tools only. `response.audio.*` events exist in the reference but go with audio output, which Copilot does not ask Responses for.
 
 ## Gemini (`generateContent`)
 

@@ -5,8 +5,8 @@
 # It creates a database (copilot_e2e_<random>), migrates it, starts fake-llm and the server (with
 # WEB_DIR pointing at the built bundle, as in the image), and prepares over HTTP what a person
 # would have set up before picking up their phone: the administrator account, an
-# OpenAI-compatible connection to the fake server with only fake-chat on, and the fake MCP server
-# as a tool server that asks before each call. Then `pnpm --filter @copilot/e2e e2e` runs the
+# OpenAI-compatible connection to the fake server (the `openai` preset, so the Responses API)
+# with only fake-chat on, and the fake MCP server as a tool server that asks before each call. Then `pnpm --filter @copilot/e2e e2e` runs the
 # tests in apps/e2e/tests against it, and everything stops and the database is dropped
 # (E2E_KEEP=1 keeps the database).
 #
@@ -164,7 +164,7 @@ request POST /auth/register \
   "{\"username\":\"phone\",\"password\":\"$PASSWORD\",\"displayName\":\"Phone\",\"setupToken\":\"$SETUP_TOKEN\"}"
 token="$(jq -er .data.token <<<"$body")"
 request POST /providers \
-  "{\"kind\":\"openai\",\"preset\":\"openai\",\"api\":\"chat_completions\",\"name\":\"Fake OpenAI\",\"baseUrl\":\"$FAKE/v1\",\"apiKey\":\"$FAKE_KEY\"}"
+  "{\"kind\":\"openai\",\"preset\":\"openai\",\"name\":\"Fake OpenAI\",\"baseUrl\":\"$FAKE/v1\",\"apiKey\":\"$FAKE_KEY\"}"
 provider="$(jq -er .data.id <<<"$body")"
 request POST "/providers/$provider/refresh"
 request GET "/providers/$provider/models"

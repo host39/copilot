@@ -5,13 +5,15 @@
 # starts fake-llm and the API on ports of their own, and drives the API the way a person would:
 #
 #   1. register the first account with the setup token;
-#   2. add an OpenAI-compatible connection (the `openai` preset with the fake's base URL) to the
-#      fake server, refresh its models, enable fake-chat, chat "hello" (streamed "You said:
+#   2. add an OpenAI-compatible connection (the `openai` preset on Chat Completions, with the
+#      fake's base URL) to the fake server, refresh its models, enable fake-chat, chat "hello" (streamed "You said:
 #      hello" with usage), then "failed 403" (a PROVIDER_AUTH error), and read the saved
 #      messages back; a `custom` connection's "hello" completes without usage (none was asked);
 #   3. add the fake MCP server as a tool server, Test it, ask for `tool echo {...}`, approve the
 #      call, and check the result and "Tool said: ...";
-#   4. the same text flow over an Anthropic connection to the fake server.
+#   4. an `openai` preset connection on its default API, Responses: the text flow, a refusal,
+#      and an approved tool round whose encrypted reasoning the fake checks on replay;
+#   5. the same text flow over an Anthropic connection to the fake server.
 #
 # Both servers stop and the database is dropped when the script exits (SMOKE_KEEP=1 keeps the
 # database and prints its name as `scripts.smoke.kept <name>`; scripts/check-upgrade.sh keeps it
@@ -219,8 +221,10 @@ token="$(field .data.token)"
 pass "registered the administrator with the setup token"
 
 # connect <kind> <preset> <name> <base URL> [api]: adds a connection (on `api` when given),
-# refreshes it, enables fake-chat, and sets $model to fake-chat's id.
+# refreshes it, enables fake-chat, and sets $model to fake-chat's id and $connected_api to the
+# API it uses (`messages` for Anthropic).
 model=""
+connected_api=""
 connect() {
   local kind="$1" preset="$2" name="$3" base="$4" api="${5:-}" provider choice=""
   [[ -n "$api" ]] && choice=",\"api\":\"$api\""
@@ -228,6 +232,8 @@ connect() {
     "{\"kind\":\"$kind\",\"preset\":\"$preset\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"$choice}"
   expect 201 "add the $kind connection"
   [[ -z "$api" || "$(field .data.api)" == "$api" ]] || fail "the connection should use $api: $body"
+  api="$(jq -r '.data.api // "messages"' <<<"$body")"
+  connected_api="$api"
   provider="$(field .data.id)"
   request POST "/providers/$provider/refresh"
   expect 200 "refresh the $kind models"
@@ -235,8 +241,12 @@ connect() {
   request GET "/providers/$provider/models"
   expect 200 "list the $kind models"
   model="$(field '.items[] | select(.remoteId == "fake-chat") | .id')"
-  if [[ "$kind" == openai ]]; then
+  if [[ "$api" == chat_completions ]]; then
     field '.items[] | select(.remoteId == "fake-audio") | .capabilities | select(.audioIn and .audioOut)' >/dev/null
+    field '.items[] | select(.remoteId == "fake-reasoner") | .capabilities | select(.reasoning)' >/dev/null
+  elif [[ "$api" == responses ]]; then
+    # The Responses API takes no audio: the flags are locked off whatever the list reports.
+    field '.items[] | select(.remoteId == "fake-audio") | select((.capabilities.audioIn or .capabilities.audioOut) | not) | .locks[] | select(.capability == "audioIn")' >/dev/null
     field '.items[] | select(.remoteId == "fake-reasoner") | .capabilities | select(.reasoning)' >/dev/null
   else
     field '.items[] | select(.remoteId == "fake-audio") | .capabilities | select((.audioIn or .audioOut) | not)' >/dev/null
@@ -245,7 +255,7 @@ connect() {
   request PATCH "/models/$model" '{"enabled":true}'
   expect 200 "enable fake-chat ($kind)"
   [[ "$(field .data.enabled)" == true ]] || fail "fake-chat should be enabled: $body"
-  pass "$kind connection ($preset preset): three models with their capabilities, fake-chat enabled"
+  pass "$kind connection ($preset preset, $api): three models with their capabilities, fake-chat enabled"
 }
 
 # chat <kind>: a chat on $model; "hello", then "failed 403", then the saved messages.
@@ -326,7 +336,45 @@ check "the approved call runs and the model reads its result" '
 [[ "$(text)" == "Tool said: smoke check" ]] || fail "after the tool: streamed $(text)"
 pass "the answer after the tool is Tool said: smoke check"
 
-# --- 4. Anthropic -----------------------------------------------------------------------------
+# --- 4. The Responses API ---------------------------------------------------------------------
+
+# The `openai` preset without a chosen API uses Responses: typed events, usage in the terminal
+# event, and stateless replay. The fake refuses a replayed reasoning item whose encrypted content
+# it did not give, so the tool round below also checks that Copilot sends it back verbatim.
+connect openai openai "Fake OpenAI Responses" "$FAKE/v1"
+[[ "$connected_api" == responses ]] || fail "the openai preset should default to the Responses API"
+responses_model="$model"
+chat responses
+
+request POST /chats "{\"modelId\":\"$responses_model\"}"
+expect 201 "create a responses chat"
+stream "/chats/$(field .data.id)/messages" '{"text":"refuse"}'
+check "responses: refuse ends refused with the model's explanation" '
+  any(.[]; .type == "message.finished" and .status == "refused" and .finishReason == "refusal"
+    and .refusal.explanation == "I can'"'"'t help with that.")
+  and (map(.type) | last == "done")'
+
+request POST /chats "{\"modelId\":\"$responses_model\",\"toolOverrides\":[{\"serverId\":\"$server\",\"enabled\":true}]}"
+expect 201 "create a responses chat with the tool server"
+tool_chat="$(field .data.id)"
+stream "/chats/$tool_chat/messages" '{"text":"think tool echo {\"text\":\"over responses\"}"}'
+check "responses: think streams a reasoning summary, then the call asks for approval" '
+  any(.[]; .type == "reasoning.delta")
+  and any(.[]; .type == "tool.requested" and .toolName == "echo" and .needsApproval
+    and .arguments == {"text": "over responses"})
+  and any(.[]; .type == "message.finished" and .status == "awaiting_approval")'
+message="$(jq -er '.[] | select(.type == "tool.requested") | .messageId' <<<"$events")"
+call="$(jq -er '.[] | select(.type == "tool.requested") | .callId' <<<"$events")"
+stream "/chats/$tool_chat/messages/$message/decisions" "{\"decisions\":[{\"callId\":\"$call\",\"decision\":\"approve\"}]}"
+check "responses: the approved call runs and the replayed round reads its result" '
+  any(.[]; .type == "tool.finished" and .status == "ok")
+  and any(.[]; .type == "message.finished" and .status == "complete")'
+[[ "$(text)" == "Tool said: over responses" ]] || fail "responses after the tool: streamed $(text)"
+grep -q 'fake-llm.responses.reasoning-replayed' "$RUN_DIR/fake-llm.log" ||
+  fail "the round after the approval should replay the encrypted reasoning"
+pass "responses: the encrypted reasoning went back verbatim (Tool said: over responses)"
+
+# --- 5. Anthropic -----------------------------------------------------------------------------
 
 connect anthropic custom "Fake Anthropic" "$FAKE"
 chat anthropic

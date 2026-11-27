@@ -75,8 +75,10 @@ pub(crate) struct Decoder {
 #[derive(Debug, Default)]
 struct Item {
     kind: Kind,
-    /// Text, reasoning, or refusal of this item was shown.
+    /// Text or reasoning of this item was shown.
     shown: bool,
+    /// Refusal text of this item was taken.
+    refused: bool,
     /// The summary part the last reasoning delta belonged to.
     summary: Option<u64>,
     /// The item as `response.output_item.done` finished it.
@@ -171,17 +173,15 @@ impl Decoder {
             }
             "response.refusal.delta" => {
                 if let (Some(output), Some(text)) = (output, delta()) {
-                    self.item(output, Kind::Message).shown = true;
-                    self.refusal.push_str(text);
+                    self.refuse(output, text);
                 }
             }
             "response.refusal.done" => {
                 let text = event.get("refusal").and_then(Value::as_str);
                 if let (Some(output), Some(text)) = (output, text)
-                    && !self.item(output, Kind::Message).shown
+                    && !self.item(output, Kind::Message).refused
                 {
-                    self.item(output, Kind::Message).shown = true;
-                    self.refusal.push_str(text);
+                    self.refuse(output, text);
                 }
             }
             "response.reasoning_summary_text.delta" => {
@@ -305,29 +305,34 @@ impl Decoder {
         Ok(())
     }
 
-    /// The text and refusal of a finished message that streamed none.
+    /// The text and the refusal of a finished message, each when none of it streamed.
     fn whole_message(&mut self, output: u64, item: &Value, out: &mut Out) {
-        if self.item(output, Kind::Message).shown {
-            return;
-        }
+        let known = self.item(output, Kind::Message);
+        let (shown, refused) = (known.shown, known.refused);
         let parts = item.get("content").and_then(Value::as_array);
         for part in parts.into_iter().flatten() {
             match part.get("type").and_then(Value::as_str) {
-                Some("output_text") => {
+                Some("output_text") if !shown => {
                     if let Some(text) = part.get("text").and_then(Value::as_str)
                         && !text.is_empty()
                     {
                         self.text(output, text, out);
                     }
                 }
-                Some("refusal") => {
+                Some("refusal") if !refused => {
                     if let Some(text) = part.get("refusal").and_then(Value::as_str) {
-                        self.refusal.push_str(text);
+                        self.refuse(output, text);
                     }
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Refusal text of the message at `output`.
+    fn refuse(&mut self, output: u64, text: &str) {
+        self.item(output, Kind::Message).refused = true;
+        self.refusal.push_str(text);
     }
 
     /// The summary of a finished reasoning item that streamed none.

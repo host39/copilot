@@ -2,8 +2,9 @@
 //!
 //! It speaks both wire formats Copilot's adapters use, on one port:
 //!
-//! - **OpenAI-compatible** (base URL `http://127.0.0.1:4010/v1`): `GET /v1/models` and
-//!   `POST /v1/chat/completions`, streamed or not, with `Authorization: Bearer <key>`.
+//! - **OpenAI-compatible** (base URL `http://127.0.0.1:4010/v1`): `GET /v1/models`,
+//!   `POST /v1/chat/completions`, and the Responses API's `POST /v1/responses` (stateless, as
+//!   with `store: false`), streamed or not, with `Authorization: Bearer <key>`.
 //! - **Anthropic** (base URL `http://127.0.0.1:4010`): `GET /v1/models` and `POST /v1/messages`,
 //!   streamed or not, with `x-api-key: <key>` and `anthropic-version`.
 //! - **MCP** at `/mcp` (Streamable HTTP, both protocol eras) with the tools `echo` and `add`.
@@ -17,6 +18,7 @@ mod http;
 pub mod mcp;
 pub mod openai;
 pub mod reply;
+pub mod responses;
 pub mod script;
 
 use std::sync::Arc;
@@ -100,6 +102,7 @@ pub fn app(config: Config) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(openai::complete))
+        .route("/v1/responses", post(responses::respond))
         .route("/v1/messages", post(anthropic::messages))
         .with_state(state)
         .merge(mcp)

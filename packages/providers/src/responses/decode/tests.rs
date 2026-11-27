@@ -349,6 +349,45 @@ fn a_refusal_ends_the_answer_with_its_text() {
 }
 
 #[test]
+fn a_refusal_without_deltas_after_streamed_text_still_counts() {
+    let refused = |events: Vec<Value>| {
+        let out = ok(decode(&events));
+        assert_eq!(
+            out.last(),
+            Some(&LlmEvent::Finished {
+                reason: FinishReason::Refusal,
+                refusal: Some(Refusal {
+                    category: None,
+                    explanation: "No.".to_owned(),
+                }),
+            })
+        );
+        out
+    };
+    let refusal = json!({ "type": "response.refusal.done", "item_id": "msg_1", "output_index": 0, "content_index": 1, "refusal": "No." });
+    let out = refused(vec![text_delta(0, "I"), refusal, completed(Value::Null)]);
+    assert_eq!(out.len(), 2, "the text, then the finish");
+    let whole = json!({ "id": "msg_1", "type": "message", "role": "assistant", "content": [
+        { "type": "output_text", "text": "I" },
+        { "type": "refusal", "refusal": "No." },
+    ] });
+    let out = refused(vec![
+        text_delta(0, "I"),
+        done(0, whole),
+        completed(Value::Null),
+    ]);
+    assert_eq!(
+        out[0],
+        LlmEvent::TextDelta {
+            index: 0,
+            text: "I".to_owned()
+        },
+        "the streamed text is not shown twice"
+    );
+    assert!(matches!(out[1], LlmEvent::ReplayState(_)));
+}
+
+#[test]
 fn incomplete_answers_finish_by_their_reason() {
     let incomplete = |reason: &str| {
         json!({ "type": "response.incomplete", "response": {

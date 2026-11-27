@@ -1,12 +1,14 @@
 // The provider presets a user picks from (the spec's Providers and Models table), and the form
 // that turns a pick plus what the user typed into `POST /providers`.
 
-import type {
-  CreateProviderRequest,
-  Preset,
-  ProviderKind,
-  ProviderResponse,
-  RefreshResponse,
+import {
+  type CreateProviderRequest,
+  type Preset,
+  type ProviderApi,
+  type ProviderKind,
+  type ProviderResponse,
+  providerApiSchema,
+  type RefreshResponse,
 } from "@copilot/contracts";
 import { describeError } from "@web/api/errors";
 import { createProvider, refreshProvider } from "@web/api/routes/providers";
@@ -23,11 +25,23 @@ export type Choice = {
   asks: "key" | "url" | "both";
   /** The address field's example. */
   urlHint?: string;
+  /**
+   * The OpenAI API a new connection uses when the preset lets the user choose one (OpenAI and
+   * OpenAI-compatible servers); other presets have a fixed API and send none.
+   */
+  api?: ProviderApi;
 };
 
 /** A key for hosted providers, an address for Ollama, both for compatible servers. */
 export const CHOICES: readonly Choice[] = [
-  { id: "openai", label: "OpenAI", kind: "openai", preset: "openai", asks: "key" },
+  {
+    id: "openai",
+    label: "OpenAI",
+    kind: "openai",
+    preset: "openai",
+    asks: "key",
+    api: "responses",
+  },
   { id: "anthropic", label: "Anthropic", kind: "anthropic", preset: "anthropic", asks: "key" },
   { id: "gemini", label: "Gemini", kind: "openai", preset: "gemini", asks: "key" },
   { id: "openrouter", label: "OpenRouter", kind: "openai", preset: "openrouter", asks: "key" },
@@ -46,6 +60,7 @@ export const CHOICES: readonly Choice[] = [
     preset: "custom",
     asks: "both",
     urlHint: "https://llm.example.com/v1",
+    api: "chat_completions",
   },
   {
     id: "custom-anthropic",
@@ -78,9 +93,10 @@ const optional = z
 
 /**
  * The add-provider form for `pick`: a name (the preset's label when blank), the address (required
- * for compatible servers, optional for Ollama, not asked for hosted providers), and the key
- * (required for hosted providers unless `keyStored`: the first-run setup edits a saved connection
- * whose key a blank field keeps). It parses to the `POST /providers` body.
+ * for compatible servers, optional for Ollama, not asked for hosted providers), the key (required
+ * for hosted providers unless `keyStored`: the first-run setup edits a saved connection whose key
+ * a blank field keeps), and the OpenAI API for presets that choose one (the preset's default when
+ * none is picked). It parses to the `POST /providers` body.
  */
 export function providerSchema(pick: Choice, keyStored = false) {
   return z
@@ -94,6 +110,7 @@ export function providerSchema(pick: Choice, keyStored = false) {
         "Enter a full http:// or https:// address."
       ),
       apiKey: optional,
+      api: providerApiSchema.optional(),
     })
     .superRefine((input, context) => {
       if (pick.asks === "both" && input.baseUrl === undefined) {
@@ -118,6 +135,7 @@ export function providerSchema(pick: Choice, keyStored = false) {
         name: input.name || pick.label,
         ...(pick.asks !== "key" && input.baseUrl ? { baseUrl: input.baseUrl } : {}),
         ...(pick.asks !== "url" && input.apiKey ? { apiKey: input.apiKey } : {}),
+        ...(pick.api ? { api: input.api ?? pick.api } : {}),
       })
     );
 }

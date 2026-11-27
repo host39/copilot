@@ -16,6 +16,7 @@ import { FormAlert } from "@web/components/Form/FormAlert";
 import { FormNotice } from "@web/components/Form/FormNotice";
 import { Switch } from "@web/components/Form/Switch";
 import { TextField } from "@web/components/Form/TextField";
+import { ApiPicker, apiLabel } from "@web/components/Settings/ApiPicker";
 import { ModelRow } from "@web/components/Settings/ModelRow";
 import { QueryState } from "@web/components/Settings/QueryState";
 import { Section } from "@web/components/Settings/Section";
@@ -23,7 +24,7 @@ import { SettingsPage } from "@web/components/Settings/SettingsPage";
 import { text } from "@web/forms";
 import { useSubmit } from "@web/hooks/useSubmit";
 import path from "@web/routes/path";
-import { connectionSchema, dropsKey } from "@web/routes/settings/provider/connection";
+import { choosesApi, connectionSchema, dropsKey } from "@web/routes/settings/provider/connection";
 import { filterModels, type Show, usageText } from "@web/routes/settings/provider/models";
 import { type ConnectState, choice, refreshSummary } from "@web/routes/settings/providers/presets";
 import { useState } from "react";
@@ -78,15 +79,22 @@ function Connection({ provider }: { provider: ProviderResponse }) {
     async (body) => {
       if (Object.keys(body).length === 0) return { saved: provider, dropped: false };
       const saved = await updateProvider(provider.id, body);
-      return { saved, dropped: dropsKey(provider, body) };
+      return { saved, dropped: dropsKey(provider, body), switched: body.api !== undefined };
     },
     (result) => {
       store(result.saved);
-      setNotice(
-        result.dropped
-          ? "Saved. The key was removed because the address moved to another server: enter it again."
-          : "Saved."
-      );
+      const notes = ["Saved."];
+      if (result.dropped) {
+        notes.push(
+          "The key was removed because the address moved to another server: enter it again."
+        );
+      }
+      if (result.switched && result.saved.api) {
+        notes.push(
+          `Answers now use ${apiLabel(result.saved.api)}. Earlier answers go back to the model as their text.`
+        );
+      }
+      setNotice(notes.join(" "));
     }
   );
   const enable = useMutation({
@@ -109,6 +117,7 @@ function Connection({ provider }: { provider: ProviderResponse }) {
       description={
         <span className="flex flex-wrap items-center gap-2">
           {choice(provider.kind, provider.preset).label}
+          {provider.api ? <Badge>{apiLabel(provider.api)}</Badge> : null}
           <KeyBadge provider={provider} />
         </span>
       }
@@ -134,6 +143,7 @@ function Connection({ provider }: { provider: ProviderResponse }) {
               name: text(data, "name"),
               baseUrl: text(data, "baseUrl"),
               apiKey: text(data, "apiKey"),
+              api: text(data, "api") || undefined,
             });
           }}
         >
@@ -168,6 +178,7 @@ function Connection({ provider }: { provider: ProviderResponse }) {
             hint="Stored encrypted on your server. It is never shown again."
             error={form.errors.apiKey}
           />
+          {choosesApi(provider) && provider.api ? <ApiPicker defaultValue={provider.api} /> : null}
           <div className="flex flex-wrap justify-end gap-2">
             {provider.key === "missing" ? null : (
               <Button variant="secondary" onClick={() => setRemoving(true)}>
