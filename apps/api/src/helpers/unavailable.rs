@@ -1,8 +1,7 @@
-//! Stand-ins for the provider and MCP adapters until Phase 2 tracks B and C build them
-//! (`copilot-providers`, `copilot-mcp`). The integration step P2.F replaces them in the
-//! composition root; nothing else names them. Every call fails with a human-readable
-//! [`DomainError::Upstream`] (`502`), so a refresh, a test, or a turn reports that the feature is
-//! not there yet instead of failing silently.
+//! Test stand-ins for the provider and MCP adapters, for route tests that never reach a model
+//! provider or a tool server. The composition root wires `copilot-providers` and `copilot-mcp`
+//! ([`crate::helpers::bootstrap::Adapters::create`]). Every call fails with a human-readable
+//! [`DomainError::Upstream`] (`502`), so a test that reaches one by mistake fails readably.
 
 use async_trait::async_trait;
 use copilot_core::{

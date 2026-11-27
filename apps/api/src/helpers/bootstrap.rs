@@ -21,7 +21,6 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
-use crate::helpers::unavailable::Unavailable;
 use crate::{AppDependencies, create_app};
 
 pub struct ApiContext {
@@ -96,7 +95,10 @@ impl Adapters {
     }
 
     /// Stand-ins for both adapters, for tests that never reach a provider or a tool server.
+    #[cfg(test)]
     pub fn unavailable() -> Self {
+        use crate::helpers::unavailable::Unavailable;
+
         Self {
             gateway: Arc::new(Unavailable),
             host: Arc::new(Unavailable),
