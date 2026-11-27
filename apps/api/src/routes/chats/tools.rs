@@ -18,7 +18,7 @@ use crate::helpers::testing::{self, Events, open, other_user, request, send};
 use crate::routes::chats::flows::{call, content, messages, say, setup, text, turn};
 
 /// A completion stream of `chunks` (`delta` and `finish_reason` of each).
-fn stream(chunks: &[(Value, Value)]) -> String {
+pub(crate) fn stream(chunks: &[(Value, Value)]) -> String {
     let mut body: String = chunks
         .iter()
         .map(|(delta, finish)| {
@@ -35,7 +35,7 @@ fn stream(chunks: &[(Value, Value)]) -> String {
 }
 
 /// An answer of `text` that stops.
-fn answer(text: &str) -> String {
+pub(crate) fn answer(text: &str) -> String {
     stream(&[
         (json!({ "content": text }), Value::Null),
         (json!({}), json!("stop")),
@@ -43,7 +43,7 @@ fn answer(text: &str) -> String {
 }
 
 /// An answer that calls each `(alias, arguments)` in order.
-fn calls(calls: &[(&str, &str)]) -> String {
+pub(crate) fn calls(calls: &[(&str, &str)]) -> String {
     let mut chunks: Vec<(Value, Value)> = calls
         .iter()
         .enumerate()
@@ -62,7 +62,7 @@ fn calls(calls: &[(&str, &str)]) -> String {
 }
 
 /// The next completion (after the ones scripted before) answers `body`, after `delay`.
-async fn next(provider: &MockServer, body: String, delay: Duration) {
+pub(crate) async fn next(provider: &MockServer, body: String, delay: Duration) {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(
@@ -76,12 +76,12 @@ async fn next(provider: &MockServer, body: String, delay: Duration) {
         .await;
 }
 
-async fn script(provider: &MockServer, body: String) {
+pub(crate) async fn script(provider: &MockServer, body: String) {
     next(provider, body, Duration::ZERO).await;
 }
 
 /// The completion request bodies the provider received, in order.
-async fn completions(provider: &MockServer) -> Vec<Value> {
+pub(crate) async fn completions(provider: &MockServer) -> Vec<Value> {
     provider
         .received_requests()
         .await
@@ -572,7 +572,7 @@ async fn a_new_message_while_a_call_waits_skips_the_call(pool: DbPool) {
 }
 
 /// Opens `GET /api/events` for `token`.
-async fn events(app: &Router, token: &str) -> Events {
+pub(crate) async fn events(app: &Router, token: &str) -> Events {
     match open(
         app.clone(),
         request(Method::GET, "/api/events", Some(token), None),

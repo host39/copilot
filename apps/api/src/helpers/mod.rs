@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod runs;
+pub mod scheduler;
 pub mod uploads;
 
 #[cfg(test)]

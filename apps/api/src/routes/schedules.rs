@@ -1,6 +1,6 @@
 //! `/api/schedules`: prompts that run at set times (`ScheduleService`). A schedule's runs are
 //! `GET /api/chats?scheduleId=`. Roadmap step P2.A wrote the settings, the list, and the preview;
-//! P3.2 writes Run now with the scheduler.
+//! P3.2 wrote Run now, which starts a run exactly like the scheduler's (`helpers::scheduler`).
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,9 +18,9 @@ use utoipa_axum::routes;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
+use crate::helpers::scheduler;
 use crate::routes::convert::{ToCore, ToDto};
 use crate::routes::path::{Id, Params};
-use crate::routes::pending;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -216,12 +216,28 @@ pub async fn delete(
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The schedule's id")),
     responses(
-        (status = OK, description = "The run started; attach with `GET /chats/{id}/stream`", body = DetailsResponse<ScheduleRunResponse>),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = OK, description = "The run started in a new chat, unattended like a scheduled fire, and the next run stays; attach with `GET /chats/{id}/stream`", body = DetailsResponse<ScheduleRunResponse>),
+        (status = BAD_REQUEST, description = "The run could not start (for example, the project's files no longer fit the model); recorded as a failed run", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such schedule", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The schedule's model was removed or turned off, so the schedule paused (`MODEL_UNAVAILABLE`), two scheduled runs are running (`SCHEDULER_BUSY`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
     )
 )]
-pub async fn run(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn run(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<axum::Json<DetailsResponse<ScheduleRunResponse>>, HttpError> {
+    let firing = state
+        .schedules
+        .run_now(&caller, ScheduleId::new(id))
+        .await?;
+    let slot = state.runs.slot_or_busy()?;
+    let chat = scheduler::fire(&state, slot, firing).await?;
+    Ok(axum::Json(DetailsResponse {
+        data: ScheduleRunResponse {
+            chat_id: chat.uuid(),
+        },
+    }))
 }
 
 #[utoipa::path(

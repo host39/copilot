@@ -6,6 +6,7 @@ use copilot_core::{
 };
 use copilot_database::DbPool;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
 use crate::helpers::runs::RunRegistry;
@@ -34,4 +35,7 @@ pub struct AppState {
     pub runs: Arc<RunRegistry>,
     /// The uploads being read now: a few per user and in all.
     pub uploads: Arc<UploadSlots>,
+    /// Scheduled runs waiting to record how they ended; shutdown waits for them before the pool
+    /// closes (`helpers::scheduler::settle`).
+    pub tasks: TaskTracker,
 }

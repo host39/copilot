@@ -16,6 +16,13 @@
 //! gets a child of the root shutdown token). [`RunRegistry::drain`] stops new runs, gives the
 //! live ones a moment to finish, then cancels them and waits for them to save.
 //!
+//! Scheduled runs (a claimed fire or a Run now) take one of the `MAX_SCHEDULED_RUNS` slots
+//! first ([`RunRegistry::slot`]) and reserve their new chat with it
+//! ([`RunRegistry::reserve_scheduled`]): they are bounded by the slots, not by their owner's
+//! `MAX_ACTIVE_RUNS_PER_USER`, so a claimed fire never fails because its owner is chatting, and
+//! a user's chats never wait for their schedules. Otherwise they are runs like any other: one
+//! per chat, stopped and drained the same way, with the same events.
+//!
 //! The registry also fans out each user's `GET /api/events` stream ([`RunRegistry::publish`],
 //! [`RunRegistry::watch`]): a channel per user with a stream open, dropped once no stream reads
 //! it. The sink publishes `run.started` with a run's first event, and `approval.pending` (when
@@ -28,13 +35,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use copilot_contracts::{ChatStreamEvent, UserEvent};
-use copilot_core::shared::constants::MAX_ACTIVE_RUNS_PER_USER;
+use copilot_core::shared::constants::{MAX_ACTIVE_RUNS_PER_USER, MAX_SCHEDULED_RUNS};
 use copilot_core::{
     ChatId, DomainError, DomainResult, MessageStatus, TurnEvent, TurnOutcome, TurnSink, UserId,
 };
 use futures_util::stream::{self, Stream};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -53,6 +60,8 @@ pub const CHAT_BUSY: &str = "CHAT_BUSY";
 pub const TOO_MANY_RUNS: &str = "TOO_MANY_RUNS";
 /// The error code of a run asked for while the server shuts down.
 pub const SERVER_STOPPING: &str = "SERVER_STOPPING";
+/// The error code of a Run now while `MAX_SCHEDULED_RUNS` scheduled runs are live.
+pub const SCHEDULER_BUSY: &str = "SCHEDULER_BUSY";
 
 /// The live runs, by chat. Cheap to share (`Arc`).
 #[derive(Debug)]
@@ -64,6 +73,8 @@ pub struct RunRegistry {
     live: watch::Sender<usize>,
     /// The `GET /api/events` channels of the users with a stream open.
     users: Mutex<HashMap<UserId, broadcast::Sender<UserEvent>>>,
+    /// The scheduled-run slots (`MAX_SCHEDULED_RUNS`).
+    scheduled: Arc<Semaphore>,
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +88,8 @@ struct Runs {
 struct Entry {
     owner: UserId,
     run: Uuid,
+    /// A scheduled run: not counted against its owner's `MAX_ACTIVE_RUNS_PER_USER`.
+    scheduled: bool,
     /// The run's own token (a child of the shutdown token).
     cancel: CancellationToken,
     /// Cancelled when the slot is released.
@@ -98,6 +111,7 @@ impl RunRegistry {
             max_per_user,
             live: watch::Sender::new(0),
             users: Mutex::new(HashMap::new()),
+            scheduled: Arc::new(Semaphore::new(MAX_SCHEDULED_RUNS)),
         }
     }
 
@@ -105,22 +119,11 @@ impl RunRegistry {
     /// another user's chat is a `404`, never `CHAT_BUSY`.
     pub fn reserve(self: &Arc<Self>, owner: UserId, chat: ChatId) -> DomainResult<Reservation> {
         let mut runs = self.lock();
-        if runs.closing.is_some() {
-            return Err(DomainError::business_rule(
-                "The server is restarting. Try again in a moment.",
-                SERVER_STOPPING,
-            ));
-        }
-        if runs.entries.contains_key(&chat) {
-            return Err(DomainError::business_rule(
-                "This chat is already answering. Stop it or wait for it to finish.",
-                CHAT_BUSY,
-            ));
-        }
+        open(&runs, chat)?;
         let active = runs
             .entries
             .values()
-            .filter(|entry| entry.owner == owner)
+            .filter(|entry| entry.owner == owner && !entry.scheduled)
             .count();
         if active >= self.max_per_user {
             return Err(DomainError::business_rule(
@@ -128,6 +131,52 @@ impl RunRegistry {
                 TOO_MANY_RUNS,
             ));
         }
+        Ok(self.insert(&mut runs, owner, chat, None))
+    }
+
+    /// A free scheduled-run slot, held until the run it reserves ends; `None` while
+    /// `MAX_SCHEDULED_RUNS` scheduled runs hold theirs.
+    pub fn slot(&self) -> Option<Slot> {
+        Arc::clone(&self.scheduled)
+            .try_acquire_owned()
+            .ok()
+            .map(|permit| Slot { _permit: permit })
+    }
+
+    /// [`RunRegistry::slot`], or the `SCHEDULER_BUSY` refusal of a Run now.
+    pub fn slot_or_busy(&self) -> DomainResult<Slot> {
+        self.slot().ok_or_else(|| {
+            DomainError::business_rule(
+                format!(
+                    "{MAX_SCHEDULED_RUNS} scheduled runs are running. Try again when one finishes."
+                ),
+                SCHEDULER_BUSY,
+            )
+        })
+    }
+
+    /// Reserves the new `chat` of a scheduled run of `owner` in `slot`. Not counted against the
+    /// owner's `MAX_ACTIVE_RUNS_PER_USER`; fails only while the server shuts down (or for a chat
+    /// that is answering, which a new chat never is).
+    pub fn reserve_scheduled(
+        self: &Arc<Self>,
+        slot: Slot,
+        owner: UserId,
+        chat: ChatId,
+    ) -> DomainResult<Reservation> {
+        let mut runs = self.lock();
+        open(&runs, chat)?;
+        Ok(self.insert(&mut runs, owner, chat, Some(slot)))
+    }
+
+    /// Adds the run of `chat` (checked by [`open`]) and its reservation.
+    fn insert(
+        self: &Arc<Self>,
+        runs: &mut Runs,
+        owner: UserId,
+        chat: ChatId,
+        slot: Option<Slot>,
+    ) -> Reservation {
         let run = Uuid::now_v7();
         let cancel = self.shutdown.child_token();
         let sink = Arc::new(RunSink::new(Arc::clone(self), owner, chat, run));
@@ -136,19 +185,21 @@ impl RunRegistry {
             Entry {
                 owner,
                 run,
+                scheduled: slot.is_some(),
                 cancel: cancel.clone(),
                 released: CancellationToken::new(),
                 state: Arc::clone(&sink.state),
             },
         );
         self.live.send_replace(runs.entries.len());
-        Ok(Reservation {
+        Reservation {
             registry: Arc::clone(self),
             chat,
             run,
             sink,
             cancel,
-        })
+            _slot: slot,
+        }
     }
 
     /// The running turn of `chat`: its events after `after` (all of them for `0`, or for a
@@ -217,6 +268,11 @@ impl RunRegistry {
         let _ = live.wait_for(|count| *count == 0).await;
     }
 
+    /// Whether draining started ([`RunRegistry::drain`]): new runs are refused.
+    pub fn is_closing(&self) -> bool {
+        self.lock().closing.is_some()
+    }
+
     /// Whether `chat` is answering.
     pub fn is_running(&self, chat: ChatId) -> bool {
         self.lock().entries.contains_key(&chat)
@@ -279,6 +335,30 @@ impl RunRegistry {
     }
 }
 
+/// Refuses a new run of `chat` while the server shuts down or the chat is answering.
+fn open(runs: &Runs, chat: ChatId) -> DomainResult<()> {
+    if runs.closing.is_some() {
+        return Err(DomainError::business_rule(
+            "The server is restarting. Try again in a moment.",
+            SERVER_STOPPING,
+        ));
+    }
+    if runs.entries.contains_key(&chat) {
+        return Err(DomainError::business_rule(
+            "This chat is already answering. Stop it or wait for it to finish.",
+            CHAT_BUSY,
+        ));
+    }
+    Ok(())
+}
+
+/// One of the `MAX_SCHEDULED_RUNS` scheduled-run slots ([`RunRegistry::slot`]); dropping it
+/// frees the slot.
+#[derive(Debug)]
+pub struct Slot {
+    _permit: OwnedSemaphorePermit,
+}
+
 /// One `GET /api/events` stream (see [`RunRegistry::watch`]).
 #[derive(Debug)]
 pub struct UserEvents {
@@ -305,7 +385,8 @@ impl UserEvents {
     }
 }
 
-/// A reserved slot. Dropping it releases the chat.
+/// A reserved slot. Dropping it releases the chat (and the scheduled-run slot of a scheduled
+/// run).
 #[derive(Debug)]
 pub struct Reservation {
     registry: Arc<RunRegistry>,
@@ -313,6 +394,8 @@ pub struct Reservation {
     run: Uuid,
     sink: Arc<RunSink>,
     cancel: CancellationToken,
+    /// Held for the run's life.
+    _slot: Option<Slot>,
 }
 
 impl Reservation {
@@ -794,6 +877,56 @@ mod tests {
         let _theirs = registry.reserve(other, ChatId::generate()).unwrap();
         drop(second);
         registry.reserve(user, ChatId::generate()).unwrap();
+    }
+
+    #[test]
+    fn scheduled_runs_take_a_slot_and_do_not_count_against_their_owner() {
+        let registry = registry(1);
+        let user = UserId::new(Uuid::now_v7());
+        let slots: Vec<Slot> = std::iter::from_fn(|| registry.slot()).take(5).collect();
+        assert_eq!(
+            slots.len(),
+            MAX_SCHEDULED_RUNS,
+            "at most the scheduled-run slots"
+        );
+        assert_eq!(
+            registry.slot_or_busy().unwrap_err().code(),
+            SCHEDULER_BUSY,
+            "a Run now waits for a slot"
+        );
+        let mut scheduled = Vec::new();
+        for slot in slots {
+            let reservation = registry
+                .reserve_scheduled(slot, user, ChatId::generate())
+                .unwrap();
+            scheduled.push(reservation);
+        }
+        let _chat = registry
+            .reserve(user, ChatId::generate())
+            .expect("the owner's own chats do not wait for their schedules");
+        assert_eq!(registry.chats(user).len(), 3);
+
+        let refused = registry.reserve(user, ChatId::generate()).unwrap_err();
+        assert_eq!(refused.code(), TOO_MANY_RUNS, "the limit counts chats only");
+
+        drop(scheduled.pop());
+        let slot = registry.slot().expect("a run that ends frees its slot");
+        let _scheduled = registry
+            .reserve_scheduled(slot, user, ChatId::generate())
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn draining_refuses_scheduled_runs_too() {
+        let registry = registry(3);
+        let slot = registry.slot().unwrap();
+        assert!(!registry.is_closing());
+        let _drain = registry.drain(Duration::ZERO, Duration::ZERO);
+        assert!(registry.is_closing());
+        let refused = registry
+            .reserve_scheduled(slot, UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap_err();
+        assert_eq!(refused.code(), SERVER_STOPPING);
     }
 
     #[test]

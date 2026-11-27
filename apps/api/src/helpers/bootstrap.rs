@@ -20,10 +20,12 @@ use copilot_providers::Gateway;
 use copilot_security::{AesCipher, Purpose};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
+use crate::helpers::scheduler::{Scheduler, settle};
 use crate::helpers::uploads::UploadSlots;
 use crate::{App, AppDependencies, assemble};
 
@@ -35,7 +37,10 @@ pub struct ApiContext {
     pub shutdown: CancellationToken,
     /// The live runs, drained on shutdown.
     pub runs: Arc<RunRegistry>,
+    /// The shared state, for the scheduled runs' records that shutdown waits on.
+    state: AppState,
     purge: JoinHandle<()>,
+    scheduler: JoinHandle<()>,
 }
 
 impl ApiContext {
@@ -61,6 +66,8 @@ impl ApiContext {
             shutdown: shutdown.clone(),
         });
         recover(&state).await?;
+        // After recovery: a run it starts must not be marked interrupted.
+        let scheduler = Scheduler::new(state.clone()).start(shutdown.clone());
 
         Ok(Self {
             config,
@@ -68,17 +75,24 @@ impl ApiContext {
             db,
             shutdown,
             runs: Arc::clone(&state.runs),
+            state,
             purge,
+            scheduler,
         })
     }
 
-    /// Stops the runs ([`drain`]), then releases resources. Call once the server has stopped
-    /// accepting requests.
+    /// Stops the runs ([`drain`]) and the scheduler, waits for the scheduled runs to record how
+    /// they ended, then releases resources. Call once the server has stopped accepting requests.
     pub async fn close(self) {
         drain(&self.runs).await;
         self.shutdown.cancel();
-        if let Err(error) = self.purge.await {
-            tracing::warn!(error = %error, "api.server.task.failed");
+        for task in [self.scheduler, self.purge] {
+            if let Err(error) = task.await {
+                tracing::warn!(error = %error, "api.server.task.failed");
+            }
+        }
+        if !settle(&self.state).await {
+            tracing::warn!("api.scheduler.settle.incomplete");
         }
         copilot_database::close(&self.db).await;
     }
@@ -221,5 +235,6 @@ pub fn wire(
         engine: Arc::new(engine),
         runs: Arc::new(runs),
         uploads: Arc::new(UploadSlots::default()),
+        tasks: TaskTracker::new(),
     }
 }

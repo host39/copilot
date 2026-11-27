@@ -1,8 +1,7 @@
 //! Route modules. Each exposes `router()` with its OpenAPI-documented handlers; mount it here.
 //!
 //! [`router`] puts `/health` at the root and everything else under `/api`: lib-rustauth's routes
-//! and Copilot's, which [`Identity::api`] puts behind the guard. A handler that a later step
-//! writes (P3.2 the schedule's Run now) answers [`pending`] (`501`) until then. [`convert`] maps
+//! and Copilot's, which [`Identity::api`] puts behind the guard. [`convert`] maps
 //! core values to their wire forms, [`path::Id`] reads `{id}`, and [`path::MessageIds`] reads
 //! `{id}` and `{messageId}`.
 
@@ -22,9 +21,6 @@ pub mod settings;
 pub mod tool_servers;
 pub mod web;
 
-use axum::http::StatusCode;
-use copilot_contracts::ErrorResponse;
-use copilot_middleware::HttpError;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
@@ -54,17 +50,6 @@ pub fn api() -> OpenApiRouter<AppState> {
         .merge(tool_servers::router())
         .merge(schedules::router())
         .merge(events::router())
-}
-
-/// The answer of a route whose handler a later roadmap step writes.
-pub fn pending() -> HttpError {
-    HttpError::Status {
-        status: StatusCode::NOT_IMPLEMENTED,
-        body: Box::new(ErrorResponse::new(
-            "This feature is not available yet.",
-            "NOT_IMPLEMENTED",
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -119,8 +104,8 @@ mod tests {
         assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     }
 
-    /// The operations the walking skeleton (P1.9) and roadmap steps P2.A and P3.1 wrote; every
-    /// other one answers `501` until its step.
+    /// Every operation: the walking skeleton (P1.9) and roadmap steps P2.A, P3.1, and P3.2 wrote
+    /// them all.
     const WRITTEN: &[(&str, &str)] = &[
         ("GET", "/api/settings"),
         ("PATCH", "/api/settings"),
@@ -173,6 +158,7 @@ mod tests {
         ("GET", "/api/schedules/{id}"),
         ("PATCH", "/api/schedules/{id}"),
         ("DELETE", "/api/schedules/{id}"),
+        ("POST", "/api/schedules/{id}/run"),
         ("POST", "/api/schedules/preview"),
         ("GET", "/api/events"),
     ];
@@ -205,21 +191,13 @@ mod tests {
                 Err(response) => response,
             };
             assert_ne!(response.status, StatusCode::UNAUTHORIZED, "{method} {uri}");
-            if written(&method, &uri) {
-                reached += 1;
-                assert_ne!(
-                    response.status,
-                    StatusCode::NOT_IMPLEMENTED,
-                    "{method} {uri}"
-                );
-            } else {
-                assert_eq!(
-                    response.status,
-                    StatusCode::NOT_IMPLEMENTED,
-                    "{method} {uri}"
-                );
-                assert_eq!(response.body["code"], "NOT_IMPLEMENTED");
-            }
+            assert_ne!(
+                response.status,
+                StatusCode::NOT_IMPLEMENTED,
+                "{method} {uri}"
+            );
+            assert!(written(&method, &uri), "{method} {uri} is listed");
+            reached += 1;
         }
         assert_eq!(
             reached,

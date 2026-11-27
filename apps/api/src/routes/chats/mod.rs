@@ -16,12 +16,12 @@
 
 pub mod cursor;
 #[cfg(test)]
-mod flows;
+pub(crate) mod flows;
 pub mod serializer;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tools;
+pub(crate) mod tools;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -42,10 +42,11 @@ use copilot_core::shared::constants::{
 use copilot_core::{
     Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId,
     NewChat, PreparedTurn, ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnEvent,
-    TurnInput, TurnSink, UserId,
+    TurnInput, TurnOutcome, TurnSink, UserId,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
+use tokio::task::JoinHandle;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -90,6 +91,21 @@ async fn start(
 /// when the client disconnects; it stops on shutdown. The slot is released when the run ends.
 fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Response {
     let events = reservation.subscribe();
+    launch(state, reservation, turn);
+    stream_response(state, events)
+}
+
+/// Runs the prepared turn in its reserved slot on a task of its own, and returns that task: its
+/// output is how the run ended, `None` when it failed with an error or panicked (its streams
+/// still end with `error` and `done`). Nothing cancels the run but [`RunRegistry::stop`] and
+/// shutdown; the slot is released when the run ends.
+///
+/// [`RunRegistry::stop`]: crate::helpers::runs::RunRegistry::stop
+pub(crate) fn launch(
+    state: &AppState,
+    reservation: Reservation,
+    turn: PreparedTurn,
+) -> JoinHandle<Option<TurnOutcome>> {
     let engine = Arc::clone(&state.engine);
     let chat = turn.chat.id();
     tokio::spawn(async move {
@@ -99,17 +115,20 @@ fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Respon
             let cancel = reservation.cancel();
             async move { engine.run(turn, sink, cancel).await }
         });
-        match task.await {
+        let outcome = match task.await {
             Ok(Ok(outcome)) => {
                 tracing::info!(chat_id = %chat, status = %outcome.status, "api.chats.run.finished");
+                Some(outcome)
             }
             Ok(Err(error)) => {
                 tracing::error!(chat_id = %chat, error = %error, "api.chats.run.failed");
+                None
             }
             Err(error) => {
                 tracing::error!(chat_id = %chat, error = %error, "api.chats.run.panicked");
+                None
             }
-        }
+        };
         // A run that panicked never sent `done`: end its streams.
         if !sink.is_done() {
             sink.emit(TurnEvent::Error {
@@ -119,8 +138,8 @@ fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Respon
             sink.emit(TurnEvent::Done);
         }
         drop(reservation);
-    });
-    stream_response(state, events)
+        outcome
+    })
 }
 
 /// Tells the owner's event streams that `chat` changed.

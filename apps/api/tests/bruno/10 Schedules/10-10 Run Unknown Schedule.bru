@@ -1,0 +1,27 @@
+meta {
+  name: 10-10 Run Unknown Schedule
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/schedules/0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192/run
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules/{id}/run`
+
+  **This test verifies:** Run now on a schedule the caller does not have is a `404`, and starts
+  nothing.
+}

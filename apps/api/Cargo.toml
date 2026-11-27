@@ -18,6 +18,8 @@ async-trait = { workspace = true }
 axum = { workspace = true, features = ["multipart"] }
 # Audio deltas in stream events.
 base64 = { workspace = true }
+# The scheduler's clock (`helpers::scheduler`).
+chrono = { workspace = true }
 copilot-contracts = { workspace = true }
 copilot-core = { workspace = true }
 copilot-database = { workspace = true }
@@ -34,8 +36,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # `sync`: the run registry's broadcast channels and the upload slots' semaphores.
 tokio = { workspace = true, features = ["sync"] }
-# `sync::CancellationToken` only: the root token that shutdown cancels.
-tokio-util = { workspace = true }
+# `sync::CancellationToken`: the root token that shutdown cancels; `rt`: the task tracker that
+# shutdown waits on for scheduled runs to record how they ended.
+tokio-util = { workspace = true, features = ["rt"] }
 # Serves the web bundle (`WEB_DIR`).
 tower-http = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }

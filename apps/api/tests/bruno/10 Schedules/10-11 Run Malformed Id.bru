@@ -1,0 +1,27 @@
+meta {
+  name: 10-11 Run Malformed Id
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/schedules/not-a-uuid/run
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq id
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules/{id}/run`
+
+  **This test verifies:** a schedule id that is not a UUID is a `400` naming `id`.
+}
