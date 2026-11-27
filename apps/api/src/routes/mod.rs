@@ -12,6 +12,7 @@ pub mod events;
 pub mod files;
 pub mod health;
 pub mod models;
+pub mod oauth;
 pub mod path;
 pub mod projects;
 pub mod providers;
@@ -29,12 +30,13 @@ use crate::config::AppState;
 use crate::helpers::auth::Identity;
 use crate::routes::docs::ApiDoc;
 
-/// Every documented route, collected into one router plus the OpenAPI document.
+/// Every documented route, collected into one router plus the OpenAPI document. The sign-in
+/// callback and client document (`oauth`) are public, outside the guard.
 pub fn router(identity: &Identity) -> OpenApiRouter<AppState> {
     // utoipa fills `info.license` from the workspace `license` in Cargo.toml.
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(health::router())
-        .nest("/api", identity.api(api()))
+        .nest("/api", identity.api(api()).merge(oauth::router()))
 }
 
 /// Copilot's own `/api` routes, one module per route family (see "HTTP API" in
@@ -71,7 +73,7 @@ mod tests {
         let mut operations = Vec::new();
         for (path, item) in doc["paths"].as_object().expect("paths") {
             let rustauth = path.starts_with("/api/auth/") || path.starts_with("/api/admin/");
-            if !path.starts_with("/api/") || rustauth {
+            if !path.starts_with("/api/") || rustauth || public(path) {
                 continue;
             }
             let uri = path.replace("{id}", ID).replace("{messageId}", ID);
@@ -82,6 +84,24 @@ mod tests {
         }
         assert!(operations.len() > 50, "the document lists the routes");
         operations
+    }
+
+    /// The public sign-in routes, outside the guard.
+    fn public(path: &str) -> bool {
+        path.starts_with("/api/oauth/")
+    }
+
+    #[tokio::test]
+    async fn the_public_routes_are_only_the_sign_in_ends() {
+        let app = app().await;
+        let doc = get(app.clone(), "/api/doc").await.body;
+        let public: Vec<&String> = doc["paths"]
+            .as_object()
+            .expect("paths")
+            .keys()
+            .filter(|path| public(path))
+            .collect();
+        assert_eq!(public, ["/api/oauth/callback", "/api/oauth/client"]);
     }
 
     #[tokio::test]
@@ -154,6 +174,8 @@ mod tests {
         ("DELETE", "/api/tool-servers/{id}"),
         ("POST", "/api/tool-servers/{id}/test"),
         ("POST", "/api/tool-servers/{id}/review"),
+        ("POST", "/api/tool-servers/{id}/oauth/start"),
+        ("DELETE", "/api/tool-servers/{id}/oauth"),
         ("GET", "/api/schedules"),
         ("POST", "/api/schedules"),
         ("GET", "/api/schedules/{id}"),

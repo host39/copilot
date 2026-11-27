@@ -1,0 +1,6 @@
+[
+  {
+    "authorizationUrl": "https://auth.example.com/authorize?response_type=code&client_id=copilot-client&code_challenge_method=S256",
+    "expiresAt": "2026-11-26T12:09:00.123456Z"
+  }
+]

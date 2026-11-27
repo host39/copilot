@@ -1,0 +1,52 @@
+meta {
+  name: 09-21 Create OAuth Tool Server
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno OAuth",
+    "url": "https://mcp.invalid/oauth/mcp",
+    "authMode": "oauth",
+    "oauthClient": { "clientId": "bruno-client", "clientSecret": "bruno-secret-client" }
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("oauthServerId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.authMode: eq oauth
+  res.body.data.credentials: eq missing
+  res.body.data.oauth.state: eq needs_sign_in
+  res.body.data.oauth.clientId: eq bruno-client
+  res.body.data.oauth.clientSecret: eq set
+  res.body.data.oauth.expiresAt: isNull
+}
+
+tests {
+  test("never returns the client secret", function () {
+    expect(JSON.stringify(res.body)).to.not.include("bruno-secret");
+  });
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers` with `authMode: oauth`
+
+  **This test verifies:** an OAuth server starts without a sign-in, keeps its pre-registered client, and never shows the client secret.
+}

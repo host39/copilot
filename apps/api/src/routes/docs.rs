@@ -164,7 +164,14 @@ mod tests {
         let mut checked = 0;
         for (path, item) in paths {
             let rustauth = path.starts_with("/api/auth/") || path.starts_with("/api/admin/");
-            if !path.starts_with("/api/") || rustauth {
+            // The tool server sign-in's callback and client document are public on purpose.
+            let public = path.starts_with("/api/oauth/");
+            if public {
+                for operation in item.as_object().expect("path item").values() {
+                    assert!(operation.get("security").is_none(), "{path} is public");
+                }
+            }
+            if !path.starts_with("/api/") || rustauth || public {
                 continue;
             }
             for (method, operation) in item.as_object().expect("path item") {
@@ -177,7 +184,7 @@ mod tests {
             }
         }
         // The routes of the spec's HTTP API table; adding one is an interface change.
-        assert_eq!(checked, 54, "every Copilot route of the spec");
+        assert_eq!(checked, 56, "every Copilot route of the spec");
     }
 
     #[tokio::test]

@@ -47,6 +47,8 @@ const server: ToolServerResponse = {
   toolModes: { search: "auto" },
   enabled: true,
   credentials: "set",
+  authMode: "headers",
+  oauth: null,
   protocolVersion: "2026-07-28",
   tools: [tool("search", { title: "Search Docs", readOnly: true }), tool("delete_page")],
   toolsFetchedAt: AT,

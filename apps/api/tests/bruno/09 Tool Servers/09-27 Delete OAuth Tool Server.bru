@@ -1,0 +1,25 @@
+meta {
+  name: 09-27 Delete OAuth Tool Server
+  type: http
+  seq: 28
+}
+
+delete {
+  url: {{baseUrl}}/api/tool-servers/{{oauthServerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/tool-servers/{id}`
+
+  **This test verifies:** the OAuth server is removed with its sign-in.
+}

@@ -74,6 +74,10 @@ services:
       # Safe because the port is published on the host's loopback only. A proxy inside this
       # network: list its address instead.
       AUTH_TRUSTED_PROXIES: ${AUTH_TRUSTED_PROXIES:-172.31.239.1}
+      # The address people reach Copilot at (https://copilot.example.com), for tool server
+      # sign-in with OAuth. Unset: sign-in is off.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      OAUTH_CLIENT_METADATA: ${OAUTH_CLIENT_METADATA:-true}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

@@ -19,22 +19,22 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use copilot_contracts::{
-    Approval, ApprovalMode, ApprovedTool, BuiltinTool, CallDecision, Capabilities, Capability,
-    CapabilityLock, CapabilityOverrides, Capacity, CapacityLevel, ChatListQuery, ChatResponse,
-    ChatStreamEvent, ChatSummaryResponse, CreateChatRequest, CreateProjectRequest,
+    Approval, ApprovalMode, ApprovedTool, AuthMode, BuiltinTool, CallDecision, Capabilities,
+    Capability, CapabilityLock, CapabilityOverrides, Capacity, CapacityLevel, ChatListQuery,
+    ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest, CreateProjectRequest,
     CreateProviderRequest, CreateScheduleRequest, CreateToolServerRequest, CreatedBy, Credentials,
     Decision, DecisionScope, DecisionsRequest, DetailsResponse, ErrorResponse, FileResponse,
     FinishReason, HealthResponse, KeyState, ListResponse, MessagePartDto, MessageResponse,
-    MessageStatus, ModelResponse, MoveFileRequest, OnAsk, PageResponse, PartKind, Preset,
-    ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderApi,
-    ProviderDetailsResponse, ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse,
-    ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role, RunStatus, ScheduleListQuery,
-    SchedulePreviewRequest, SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse,
-    SearchHitResponse, SearchQuery, SendMessageRequest, ServerTool, SettingsResponse, StreamQuery,
-    ToolChanges, ToolMode, ToolOverride, ToolServerResponse, ToolStatus, ToolTestResponse,
-    UpdateChatRequest, UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest,
-    UpdateProviderRequest, UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest,
-    Usage, UserEvent,
+    MessageStatus, ModelResponse, MoveFileRequest, OAuthClientInput, OAuthStartResponse,
+    OAuthStatus, OnAsk, PageResponse, PartKind, Preset, ProjectDetailsResponse, ProjectListQuery,
+    ProjectResponse, ProviderApi, ProviderDetailsResponse, ProviderKind, ProviderResponse,
+    ProviderUsage, ReadyResponse, ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role,
+    RunStatus, ScheduleListQuery, SchedulePreviewRequest, SchedulePreviewResponse,
+    ScheduleResponse, ScheduleRunResponse, SearchHitResponse, SearchQuery, SendMessageRequest,
+    ServerTool, SettingsResponse, SignInState, StreamQuery, ToolChanges, ToolMode, ToolOverride,
+    ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest, UpdateFileRequest,
+    UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest, UpdateScheduleRequest,
+    UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -618,6 +618,8 @@ fn tool_server() -> ToolServerResponse {
         ]),
         enabled: true,
         credentials: KeyState::Set,
+        auth_mode: AuthMode::Headers,
+        oauth: None,
         protocol_version: Some("2025-11-25".to_owned()),
         tools: Some(vec![ServerTool {
             name: "forecast".to_owned(),
@@ -663,12 +665,76 @@ fn tool_servers(fixtures: &mut Fixtures) {
         id: id(7),
         tool_modes: BTreeMap::new(),
         credentials: KeyState::Missing,
+        auth_mode: AuthMode::Oauth,
+        oauth: Some(OAuthStatus {
+            state: SignInState::NeedsSignIn,
+            client_id: None,
+            client_secret: KeyState::Missing,
+            expires_at: None,
+        }),
         protocol_version: None,
         tools: None,
         tools_fetched_at: None,
         review_required: true,
         ..tool_server()
     };
+    let signed_in = OAuthStatus {
+        state: SignInState::SignedIn,
+        client_id: Some("copilot-client".to_owned()),
+        client_secret: KeyState::Set,
+        expires_at: Some(at(9)),
+    };
+    let oauth = ToolServerResponse {
+        id: id(9),
+        credentials: KeyState::Missing,
+        auth_mode: AuthMode::Oauth,
+        oauth: Some(signed_in.clone()),
+        ..tool_server()
+    };
+    fixtures.types(
+        "AuthMode",
+        &[AuthMode::None, AuthMode::Headers, AuthMode::Oauth],
+    );
+    fixtures.types(
+        "SignInState",
+        &[
+            SignInState::SignedIn,
+            SignInState::Expired,
+            SignInState::NeedsSignIn,
+        ],
+    );
+    fixtures.types(
+        "OAuthStatus",
+        &[
+            signed_in,
+            OAuthStatus {
+                state: SignInState::Expired,
+                client_id: None,
+                client_secret: KeyState::Unreadable,
+                expires_at: Some(at(8)),
+            },
+        ],
+    );
+    let client = OAuthClientInput {
+        client_id: "copilot-client".to_owned(),
+        client_secret: Some("secret-sample".to_owned()),
+    };
+    fixtures.types(
+        "OAuthClientInput",
+        &[
+            client.clone(),
+            OAuthClientInput {
+                client_id: "public-client".to_owned(),
+                client_secret: None,
+            },
+        ],
+    );
+    let start = OAuthStartResponse {
+        authorization_url: "https://auth.example.com/authorize?response_type=code&client_id=copilot-client&code_challenge_method=S256".to_owned(),
+        expires_at: at(9),
+    };
+    fixtures.types("OAuthStartResponse", std::slice::from_ref(&start));
+    fixtures.bodies("oauthStart", &[DetailsResponse { data: start }]);
     let test = ToolTestResponse {
         server: tool_server(),
         changes: ToolChanges {
@@ -677,7 +743,10 @@ fn tool_servers(fixtures: &mut Fixtures) {
             changed: vec!["set_alert".to_owned()],
         },
     };
-    fixtures.types("ToolServerResponse", &[tool_server(), untested.clone()]);
+    fixtures.types(
+        "ToolServerResponse",
+        &[tool_server(), untested.clone(), oauth.clone()],
+    );
     fixtures.types(
         "ToolChanges",
         &[test.changes.clone(), ToolChanges::default()],
@@ -701,10 +770,19 @@ fn tool_servers(fixtures: &mut Fixtures) {
                 bearer: Some("token-sample".to_owned()),
                 headers: BTreeMap::from([("X-Team".to_owned(), "blue".to_owned())]),
                 approval: Some(ApprovalMode::Auto),
+                auth_mode: Some(AuthMode::Headers),
+                oauth_client: None,
             },
             CreateToolServerRequest {
                 name: "Files".to_owned(),
                 url: "https://mcp.example.com/files".to_owned(),
+                ..CreateToolServerRequest::default()
+            },
+            CreateToolServerRequest {
+                name: "Docs".to_owned(),
+                url: "https://mcp.example.com/docs".to_owned(),
+                auth_mode: Some(AuthMode::Oauth),
+                oauth_client: Some(client.clone()),
                 ..CreateToolServerRequest::default()
             },
         ],
@@ -719,9 +797,21 @@ fn tool_servers(fixtures: &mut Fixtures) {
                 approval: Some(ApprovalMode::Ask),
                 tool_modes: Some(BTreeMap::from([("forecast".to_owned(), ToolMode::Off)])),
                 enabled: Some(false),
+                auth_mode: Some(AuthMode::Headers),
+                oauth_client: None,
             },
             UpdateToolServerRequest {
                 credentials: Some(None),
+                ..UpdateToolServerRequest::default()
+            },
+            UpdateToolServerRequest {
+                auth_mode: Some(AuthMode::Oauth),
+                oauth_client: Some(Some(client)),
+                ..UpdateToolServerRequest::default()
+            },
+            UpdateToolServerRequest {
+                auth_mode: Some(AuthMode::None),
+                oauth_client: Some(None),
                 ..UpdateToolServerRequest::default()
             },
             UpdateToolServerRequest::default(),
@@ -730,8 +820,8 @@ fn tool_servers(fixtures: &mut Fixtures) {
     fixtures.bodies(
         "toolServerList",
         &[ListResponse {
-            items: vec![tool_server(), untested],
-            total: 2,
+            items: vec![tool_server(), untested, oauth],
+            total: 3,
         }],
     );
     fixtures.bodies(

@@ -18,7 +18,12 @@ const FIXTURES = "test/fixtures";
 const ENVELOPES = new Set(["DetailsResponse", "ListResponse", "PageResponse"]);
 
 /** Generated types whose schema is not named `<camelCaseType>Schema`. */
-const SCHEMA_NAMES: Record<string, string> = { MessagePartDto: "messagePartSchema" };
+const SCHEMA_NAMES: Record<string, string> = {
+  MessagePartDto: "messagePartSchema",
+  OAuthClientInput: "oauthClientInputSchema",
+  OAuthStartResponse: "oauthStartResponseSchema",
+  OAuthStatus: "oauthStatusSchema",
+};
 
 const BODY = "BodySchema";
 

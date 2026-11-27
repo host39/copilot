@@ -2,11 +2,13 @@
   {
     "data": {
       "approval": "ask",
+      "authMode": "headers",
       "createdAt": "2026-11-26T12:07:00.123456Z",
       "credentials": "set",
       "enabled": true,
       "id": "019abf6c-2f6e-7a51-8c3e-000000000006",
       "name": "Weather",
+      "oauth": null,
       "protocolVersion": "2025-11-25",
       "reviewRequired": false,
       "slug": "weather",

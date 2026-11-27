@@ -1,0 +1,27 @@
+meta {
+  name: 09-26 Sign Out
+  type: http
+  seq: 27
+}
+
+delete {
+  url: {{baseUrl}}/api/tool-servers/{{oauthServerId}}/oauth
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.authMode: eq oauth
+  res.body.data.oauth.state: eq needs_sign_in
+}
+
+docs {
+  **Endpoint:** `DELETE /api/tool-servers/{id}/oauth`
+
+  **This test verifies:** signing out keeps OAuth mode and leaves the server needing sign-in.
+}

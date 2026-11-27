@@ -17,6 +17,7 @@ export * from "@rustauth/contracts";
 import type { Approval } from "@contracts/generated/Approval";
 import type { ApprovalMode } from "@contracts/generated/ApprovalMode";
 import type { ApprovedTool } from "@contracts/generated/ApprovedTool";
+import type { AuthMode } from "@contracts/generated/AuthMode";
 import type { BuiltinTool } from "@contracts/generated/BuiltinTool";
 import type { CallDecision } from "@contracts/generated/CallDecision";
 import type { Capabilities } from "@contracts/generated/Capabilities";
@@ -49,6 +50,9 @@ import type { MessageResponse } from "@contracts/generated/MessageResponse";
 import type { MessageStatus } from "@contracts/generated/MessageStatus";
 import type { ModelResponse } from "@contracts/generated/ModelResponse";
 import type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
+import type { OAuthClientInput } from "@contracts/generated/OAuthClientInput";
+import type { OAuthStartResponse } from "@contracts/generated/OAuthStartResponse";
+import type { OAuthStatus } from "@contracts/generated/OAuthStatus";
 import type { OnAsk } from "@contracts/generated/OnAsk";
 import type { PartKind } from "@contracts/generated/PartKind";
 import type { Preset } from "@contracts/generated/Preset";
@@ -77,6 +81,7 @@ import type { SearchQuery } from "@contracts/generated/SearchQuery";
 import type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 import type { ServerTool } from "@contracts/generated/ServerTool";
 import type { SettingsResponse } from "@contracts/generated/SettingsResponse";
+import type { SignInState } from "@contracts/generated/SignInState";
 import type { StreamQuery } from "@contracts/generated/StreamQuery";
 import type { ToolChanges } from "@contracts/generated/ToolChanges";
 import type { ToolMode } from "@contracts/generated/ToolMode";
@@ -99,6 +104,7 @@ import { z } from "zod";
 export type { Approval } from "@contracts/generated/Approval";
 export type { ApprovalMode } from "@contracts/generated/ApprovalMode";
 export type { ApprovedTool } from "@contracts/generated/ApprovedTool";
+export type { AuthMode } from "@contracts/generated/AuthMode";
 export type { BuiltinTool } from "@contracts/generated/BuiltinTool";
 export type { CallDecision } from "@contracts/generated/CallDecision";
 export type { Capabilities } from "@contracts/generated/Capabilities";
@@ -133,6 +139,9 @@ export type { MessageResponse } from "@contracts/generated/MessageResponse";
 export type { MessageStatus } from "@contracts/generated/MessageStatus";
 export type { ModelResponse } from "@contracts/generated/ModelResponse";
 export type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
+export type { OAuthClientInput } from "@contracts/generated/OAuthClientInput";
+export type { OAuthStartResponse } from "@contracts/generated/OAuthStartResponse";
+export type { OAuthStatus } from "@contracts/generated/OAuthStatus";
 export type { OnAsk } from "@contracts/generated/OnAsk";
 export type { PageResponse } from "@contracts/generated/PageResponse";
 export type { PartKind } from "@contracts/generated/PartKind";
@@ -162,6 +171,7 @@ export type { SearchQuery } from "@contracts/generated/SearchQuery";
 export type { SendMessageRequest } from "@contracts/generated/SendMessageRequest";
 export type { ServerTool } from "@contracts/generated/ServerTool";
 export type { SettingsResponse } from "@contracts/generated/SettingsResponse";
+export type { SignInState } from "@contracts/generated/SignInState";
 export type { StreamQuery } from "@contracts/generated/StreamQuery";
 export type { ToolChanges } from "@contracts/generated/ToolChanges";
 export type { ToolMode } from "@contracts/generated/ToolMode";
@@ -487,6 +497,31 @@ export const serverToolSchema = z.object({
   readOnly: z.boolean(),
 }) satisfies z.ZodType<ServerTool>;
 
+export const authModeSchema = z.enum(["none", "headers", "oauth"]) satisfies z.ZodType<AuthMode>;
+
+export const signInStateSchema = z.enum([
+  "signed_in",
+  "expired",
+  "needs_sign_in",
+]) satisfies z.ZodType<SignInState>;
+
+export const oauthStatusSchema = z.object({
+  state: signInStateSchema,
+  clientId: z.string().nullable(),
+  clientSecret: keyStateSchema,
+  expiresAt: timestamp.nullable(),
+}) satisfies z.ZodType<OAuthStatus>;
+
+export const oauthClientInputSchema = z.object({
+  clientId: z.string(),
+  clientSecret: z.string().optional(),
+}) satisfies z.ZodType<OAuthClientInput>;
+
+export const oauthStartResponseSchema = z.object({
+  authorizationUrl: z.string(),
+  expiresAt: timestamp,
+}) satisfies z.ZodType<OAuthStartResponse>;
+
 export const toolServerResponseSchema = z.object({
   id,
   name: z.string(),
@@ -496,6 +531,8 @@ export const toolServerResponseSchema = z.object({
   toolModes: z.record(z.string(), toolModeSchema),
   enabled: z.boolean(),
   credentials: keyStateSchema,
+  authMode: authModeSchema,
+  oauth: oauthStatusSchema.nullable(),
   protocolVersion: z.string().nullable(),
   tools: z.array(serverToolSchema).nullable(),
   toolsFetchedAt: timestamp.nullable(),
@@ -511,6 +548,8 @@ export const createToolServerRequestSchema = z.object({
   bearer: z.string().optional(),
   headers: z.record(z.string(), z.string()).default({}),
   approval: approvalModeSchema.optional(),
+  authMode: authModeSchema.optional(),
+  oauthClient: oauthClientInputSchema.optional(),
 }) satisfies z.ZodType<CreateToolServerRequest>;
 
 export const credentialsSchema = z.object({
@@ -525,6 +564,8 @@ export const updateToolServerRequestSchema = z.object({
   approval: approvalModeSchema.optional(),
   toolModes: z.record(z.string(), toolModeSchema).optional(),
   enabled: z.boolean().optional(),
+  authMode: authModeSchema.optional(),
+  oauthClient: oauthClientInputSchema.nullable().optional(),
 }) satisfies z.ZodType<UpdateToolServerRequest>;
 
 export const toolChangesSchema = z.object({
@@ -961,6 +1002,8 @@ export const toolServerListBodySchema = listResponseSchema(toolServerResponseSch
 export const toolServerBodySchema = detailsResponseSchema(toolServerResponseSchema);
 /** `POST /tool-servers/{id}/test` */
 export const toolTestBodySchema = detailsResponseSchema(toolTestResponseSchema);
+/** `POST /tool-servers/{id}/oauth/start` */
+export const oauthStartBodySchema = detailsResponseSchema(oauthStartResponseSchema);
 /** `GET /schedules` */
 export const scheduleListBodySchema = listResponseSchema(scheduleResponseSchema);
 /** `GET`, `PATCH /schedules/{id}`, `POST /schedules` */

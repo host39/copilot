@@ -43,6 +43,8 @@ pub fn config() -> AppConfig {
         private_network: PrivateNetwork::Admins,
         files: FileLimits::default(),
         web_dir: None,
+        public_url: None,
+        client_metadata: true,
         identity: identity_config(),
     }
 }

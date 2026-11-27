@@ -160,6 +160,8 @@ const server = {
   toolModes: {},
   enabled: true,
   credentials: "missing",
+  authMode: "none",
+  oauth: null,
   protocolVersion: null,
   tools: null,
   toolsFetchedAt: null,

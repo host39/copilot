@@ -1,0 +1,9 @@
+[
+  {
+    "clientId": "copilot-client",
+    "clientSecret": "secret-sample"
+  },
+  {
+    "clientId": "public-client"
+  }
+]

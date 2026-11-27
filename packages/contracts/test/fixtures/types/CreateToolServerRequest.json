@@ -1,6 +1,7 @@
 [
   {
     "approval": "auto",
+    "authMode": "headers",
     "bearer": "token-sample",
     "headers": {
       "X-Team": "blue"
@@ -12,5 +13,14 @@
   {
     "name": "Files",
     "url": "https://mcp.example.com/files"
+  },
+  {
+    "authMode": "oauth",
+    "name": "Docs",
+    "oauthClient": {
+      "clientId": "copilot-client",
+      "clientSecret": "secret-sample"
+    },
+    "url": "https://mcp.example.com/docs"
   }
 ]

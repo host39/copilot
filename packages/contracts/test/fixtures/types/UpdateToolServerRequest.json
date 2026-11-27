@@ -1,6 +1,7 @@
 [
   {
     "approval": "ask",
+    "authMode": "headers",
     "credentials": {
       "bearer": "token-sample",
       "headers": {
@@ -16,6 +17,17 @@
   },
   {
     "credentials": null
+  },
+  {
+    "authMode": "oauth",
+    "oauthClient": {
+      "clientId": "copilot-client",
+      "clientSecret": "secret-sample"
+    }
+  },
+  {
+    "authMode": "none",
+    "oauthClient": null
   },
   {}
 ]

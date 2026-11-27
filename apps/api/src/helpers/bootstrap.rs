@@ -11,11 +11,11 @@ use copilot_core::shared::constants::{SHUTDOWN_DRAIN_SECS, SHUTDOWN_GRACE_SECS};
 use copilot_core::{
     Accounts, BoxError, ChatEngine, ChatRepositories, ChatService, Clock, FileService, LlmGateway,
     ModelService, ProjectService, ProviderService, ScheduleService, SecretCipher, SettingsService,
-    SystemClock, ToolHost, ToolService,
+    SignInConfig, SystemClock, ToolAuth, ToolHost, ToolService,
 };
 use copilot_database::{DbPool, Env, PgStore};
 use copilot_logger::LoggerOptions;
-use copilot_mcp::McpHost;
+use copilot_mcp::{McpAuth, McpHost};
 use copilot_providers::Gateway;
 use copilot_security::{AesCipher, Purpose};
 use tokio::task::JoinHandle;
@@ -121,27 +121,31 @@ pub async fn drain(runs: &RunRegistry) {
     }
 }
 
-/// The outbound adapters the services call: model providers and MCP servers.
+/// The outbound adapters the services call: model providers, MCP servers, and their sign-in
+/// servers.
 #[derive(Clone)]
 pub struct Adapters {
     pub gateway: Arc<dyn LlmGateway>,
     pub host: Arc<dyn ToolHost>,
+    pub auth: Arc<dyn ToolAuth>,
 }
 
 impl Adapters {
     /// The model providers through `copilot-providers` on the hardened provider clients
-    /// (`copilot_security::clients(Purpose::Providers)`), and the MCP tool servers through
-    /// `copilot-mcp` on the hardened tool clients (`clients(Purpose::Tools)`).
+    /// (`copilot_security::clients(Purpose::Providers)`), and the MCP tool servers and their
+    /// OAuth sign-in through `copilot-mcp` on the hardened tool clients
+    /// (`clients(Purpose::Tools)`).
     pub fn create() -> Result<Self, BoxError> {
         let providers = copilot_security::clients(Purpose::Providers)?;
         let tools = copilot_security::clients(Purpose::Tools)?;
         Ok(Self {
             gateway: Arc::new(Gateway::new(providers)),
-            host: Arc::new(McpHost::new(tools)),
+            host: Arc::new(McpHost::new(tools.clone())),
+            auth: Arc::new(McpAuth::new(tools)),
         })
     }
 
-    /// Stand-ins for both adapters, for tests that never reach a provider or a tool server.
+    /// Stand-ins for every adapter, for tests that never reach a provider or a tool server.
     #[cfg(test)]
     pub fn unavailable() -> Self {
         use crate::helpers::unavailable::Unavailable;
@@ -149,8 +153,24 @@ impl Adapters {
         Self {
             gateway: Arc::new(Unavailable),
             host: Arc::new(Unavailable),
+            auth: Arc::new(Unavailable),
         }
     }
+}
+
+/// Where tool server sign-ins come back to: `<PUBLIC_URL>/api/oauth/callback`, and the Client
+/// ID Metadata Document at `<PUBLIC_URL>/api/oauth/client` when `PUBLIC_URL` is `https` and
+/// `OAUTH_CLIENT_METADATA` allows it. `None` without `PUBLIC_URL`: sign-in is off.
+pub fn sign_in(config: &AppConfig) -> Option<SignInConfig> {
+    let public = config.public_url.as_ref()?;
+    let redirect_uri = public.join("/api/oauth/callback").ok()?;
+    let client_metadata = (public.scheme() == "https" && config.client_metadata)
+        .then(|| public.join("/api/oauth/client").ok())
+        .flatten();
+    Some(SignInConfig {
+        redirect_uri,
+        client_metadata,
+    })
 }
 
 /// Builds every service once, on the database adapter ([`PgStore`]), the security adapter
@@ -165,7 +185,8 @@ pub fn wire(
 ) -> AppState {
     let accounts: Arc<dyn Accounts> = Arc::new(identity.clone());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let stores = ChatRepositories::shared(Arc::new(PgStore::new(db.clone(), clock.clone())));
+    let store = Arc::new(PgStore::new(db.clone(), clock.clone()));
+    let stores = ChatRepositories::shared(store.clone());
     let cipher: Arc<dyn SecretCipher> = Arc::new(AesCipher::new(config.secret_key.clone()));
     let network = config.private_network;
 
@@ -200,13 +221,16 @@ pub fn wire(
         config.files,
     )
     .with_worker(Arc::new(BlockingPool));
-    let tools = ToolService::new(
+    let mut tools = ToolService::new(
         stores.servers.clone(),
         adapters.host.clone(),
         cipher.clone(),
         clock.clone(),
         network,
     );
+    if let Some(sign_in) = sign_in(&config) {
+        tools = tools.with_sign_in(adapters.auth.clone(), store, sign_in);
+    }
     let schedules = ScheduleService::new(
         stores.schedules.clone(),
         stores.projects.clone(),

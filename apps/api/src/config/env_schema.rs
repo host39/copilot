@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use url::{Host, Url};
+
 use copilot_core::shared::constants::{DEFAULT_MAX_STORAGE_MB_PER_USER, DEFAULT_MAX_UPLOAD_MB};
 use copilot_core::{Environment, FileLimits, LogLevel, PrivateNetwork};
 use copilot_database::{DbConfig, Env, EnvError, EnvParser};
@@ -32,6 +34,12 @@ pub struct AppConfig {
     pub files: FileLimits,
     /// `WEB_DIR`: the built web bundle the server serves, with `index.html` for client routes.
     pub web_dir: Option<PathBuf>,
+    /// `PUBLIC_URL`: the origin people reach the server at (`https://copilot.example.com`), for
+    /// the OAuth sign-in callback and the page it returns to. Unset: tool server sign-in is off.
+    pub public_url: Option<Url>,
+    /// `OAUTH_CLIENT_METADATA`: whether an `https` `PUBLIC_URL` serves as a Client ID Metadata
+    /// Document for authorization servers that support those (default `true`).
+    pub client_metadata: bool,
     /// lib-rustauth's `AUTH_*` variables.
     pub identity: IdentityConfig,
 }
@@ -66,6 +74,17 @@ impl AppConfig {
         let max_storage_mb =
             parser.parse_or("MAX_STORAGE_MB_PER_USER", DEFAULT_MAX_STORAGE_MB_PER_USER);
         let web_dir = parser.optional("WEB_DIR").map(PathBuf::from);
+        let public_url = match parser.optional("PUBLIC_URL") {
+            Some(text) => {
+                let parsed = public_origin(&text);
+                if parsed.is_none() {
+                    parser.reject("PUBLIC_URL");
+                }
+                parsed
+            }
+            None => None,
+        };
+        let client_metadata = parser.parse_or("OAUTH_CLIENT_METADATA", true);
         let identity = IdentityConfig::parse(env).map_err(|fields| {
             for field in fields {
                 parser.reject(field);
@@ -100,6 +119,8 @@ impl AppConfig {
                 max_storage_mb,
             },
             web_dir,
+            public_url,
+            client_metadata,
             identity: identity.expect("finish() fails when an AUTH_* variable is invalid"),
         })
     }
@@ -112,6 +133,25 @@ fn comma_list(value: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// `PUBLIC_URL` as an origin: `https`, or plain `http` for a loopback host only (redirect URIs
+/// must be `https` or `localhost`, MCP authorization Security Considerations); no path beyond
+/// `/`, no query, fragment, or credentials.
+fn public_origin(text: &str) -> Option<Url> {
+    let url = Url::parse(text).ok()?;
+    let loopback = match url.host()? {
+        Host::Domain(domain) => domain == "localhost",
+        Host::Ipv4(ip) => ip.is_loopback(),
+        Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    let scheme = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+    let bare = url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    (scheme && bare).then_some(url)
 }
 
 /// A directory with the bundle's `index.html`, which client routes fall back to.
@@ -164,6 +204,55 @@ mod tests {
         assert_eq!(config.files.max_upload_mb, 25);
         assert_eq!(config.files.max_storage_mb, 1_024);
         assert_eq!(config.web_dir, None);
+        assert_eq!(config.public_url, None);
+        assert!(config.client_metadata);
+    }
+
+    #[test]
+    fn public_url_is_an_https_or_loopback_origin() {
+        let local = ("ENVIRONMENT", "local");
+        for (value, expected) in [
+            (
+                "https://copilot.example.com",
+                "https://copilot.example.com/",
+            ),
+            (
+                "https://copilot.example.com/",
+                "https://copilot.example.com/",
+            ),
+            (
+                "https://copilot.example.com:8443",
+                "https://copilot.example.com:8443/",
+            ),
+            ("http://localhost:4000", "http://localhost:4000/"),
+            ("http://127.0.0.1:3000/", "http://127.0.0.1:3000/"),
+            ("http://[::1]:3000", "http://[::1]:3000/"),
+        ] {
+            let config = AppConfig::parse(&env(&[local, ("PUBLIC_URL", value)])).expect(value);
+            assert_eq!(config.public_url.unwrap().as_str(), expected, "{value}");
+        }
+        for value in [
+            "copilot.example.com",
+            "http://copilot.example.com",
+            "http://192.168.1.5:3000",
+            "https://copilot.example.com/app",
+            "https://copilot.example.com/?x=1",
+            "https://user:pass@copilot.example.com",
+            "ftp://copilot.example.com",
+        ] {
+            assert_eq!(
+                invalid(&[local, ("PUBLIC_URL", value)]),
+                ["PUBLIC_URL"],
+                "{value}"
+            );
+        }
+        let off =
+            AppConfig::parse(&env(&[local, ("OAUTH_CLIENT_METADATA", "false")])).expect("valid");
+        assert!(!off.client_metadata);
+        assert_eq!(
+            invalid(&[local, ("OAUTH_CLIENT_METADATA", "maybe")]),
+            ["OAUTH_CLIENT_METADATA"]
+        );
     }
 
     #[test]

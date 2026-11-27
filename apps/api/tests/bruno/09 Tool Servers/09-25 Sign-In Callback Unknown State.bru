@@ -1,0 +1,34 @@
+meta {
+  name: 09-25 Sign-In Callback Unknown State
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{baseUrl}}/api/oauth/callback?state=bruno-unknown-state&code=bruno-code&error_description=%3Cscript%3E
+  body: none
+  auth: none
+}
+
+settings {
+  followRedirects: false
+}
+
+assert {
+  res.status: eq 303
+  res.headers.location: contains /oauth/done?result=expired
+  res.headers["cache-control"]: eq no-store
+}
+
+tests {
+  test("never echoes the query", function () {
+    expect(res.headers.location).to.not.include("bruno-code");
+    expect(res.headers.location).to.not.include("script");
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/oauth/callback` (public)
+
+  **This test verifies:** a callback whose `state` names no sign-in goes to the web app's done page as expired, without echoing anything it was sent.
+}

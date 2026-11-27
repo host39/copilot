@@ -1,6 +1,7 @@
 //! An in-process MCP tool server for route tests: rmcp's own Streamable HTTP server on loopback
 //! (`http://127.0.0.1:<port>/mcp`, which only a private-scope connection may reach), in either
-//! era, with a tool list the test can change and a bearer token it can demand.
+//! era, with a tool list the test can change and a bearer token it can demand (and change, with
+//! the `WWW-Authenticate` challenge its `401` carries, for the sign-in tests).
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,7 +25,7 @@ use serde_json::{Map, Value};
 pub struct McpServer {
     pub url: String,
     tools: Arc<Mutex<Vec<Tool>>>,
-    requests: Arc<AtomicUsize>,
+    gate: Arc<Gate>,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
@@ -48,14 +49,15 @@ impl McpServer {
         let factory = handler.clone();
         let service: StreamableHttpService<Handler, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(factory.clone()), Default::default(), config);
-        let gate = Gate {
-            required: bearer.map(|token| format!("Bearer {token}")),
-            requests: Arc::new(AtomicUsize::new(0)),
-        };
-        let requests = gate.requests.clone();
+        let gate = Arc::new(Gate {
+            required: Mutex::new(bearer.map(|token| format!("Bearer {token}"))),
+            challenge: Mutex::new("Bearer".to_owned()),
+            requests: AtomicUsize::new(0),
+            authorization: Mutex::new(Vec::new()),
+        });
         let router = axum::Router::new()
             .nest_service("/mcp", service)
-            .layer(from_fn_with_state(Arc::new(gate), guard));
+            .layer(from_fn_with_state(gate.clone(), guard));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback port");
@@ -68,7 +70,7 @@ impl McpServer {
         let server = Self {
             url: format!("http://{address}/mcp"),
             tools: handler.tools,
-            requests,
+            gate,
             calls: handler.calls,
         };
         server.set_tools(tools);
@@ -92,7 +94,26 @@ impl McpServer {
 
     /// HTTP requests that reached the server.
     pub fn requests(&self) -> usize {
-        self.requests.load(Ordering::SeqCst)
+        self.gate.requests.load(Ordering::SeqCst)
+    }
+
+    /// From now on, answers `401` unless `Authorization` is `Bearer <token>`.
+    pub fn require(&self, token: &str) {
+        *self.gate.required.lock().expect("required") = Some(format!("Bearer {token}"));
+    }
+
+    /// The `WWW-Authenticate` value of its `401`s.
+    pub fn challenge(&self, value: &str) {
+        *self.gate.challenge.lock().expect("challenge") = value.to_owned();
+    }
+
+    /// Every `Authorization` value the server saw, in order.
+    pub fn authorization(&self) -> Vec<String> {
+        self.gate
+            .authorization
+            .lock()
+            .expect("authorization")
+            .clone()
     }
 
     /// The tool calls the server answered, in order: each tool's name and arguments.
@@ -102,20 +123,31 @@ impl McpServer {
 }
 
 struct Gate {
-    required: Option<String>,
-    requests: Arc<AtomicUsize>,
+    required: Mutex<Option<String>>,
+    challenge: Mutex<String>,
+    requests: AtomicUsize,
+    authorization: Mutex<Vec<String>>,
 }
 
 async fn guard(State(gate): State<Arc<Gate>>, request: Request, next: Next) -> Response {
     gate.requests.fetch_add(1, Ordering::SeqCst);
-    if let Some(required) = &gate.required {
-        let given = request
-            .headers()
-            .get("authorization")
-            .and_then(|value| value.to_str().ok());
-        if given != Some(required.as_str()) {
-            return (StatusCode::UNAUTHORIZED, [("www-authenticate", "Bearer")]).into_response();
-        }
+    let given = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    if let Some(given) = &given {
+        gate.authorization
+            .lock()
+            .expect("authorization")
+            .push(given.clone());
+    }
+    let required = gate.required.lock().expect("required").clone();
+    if let Some(required) = required
+        && given.as_deref() != Some(required.as_str())
+    {
+        let challenge = gate.challenge.lock().expect("challenge").clone();
+        return (StatusCode::UNAUTHORIZED, [("www-authenticate", challenge)]).into_response();
     }
     next.run(request).await
 }

@@ -1,0 +1,32 @@
+meta {
+  name: 09-22 Start Sign-In Unreachable
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{oauthServerId}}/oauth/start
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 502
+  res.body.code: eq OAUTH_FAILED
+}
+
+tests {
+  test("never names the address", function () {
+    expect(JSON.stringify(res.body)).to.not.include("mcp.invalid");
+  });
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/oauth/start`
+
+  **This test verifies:** discovery that cannot reach the server is a `502` with `OAUTH_FAILED` and no address.
+}

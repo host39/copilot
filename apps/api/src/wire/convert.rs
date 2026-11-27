@@ -83,6 +83,33 @@ out!(
     [Ok, Error, AwaitingApproval]
 );
 out!(core::KeyState, dto::KeyState, [Missing, Set, Unreadable]);
+out!(
+    core::SignInState,
+    dto::SignInState,
+    [SignedIn, Expired, NeedsSignIn]
+);
+
+impl ToDto for core::AuthMode {
+    type Dto = dto::AuthMode;
+    fn to_dto(self) -> dto::AuthMode {
+        match self {
+            Self::None => dto::AuthMode::None,
+            Self::Headers => dto::AuthMode::Headers,
+            Self::OAuth => dto::AuthMode::Oauth,
+        }
+    }
+}
+
+impl ToCore for dto::AuthMode {
+    type Core = core::AuthMode;
+    fn to_core(self) -> core::AuthMode {
+        match self {
+            Self::None => core::AuthMode::None,
+            Self::Headers => core::AuthMode::Headers,
+            Self::Oauth => core::AuthMode::OAuth,
+        }
+    }
+}
 out!(core::Role, dto::Role, [User, Assistant, Tool]);
 out!(
     core::MessageStatus,
@@ -234,6 +261,18 @@ mod tests {
     }
 
     #[test]
+    fn auth_modes_keep_their_meaning_on_the_wire() {
+        for mode in [
+            core::AuthMode::None,
+            core::AuthMode::Headers,
+            core::AuthMode::OAuth,
+        ] {
+            assert_eq!(mode.to_dto().to_core(), mode);
+            assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
+        }
+    }
+
+    #[test]
     fn enums_keep_their_meaning_on_the_wire() {
         for level in core::ReasoningLevel::ALL {
             assert_eq!(level.to_dto().to_core(), level);
@@ -273,6 +312,7 @@ mod tests {
             assert_eq!(mode.to_dto().to_core(), mode);
             assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
         }
+
         for on_ask in [core::OnAsk::Deny, core::OnAsk::Pause] {
             assert_eq!(on_ask.to_dto().to_core(), on_ask);
             assert_eq!(

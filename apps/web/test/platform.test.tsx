@@ -140,6 +140,8 @@ function server(id: string, name: string, extra: Partial<ToolServerResponse> = {
     toolModes: {},
     enabled: true,
     credentials: "missing",
+    authMode: "none",
+    oauth: null,
     protocolVersion: null,
     tools: null,
     toolsFetchedAt: null,

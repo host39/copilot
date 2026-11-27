@@ -5,15 +5,16 @@
 
 use async_trait::async_trait;
 use copilot_core::{
-    DomainError, DomainResult, LlmEvent, LlmGateway, LlmRequest, ModelTarget, ProviderTarget,
-    RemoteModel, ToolEndpoint, ToolHost, ToolListing, ToolSession,
+    AuthServer, BaseUrl, Discovery, DomainError, DomainResult, LlmEvent, LlmGateway, LlmRequest,
+    ModelTarget, NetworkScope, OAuthClient, ProviderTarget, Registration, RemoteModel,
+    TokenRequest, TokenSet, ToolAuth, ToolEndpoint, ToolHost, ToolListing, ToolSession,
 };
 use futures_util::stream::BoxStream;
 
 /// The code of every failure here.
 pub const UNAVAILABLE: &str = "ADAPTER_UNAVAILABLE";
 
-/// Implements [`LlmGateway`] and [`ToolHost`] by refusing every call.
+/// Implements [`LlmGateway`], [`ToolHost`], and [`ToolAuth`] by refusing every call.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unavailable;
 
@@ -53,6 +54,30 @@ impl ToolHost for Unavailable {
     }
 
     async fn open(&self, _endpoints: Vec<ToolEndpoint>) -> DomainResult<Box<dyn ToolSession>> {
+        Err(tools())
+    }
+}
+
+#[async_trait]
+impl ToolAuth for Unavailable {
+    async fn discover(&self, _url: &BaseUrl, _network: NetworkScope) -> DomainResult<Discovery> {
+        Err(tools())
+    }
+
+    async fn register(
+        &self,
+        _server: &AuthServer,
+        _registration: &Registration,
+        _network: NetworkScope,
+    ) -> DomainResult<OAuthClient> {
+        Err(tools())
+    }
+
+    async fn token(
+        &self,
+        _request: &TokenRequest,
+        _network: NetworkScope,
+    ) -> DomainResult<TokenSet> {
         Err(tools())
     }
 }

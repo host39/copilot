@@ -199,6 +199,8 @@ function server(extra: Partial<ToolServerResponse> = {}): ToolServerResponse {
     toolModes: { forecast: "auto", alerts: "off" },
     enabled: true,
     credentials: "missing",
+    authMode: "none",
+    oauth: null,
     protocolVersion: "2025-06-18",
     tools: [tool("forecast", "Forecast"), tool("alerts"), tool("history")],
     toolsFetchedAt: AT,

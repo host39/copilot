@@ -1,0 +1,26 @@
+meta {
+  name: 09-24 Other User Sign Out
+  type: http
+  seq: 25
+}
+
+delete {
+  url: {{baseUrl}}/api/tool-servers/{{oauthServerId}}/oauth
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `DELETE /api/tool-servers/{id}/oauth` as user B
+
+  **This test verifies:** user B cannot sign user A's server out.
+}

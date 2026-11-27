@@ -1,0 +1,26 @@
+meta {
+  name: 09-23 Other User Start Sign-In
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{oauthServerId}}/oauth/start
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/oauth/start` as user B
+
+  **This test verifies:** user B cannot start a sign-in for user A's server.
+}

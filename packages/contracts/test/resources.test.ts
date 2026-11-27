@@ -167,6 +167,8 @@ describe("responses", () => {
         toolModes: { search_docs: "off" },
         enabled: true,
         credentials: "missing",
+        authMode: "oauth",
+        oauth: { state: "needs_sign_in", clientId: null, clientSecret: "missing", expiresAt: null },
         protocolVersion: null,
         tools: null,
         toolsFetchedAt: null,
@@ -176,6 +178,7 @@ describe("responses", () => {
       },
     });
     expect(data.toolModes.search_docs).toBe("off");
+    expect(data.oauth?.state).toBe("needs_sign_in");
   });
 
   test("schedule paused by the scheduler", () => {

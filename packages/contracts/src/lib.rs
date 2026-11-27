@@ -72,6 +72,7 @@ pub use crate::schedule::{
 pub use crate::settings::{SettingsResponse, UpdateSettingsRequest};
 pub use crate::shared::{BuiltinTool, KeyState, ReasoningLevel};
 pub use crate::tool::{
-    ApprovalMode, CreateToolServerRequest, Credentials, ServerTool, ToolChanges, ToolMode,
+    ApprovalMode, AuthMode, CreateToolServerRequest, Credentials, OAuthClientInput,
+    OAuthStartResponse, OAuthStatus, ServerTool, SignInState, ToolChanges, ToolMode,
     ToolServerResponse, ToolTestResponse, UpdateToolServerRequest,
 };

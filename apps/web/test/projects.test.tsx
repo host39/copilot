@@ -806,6 +806,8 @@ describe("the project screens", () => {
             approval: "ask",
             slug: "search",
             credentials: "missing",
+            authMode: "none",
+            oauth: null,
             protocolVersion: null,
             toolModes: {},
             tools: [],

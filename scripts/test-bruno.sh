@@ -12,8 +12,9 @@
 # On a database without accounts that first registration needs the setup token, and the account
 # becomes the administrator; afterwards it needs open registration. So the server this script
 # starts gets AUTH_REGISTRATION_OPEN=true and AUTH_SETUP_TOKEN (the env file's, or a generated
-# one), unless the shell sets them. Against BASE_URL, pass the server's AUTH_SETUP_TOKEN in the
-# shell or the env file when its database has no account yet.
+# one), unless the shell sets them, and PUBLIC_URL set to its own base URL (the sign-in callback
+# tests). Against BASE_URL, pass the server's AUTH_SETUP_TOKEN in the shell or the env file when
+# its database has no account yet.
 #
 # Usage: bash scripts/test-bruno.sh                                  (or `make test-bruno`)
 #        BASE_URL=http://localhost:3001 bash scripts/test-bruno.sh
@@ -62,6 +63,8 @@ else
     AUTH_SETUP_TOKEN="bruno-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   fi
   export AUTH_SETUP_TOKEN
+  # Tool server sign-in comes back to the server it started on (the callback tests).
+  export PUBLIC_URL="$BASE_URL"
 
   cargo build -q -p copilot-api --bin server
   bash scripts/with-env.sh "$ENV_FILE" "${CARGO_TARGET_DIR:-target}/debug/server" >"$RUN_DIR/api.log" 2>&1 &

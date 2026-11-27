@@ -47,6 +47,8 @@ tower = { workspace = true, features = ["util"] }
 # Serves the web bundle (`WEB_DIR`).
 tower-http = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
+# `PUBLIC_URL` and the sign-in redirects (`routes::oauth`).
+url = { workspace = true }
 utoipa = { workspace = true, features = ["uuid"] }
 utoipa-axum = { workspace = true }
 uuid = { workspace = true }
