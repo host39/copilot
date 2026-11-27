@@ -7,6 +7,7 @@ import { QueryState } from "@web/components/Settings/QueryState";
 import { SettingsPage } from "@web/components/Settings/SettingsPage";
 import path, { link } from "@web/routes/path";
 import { plural } from "@web/routes/settings/format";
+import { needsSignIn, signInBadge } from "@web/routes/settings/tool-server/sign-in";
 import { LuChevronRight, LuPlus } from "react-icons/lu";
 import { Link } from "react-router-dom";
 
@@ -20,6 +21,9 @@ function Row({ server }: { server: ToolServerResponse }) {
             <span className="break-words">{server.name}</span>
             {server.enabled ? null : <Badge>Off</Badge>}
             {server.reviewRequired ? <Badge tone="warn">Review changes</Badge> : null}
+            {needsSignIn(server) ? (
+              <Badge tone="warn">{signInBadge(server.oauth?.state ?? "needs_sign_in").label}</Badge>
+            ) : null}
             {server.approval === "auto" ? <Badge tone="accent">Auto</Badge> : null}
           </p>
           <p className="truncate text-sm text-muted">{`${tools} · ${server.url}`}</p>
@@ -54,7 +58,8 @@ export default function ToolServersPage() {
           <div className="card-panel text-center">
             <p className="text-sm font-medium">No tool servers yet</p>
             <p className="mt-1 text-sm text-muted">
-              Add a remote MCP server by its address, with a token or headers when it needs them.
+              Add a remote MCP server by its address, with a token, headers, or a sign-in when it
+              needs them.
             </p>
           </div>
         ) : (

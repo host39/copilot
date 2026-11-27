@@ -1,8 +1,10 @@
 // MCP tool servers (`/tool-servers`). Credentials only go in: answers say whether they are stored
-// (`credentials`), never what they are.
+// (`credentials`) and how an OAuth sign-in stands (`oauth`), never what they are.
 
 import {
   type CreateToolServerRequest,
+  type OAuthStartResponse,
+  oauthStartBodySchema,
   type ToolServerResponse,
   type ToolTestResponse,
   toolServerBodySchema,
@@ -58,4 +60,20 @@ export async function testToolServer(serverId: string): Promise<ToolTestResponse
 export async function reviewToolServer(serverId: string): Promise<ToolServerResponse> {
   return (await apiFetch(API.toolServerReview(serverId), toolServerBodySchema, { method: "POST" }))
     .data;
+}
+
+/**
+ * `POST /tool-servers/{id}/oauth/start`: the authorization URL to open in the browser. The
+ * sign-in comes back to the server, which then sends the browser to `/oauth/done`.
+ */
+export async function startSignIn(serverId: string): Promise<OAuthStartResponse> {
+  return (await apiFetch(API.toolServerSignIn(serverId), oauthStartBodySchema, { method: "POST" }))
+    .data;
+}
+
+/** `DELETE /tool-servers/{id}/oauth`: forgets the server's sign-in. */
+export async function signOut(serverId: string): Promise<ToolServerResponse> {
+  return (
+    await apiFetch(API.toolServerSignOut(serverId), toolServerBodySchema, { method: "DELETE" })
+  ).data;
 }

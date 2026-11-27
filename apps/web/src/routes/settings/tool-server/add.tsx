@@ -1,10 +1,12 @@
-import type { ApprovalMode } from "@copilot/contracts";
+import type { ApprovalMode, AuthMode } from "@copilot/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "@web/api/routes/keys";
 import Button from "@web/components/Button/Button";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { TextField } from "@web/components/Form/TextField";
 import { ApprovalPicker } from "@web/components/Settings/ApprovalPicker";
+import { AuthPicker } from "@web/components/Settings/AuthPicker";
+import { ClientFields } from "@web/components/Settings/ClientFields";
 import { HeaderRows } from "@web/components/Settings/HeaderRows";
 import { SettingsPage } from "@web/components/Settings/SettingsPage";
 import { text } from "@web/forms";
@@ -25,6 +27,7 @@ export function AddToolServer() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [approval, setApproval] = useState<ApprovalMode>("ask");
+  const [auth, setAuth] = useState<AuthMode>("none");
   const [rows, setRows] = useState<HeaderRow[]>([]);
   const form = useSubmit(serverSchema, addServer, (added) => {
     void client.invalidateQueries({ queryKey: keys.toolServers });
@@ -36,7 +39,7 @@ export function AddToolServer() {
     <SettingsPage
       title="Add Tool Server"
       back={{ to: path.toolServers, label: "Tool servers" }}
-      description="A remote MCP server over Streamable HTTP. Copilot tests it by listing its tools."
+      description="A remote MCP server over Streamable HTTP. Copilot tests it by listing its tools; a server you sign in to is tested after the sign-in."
     >
       <form
         noValidate
@@ -49,8 +52,11 @@ export function AddToolServer() {
             slug: text(data, "slug"),
             url: text(data, "url"),
             approval,
+            auth,
             bearer: text(data, "bearer"),
             rows,
+            clientId: text(data, "clientId"),
+            clientSecret: text(data, "clientSecret"),
           });
         }}
       >
@@ -73,16 +79,22 @@ export function AddToolServer() {
           placeholder="https://mcp.example.com/mcp"
           error={form.errors.url}
         />
-        <TextField
-          label="Bearer token (optional)"
-          name="bearer"
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          hint="Sent as Authorization: Bearer. Stored encrypted; it is never shown again."
-          error={form.errors.bearer}
-        />
-        <HeaderRows rows={rows} onChange={setRows} error={form.errors.headers} />
+        <AuthPicker value={auth} onChange={setAuth} />
+        {auth === "headers" ? (
+          <>
+            <TextField
+              label="Bearer token"
+              name="bearer"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Sent as Authorization: Bearer. Stored encrypted; it is never shown again. Or add headers below."
+              error={form.errors.bearer}
+            />
+            <HeaderRows rows={rows} onChange={setRows} error={form.errors.headers} />
+          </>
+        ) : null}
+        {auth === "oauth" ? <ClientFields error={form.errors.clientId} /> : null}
         <ApprovalPicker value={approval} onChange={setApproval} />
         <TextField
           label="Short name (optional)"
