@@ -86,6 +86,15 @@ describe("native-linux", () => {
     expect(commands).toContain("pnpm --filter @copilot/native tauri build --bundles deb,appimage");
   });
 
+  test("checks the .deb's WebKitGTK dependency and the AppImage's type 2 magic", () => {
+    const commands = scripts(linux);
+    expect(commands).toContain('[[ "$depends" == *libwebkit2gtk-4.1-0* ]]');
+    // `file` calls the static-pie runtime a "pie executable", so the check must not require "LSB executable".
+    expect(commands).toContain('[[ "$kind" == "ELF 64-bit LSB "*", x86-64,"* ]]');
+    expect(commands).not.toContain('"ELF 64-bit LSB executable');
+    expect(commands).toContain('od -An -tx1 -j 8 -N 3 "$appimage" | tr -d \' \\n\')" = 414902');
+  });
+
   test("uploads each bundle as an artifact of its own", () => {
     expect(uploads(linux).map((step) => step.with?.path)).toEqual([
       expression("steps.bundles.outputs.deb"),

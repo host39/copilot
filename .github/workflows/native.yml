@@ -102,9 +102,12 @@ jobs:
           glibc="$(objdump -T "$root"/usr/bin/* | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
           echo "Newest glibc symbol: $glibc"
           test "$(printf '%s\n' "$glibc" 2.39 | sort -V | tail -n 1)" = 2.39
+          # The runtime is a static-pie ELF, so `file` says "pie executable"; the type 2 AppImage
+          # magic ("AI" and 2) sits at byte 8 of the ELF header.
           kind="$(file -b "$appimage")"
           echo "AppImage: $kind"
-          [[ "$kind" == "ELF 64-bit LSB executable, x86-64"* ]]
+          [[ "$kind" == "ELF 64-bit LSB "*", x86-64,"* ]]
+          test "$(od -An -tx1 -j 8 -N 3 "$appimage" | tr -d ' \n')" = 414902
           {
             echo "| Artifact | Bytes |"
             echo "| --- | --- |"
