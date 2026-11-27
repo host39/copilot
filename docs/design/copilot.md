@@ -234,7 +234,7 @@ The pure address policy (`net::is_allowed(ip, scope)`, std only) lives in core, 
 - `ApiContext` owns a root `CancellationToken` and the `RunRegistry`.
 - On SIGINT or SIGTERM the server stops accepting connections and the registry drains (`RunRegistry::drain`): new runs fail with `SERVER_STOPPING` (422) at once, live runs get `SHUTDOWN_GRACE_SECS` (5) to finish on their own (their streams end with `done`), then the root token fires. Every run uses a child token, so the engine saves partial output as `cancelled` and emits `done`; runs get up to `SHUTDOWN_DRAIN_SECS` (10) more to save. SSE bodies end when the root token fires (`take_until(root.cancelled_owned())`), so `with_graceful_shutdown` does not hang on open streams. The scheduler loop exits (it claims nothing once draining begins), and `ApiContext::close` waits up to `SHUTDOWN_DRAIN_SECS` for the scheduled runs to record how they ended before the pool closes.
 - `ApiContext::close` finishes the same drain (its times count from the signal) before closing the pool. The compose file gives the container `stop_grace_period: 20s`, above the 15 seconds the two waits may take.
-- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."), without moving their chats (nothing turns unread). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)), and Retry answers an interrupted answer again.
+- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."), and so does a `complete` answer with tool calls that ends its chat (the process stopped while the calls ran, before their `tool` message was written), without moving their chats (nothing turns unread). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)), and Retry answers an interrupted answer again.
 
 ## Identity (lib-rustauth)
 
@@ -417,7 +417,7 @@ trait MessageRepository {
     async fn delete_after(&self, user: UserId, chat: ChatId, after: MessageId, orphans: &[FileId]) -> DomainResult<u64>; // and the chat's `orphans`, one tx
     async fn decide(&self, user: UserId, message: MessageId, decisions: &[CallDecision]) -> DomainResult<bool>; // pending -> approved or denied and status -> complete, only while status = awaiting_approval
     async fn search(&self, user: UserId, query: &str, limit: u32) -> DomainResult<Vec<SearchHit>>;
-    async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64>;  // system: streaming -> error
+    async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64>;  // system: streaming, or complete with calls and last in its chat -> error
 }
 trait TurnContextRepository {
     async fn save(&self, user: UserId, chat: ChatId, context: &TurnContext) -> DomainResult<()>; // insert if absent
@@ -459,7 +459,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 | `ProjectService` | CRUD; `delete` (the handler cancels live runs of the project's chats first) |
 | `FileService` | `upload` (allowlist, magic bytes, quota, `sha256`, token estimate, page count; hashing and measuring run on the `Worker` port, Tokio's blocking pool in the API, and the PDF page count is linear in the file's size), `content` (metadata and bytes), `bytes` (one read, for the engine, which already has the metadata), `update`, `move_to_project`, `delete` |
 | `ChatService` | `list`, `create`, `update`, `delete`, `messages`, `prepare` (validates and builds a `PreparedTurn`), `prepare_scheduled(firing) -> ScheduledTurn` (a schedule run's new chat, under the id the firing reserved, and prompt; `Paused` with nothing written when the schedule's model is gone or turned off), `save_as_project`, `save_instructions`, `search`, `mark_read`, `recover` |
-| `ChatEngine` | `run(turn, sink: Arc<dyn TurnSink>, cancel: CancellationToken) -> DomainResult<TurnOutcome>`; `TurnOutcome { message_id, status, finish_reason, error }` converts into the schedule's `RunOutcome`. `Err` means a message could not be saved (the assistant message stays `streaming` until `recover()`); provider, tool, and file read failures end with a saved `error` answer and an `error` outcome. Internal errors become the generic text, and the engine logs their dotted key and source (`core.engine.failed`) where it converts them |
+| `ChatEngine` | `run(turn, sink: Arc<dyn TurnSink>, cancel: CancellationToken) -> DomainResult<TurnOutcome>`; `TurnOutcome { message_id, status, finish_reason, error }` converts into the schedule's `RunOutcome`. `Err` means a message could not be saved (the engine then tries once to save the answer as `error` with the interrupted text, so Retry works; if that fails too it stays `streaming` until `recover()`); provider, tool, and file read failures end with a saved `error` answer and an `error` outcome. Internal errors become the generic text, and the engine logs their dotted key and source (`core.engine.failed`) where it converts them |
 | `ToolService` | CRUD; `test` (list tools, store cache, detect changed tools); `review` (clear `tools_review_required`); `effective_tools(chat)`; tool cache refresh on expiry or unknown tool (`stale`: a call that fails with `TOOL_UNKNOWN` expires the stored list, so the next turn lists the server again and keeps the old list only if that fails) |
 | `ScheduleService` | CRUD with limits; `preview(cron, tz) -> {description, next_runs}`; `fire_due(now, limit) -> Vec<Firing>` (compare-and-set claims; a claim that fails after others succeeded ends the round with those, so a claimed fire is never dropped); `run_now(id) -> Firing`; `record(id, outcome, started_at)`; the built-in tool handlers. A `Firing` carries the id of the chat its run will create, so the API reserves the chat before anything is written. `ChatService::prepare_scheduled` turns a `Firing` into a `ScheduledTurn`, so the schedule domain never depends on the chat service; `RunOutcome::Paused` and `RunOutcome::not_started` record runs that could not start |
 
@@ -468,7 +468,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 - `Project` and `Chat` include their tool server selections, saved atomically with the join rows by their repository.
 - `Message` is its own aggregate keyed by `chat_id`; `Chat` never loads its message list.
 - Each provider round stores **one assistant message** (text, reasoning, audio, and tool-call parts) followed, when it called tools, by **one `tool` message** holding every result of that round in call order.
-- Use cases that write several rows get one repository method each, run as one sqlx transaction: `MessageRepository::replace_tail`, `MessageRepository::append` (with `chats.updated_at`), `MessageRepository::decide`, `ProjectRepository::insert_with_chat`, `FileRepository::create`.
+- Use cases that write several rows get one repository method each, run as one sqlx transaction: `MessageRepository::replace_tail`, `MessageRepository::append` (with `chats.updated_at`; `update` never rewrites a message's model or connection, which a delete may have cleared), `MessageRepository::decide`, `ProjectRepository::insert_with_chat`, `FileRepository::create`.
 - Reads that a use case needs run before its transaction, at most 4 concurrently (`parallel-db-reads`).
 
 ## Conversation Engine
@@ -646,7 +646,7 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | --- | --- |
 | Identity (rustauth) | `/auth/*` (setup status, register, login, logout, me, password, sessions) and `/admin/users*` (administrators only), mounted from rustauth's router with the bodies and statuses of its spec; see [Identity (lib-rustauth)](#identity-lib-rustauth) |
 | Settings | `GET /settings`, `PATCH /settings` (`instructions`): the caller's personal instructions |
-| Providers | `GET/POST /providers`, `GET/PATCH/DELETE /providers/{id}` (details include `usage` counts for the delete confirmation), `POST /providers/{id}/refresh`, `GET /providers/{id}/models` (all known) |
+| Providers | `GET/POST /providers`, `GET/PATCH/DELETE /providers/{id}` (details include `usage` counts for the delete confirmation; a delete first stops the caller's answers on that connection, which save as `cancelled`), `POST /providers/{id}/refresh`, `GET /providers/{id}/models` (all known) |
 | Models | `GET /models` (enabled and available, for the picker), `PATCH /models/{id}` (`enabled`, `displayName`, `capabilityOverrides`, `contextWindow`, `maxOutputTokens`) |
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
@@ -815,7 +815,7 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `schedule_id` | `uuid` | null; `(schedule_id, user_id)` references `schedules`, on delete set null (`schedule_id`); index |
 | `pinned` | `boolean` | not null, default false |
 | `voice_replies` | `boolean` | not null, default false; Speak replies |
-| `title` | `text` | not null; first user message, trimmed to 60 characters |
+| `title` | `text` | not null; first user message, trimmed to 60 characters, written alone (`set_title`, only while the chat is untitled) so settings saved meanwhile stay |
 | `instructions` | `text` | not null, default `''` |
 | `reasoning` | `text` | null; inherits the project, then the model default |
 | `builtin_tools` | `text[]` | null inherits the project (none when standalone) |

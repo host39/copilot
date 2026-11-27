@@ -288,6 +288,40 @@ impl ChatRepository for PgStore {
             .map_err(failed("database.chats.insert.failed"))
     }
 
+    async fn set_title(&self, user: UserId, id: ChatId, title: &str) -> DomainResult<bool> {
+        let updated = sqlx::query(
+            "UPDATE chats SET title = $3 WHERE id = $1 AND user_id = $2 AND title = ''",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .bind(title)
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.chats.set-title.failed"))?
+        .rows_affected();
+        Ok(updated > 0)
+    }
+
+    async fn clear_instructions(
+        &self,
+        user: UserId,
+        id: ChatId,
+        saved: &str,
+    ) -> DomainResult<bool> {
+        let updated = sqlx::query(
+            "UPDATE chats SET instructions = '' \
+             WHERE id = $1 AND user_id = $2 AND instructions = $3",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .bind(saved)
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.chats.clear-instructions.failed"))?
+        .rows_affected();
+        Ok(updated > 0)
+    }
+
     async fn update(&self, chat: &Chat) -> DomainResult<()> {
         let mut tx = self
             .pool()
@@ -628,16 +662,16 @@ impl MessageRepository for PgStore {
             .begin()
             .await
             .map_err(failed("database.messages.update.failed"))?;
+        // The model and connection are set once, at append; a delete may have cleared them
+        // since (`ON DELETE SET NULL`), and writing them back would break the foreign keys.
         let updated = sqlx::query(
-            "UPDATE messages SET updated_at = $3, model_id = $4, provider_id = $5, status = $6, \
-             finish_reason = $7, context_hash = $8, parts = $9, provider_state = $10, \
-             usage = $11, error = $12, text_content = $13 WHERE id = $1 AND user_id = $2",
+            "UPDATE messages SET updated_at = $3, status = $4, finish_reason = $5, \
+             context_hash = $6, parts = $7, provider_state = $8, usage = $9, error = $10, \
+             text_content = $11 WHERE id = $1 AND user_id = $2",
         )
         .bind(message.id().uuid())
         .bind(user.uuid())
         .bind(message.updated_at())
-        .bind(message.model_id().map(ModelId::uuid))
-        .bind(message.provider_id().map(ProviderId::uuid))
         .bind(message.status().as_str())
         .bind(message.finish_reason().map(|reason| reason.as_str()))
         .bind(message.context_hash().map(|hash| hash.as_bytes().to_vec()))
@@ -783,9 +817,14 @@ impl MessageRepository for PgStore {
 
     async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64> {
         // A system write at startup: chats keep their `updated_at`, so nothing turns unread.
+        // An answer is saved `complete` before its calls run and the `tool` message follows
+        // them, so a complete answer with calls that ends its chat was stopped mid-round.
         let recovered = sqlx::query(
-            "UPDATE messages SET status = 'error', error = $1, updated_at = $2 \
-             WHERE status = 'streaming'",
+            "UPDATE messages m SET status = 'error', error = $1, updated_at = $2 \
+             WHERE m.status = 'streaming' OR (m.status = 'complete' AND m.role = 'assistant' \
+             AND m.parts @> '[{\"type\": \"tool_call\"}]' \
+             AND NOT EXISTS (SELECT 1 FROM messages later \
+             WHERE later.chat_id = m.chat_id AND later.seq > m.seq))",
         )
         .bind(INTERRUPTED)
         .bind(now)

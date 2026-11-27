@@ -125,6 +125,7 @@ pub(crate) fn launch(
 ) -> JoinHandle<Option<TurnOutcome>> {
     let engine = Arc::clone(&state.engine);
     let chat = turn.chat.id();
+    reservation.serve(turn.provider.id());
     reservation.start();
     tokio::spawn(async move {
         let task = tokio::spawn({

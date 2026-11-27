@@ -25,6 +25,13 @@ pub trait ChatRepository: Send + Sync {
     /// `last_read_at` are not written here: message writes move `updated_at`, and `mark_read`
     /// sets `last_read_at`.
     async fn update(&self, chat: &Chat) -> DomainResult<()>;
+    /// Sets the title of an untitled chat (`title = ''`) and writes nothing else, so settings
+    /// saved since the chat was read stay. `false` when the chat already has a title.
+    async fn set_title(&self, user: UserId, id: ChatId, title: &str) -> DomainResult<bool>;
+    /// Clears the chat's instructions while they still read `saved`, and writes nothing else.
+    /// `false` when they changed since (nothing is written).
+    async fn clear_instructions(&self, user: UserId, id: ChatId, saved: &str)
+    -> DomainResult<bool>;
     /// "Approve for this chat": adds `chat_tool_approvals` rows only, skipping rows the chat
     /// already has and servers the user no longer has. Writes nothing else, so a rename, pin, or
     /// settings change saved since the chat was read stays.
@@ -45,6 +52,8 @@ pub trait MessageRepository: Send + Sync {
     async fn history(&self, user: UserId, chat: ChatId) -> DomainResult<Vec<Message>>;
     /// Inserts the message (next `seq`) and bumps the chat, in one transaction.
     async fn append(&self, user: UserId, message: &Message) -> DomainResult<()>;
+    /// Writes the message's status, parts, and results; its model and connection never change
+    /// after [`append`](Self::append).
     async fn update(&self, user: UserId, message: &Message) -> DomainResult<()>;
     /// Edit and resend, in one transaction: deletes `from` and every later message of the
     /// chat, and those of `orphans` the chat still owns (files only the deleted messages
@@ -79,7 +88,9 @@ pub trait MessageRepository: Send + Sync {
     /// Chats whose title or message text matches, best first.
     async fn search(&self, user: UserId, query: &str, limit: u32) -> DomainResult<Vec<SearchHit>>;
     /// System, at startup: every `streaming` message becomes `error` with the text
-    /// `INTERRUPTED`. Returns how many.
+    /// `INTERRUPTED`, and so does a `complete` answer with tool calls that is the last message
+    /// of its chat (the process stopped while its calls ran, before their `tool` message), so
+    /// Retry answers both. Returns how many.
     async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64>;
 }
 

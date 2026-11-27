@@ -26,8 +26,8 @@ use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::domains::chat::{
-    Approval, FinishReason, Message, MessageParts, MessageRepository, MessageStatus, Part,
-    PreparedTurn, Role, SKIPPED, ToolCallPart, ToolResultPart, ToolStatus,
+    Approval, FinishReason, INTERRUPTED, Message, MessageParts, MessageRepository, MessageStatus,
+    Part, PreparedTurn, Role, SKIPPED, ToolCallPart, ToolResultPart, ToolStatus,
 };
 use crate::domains::conversation::approval::{Policy, TOOL_OFF, Verdict, decide};
 use crate::domains::conversation::context::{self, ContextInputs};
@@ -791,10 +791,20 @@ impl Run<'_> {
             updated_at: self.now(),
             ..started.to_parts()
         });
-        self.engine
-            .messages
-            .update(self.turn.actor.user_id, &saved)
-            .await?;
+        let user = self.turn.actor.user_id;
+        if let Err(error) = self.engine.messages.update(user, &saved).await {
+            // Best effort: an answer left `streaming` would read as in progress, and refuse
+            // Retry, until the next restart.
+            let failed = Message::restore(MessageParts {
+                status: MessageStatus::Error,
+                error: Some(INTERRUPTED.to_owned()),
+                ..saved.to_parts()
+            });
+            if let Err(again) = self.engine.messages.update(user, &failed).await {
+                tracing::warn!(error = %again, message_id = %saved.id(), "core.engine.save.failed");
+            }
+            return Err(error);
+        }
         self.history.push(saved.clone());
         Ok(saved)
     }

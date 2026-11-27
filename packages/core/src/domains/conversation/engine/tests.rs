@@ -1941,6 +1941,19 @@ impl ChatRepository for Renaming {
         ChatRepository::update(self.store.as_ref(), chat).await
     }
 
+    async fn set_title(&self, user: UserId, id: ChatId, title: &str) -> DomainResult<bool> {
+        ChatRepository::set_title(self.store.as_ref(), user, id, title).await
+    }
+
+    async fn clear_instructions(
+        &self,
+        user: UserId,
+        id: ChatId,
+        saved: &str,
+    ) -> DomainResult<bool> {
+        ChatRepository::clear_instructions(self.store.as_ref(), user, id, saved).await
+    }
+
     async fn approve(
         &self,
         user: UserId,
