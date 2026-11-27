@@ -1268,6 +1268,7 @@ mod tests {
             message_id: MessageId::generate(),
             role: Role::Assistant,
             window_start_id: None,
+            unavailable: Vec::new(),
         });
         let early = reservation.subscribe().into_stream();
         sink.emit(text(1));
@@ -1394,6 +1395,7 @@ mod tests {
             message_id: message,
             role: Role::Assistant,
             window_start_id: None,
+            unavailable: Vec::new(),
         });
         let piece = "x".repeat(1_000);
         let count = 200;
@@ -1523,6 +1525,7 @@ mod tests {
             message_id: message,
             role: Role::Assistant,
             window_start_id: None,
+            unavailable: Vec::new(),
         });
         for piece in pieces {
             sink.emit(delta(message, 0, piece));

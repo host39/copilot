@@ -34,6 +34,9 @@ pub const MCP_LIST_MAX_PAGES: usize = 16;
 /// Tools one server may list. Providers accept far fewer per request; the cap bounds the work
 /// a hostile server's listing can cause.
 pub const MCP_TOOLS_MAX: usize = 512;
+/// After a failed listing, a turn lists that server again only after this long (its stale list,
+/// if any, is used meanwhile), so a server that is down slows at most one turn every few minutes.
+pub const TOOL_REFRESH_BACKOFF_SECS: i64 = 300;
 /// Tool list cache lifetime when the server sends no `ttlMs`.
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 /// Longest tool list cache lifetime, whatever `ttlMs` the server sends.

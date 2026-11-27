@@ -839,6 +839,7 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     messageId: id,
     role: roleSchema,
     windowStartId: id.nullable(),
+    unavailable: z.array(z.string()).optional(),
   }),
   z.object({
     type: z.literal("part.started"),

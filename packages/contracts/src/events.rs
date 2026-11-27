@@ -48,6 +48,11 @@ pub enum ChatStreamEvent {
         /// The first message the model sees; `null` when the window starts at the first message
         /// of the chat. Earlier messages get the "Earlier messages not sent" divider.
         window_start_id: Option<Uuid>,
+        /// The names of the selected tool servers whose tools this answer goes without (they
+        /// could not be listed). Sent on a turn's first answer, and only when there are any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+        unavailable: Vec<String>,
     },
     /// `index` is the part's position in the message.
     #[serde(rename = "part.started", rename_all = "camelCase")]
@@ -189,6 +194,7 @@ mod tests {
                 message_id: id,
                 role: Role::Assistant,
                 window_start_id: None,
+                unavailable: Vec::new(),
             },
             ChatStreamEvent::PartStarted {
                 seq: 2,

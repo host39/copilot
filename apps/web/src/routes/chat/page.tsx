@@ -29,7 +29,13 @@ import { useSpeaker } from "@web/hooks/useSpeaker";
 import { useChatSaved } from "@web/routes/chat/dialogs";
 import { ChatHeader } from "@web/routes/chat/header";
 import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
-import { pendingCalls, type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
+import {
+  pendingCalls,
+  type Run,
+  timeline,
+  unreachableNote,
+  type ViewMessage,
+} from "@web/routes/chat/stream";
 import { type Attached, type Phase, useTurn } from "@web/routes/chat/turn";
 import path from "@web/routes/path";
 import { scheduleContext } from "@web/routes/schedule/rules";
@@ -313,6 +319,7 @@ function ChatTools({
 function Footer({
   alert,
   notice,
+  unreachable,
   phase,
   meter,
   model,
@@ -326,6 +333,8 @@ function Footer({
 }: {
   alert: string | null;
   notice: string | null;
+  /** Tool servers the turn could not reach (its answer has none of their tools). */
+  unreachable: string | null;
   phase: Phase;
   meter: ReturnType<typeof contextUse>;
   model: ModelResponse | undefined;
@@ -348,6 +357,7 @@ function Footer({
     <div className="mx-auto w-full max-w-3xl space-y-2 px-4 pb-4 sm:px-8">
       <FormAlert>{alert ?? changeError}</FormAlert>
       {notice ? <p className="text-sm text-warn">{notice}</p> : null}
+      {unreachable ? <p className="text-sm text-warn">{unreachable}</p> : null}
       {toolsOff ? <p className="text-sm text-warn">{TOOLS_OFF_NOTE}</p> : null}
       {note ? (
         <p role="status" className="text-sm text-muted">
@@ -469,6 +479,7 @@ function ChatView({ chatId }: { chatId: string }) {
         <Footer
           alert={turn.alert ?? (problem ? describeError(problem).message : null)}
           notice={notice}
+          unreachable={unreachableNote(turn.run)}
           phase={turn.phase}
           meter={contextUse(shown, model)}
           model={model}

@@ -12,7 +12,8 @@ pub use crate::domains::tool::entities::{ToolCache, ToolServer, ToolServerParts}
 pub use crate::domains::tool::headers::ToolHeaders;
 pub use crate::domains::tool::ports::ToolServerRepository;
 pub use crate::domains::tool::selection::{
-    EffectiveTool, EffectiveTools, ServerOverride, ToolChanges, ToolSelection, ToolSpec, offered,
+    EffectiveTool, EffectiveTools, ServerOverride, ToolChanges, ToolSelection, ToolSpec,
+    UnavailableServer, offered,
 };
 pub use crate::domains::tool::service::{
     CredentialChange, NewToolServer, ToolServerDetails, ToolServerUpdate, ToolService, ToolTest,

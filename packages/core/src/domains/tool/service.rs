@@ -1,21 +1,27 @@
 //! Tool server use cases: settings, tests (tool listing and change detection), reviews, and the
 //! tools a turn gets.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use chrono::{DateTime, Duration, Utc};
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 
 use crate::domains::provider::KeyState;
 use crate::domains::tool::entities::ToolServer;
 use crate::domains::tool::headers::ToolHeaders;
 use crate::domains::tool::ports::ToolServerRepository;
-use crate::domains::tool::selection::{EffectiveTools, ToolChanges, ToolSelection, offered};
+use crate::domains::tool::selection::{
+    EffectiveTools, ToolChanges, ToolSelection, UnavailableServer, offered,
+};
 use crate::domains::tool::values::{ApprovalMode, Slug, ToolMode};
 use crate::ports::clock::Clock;
 use crate::ports::secret_cipher::{SECRET_UNREADABLE, SecretCipher};
 use crate::ports::tool_host::{ToolEndpoint, ToolHost, ToolListing};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
+use crate::shared::constants::{MAX_PARALLEL_READS, TOOL_REFRESH_BACKOFF_SECS};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::ToolServerId;
 use crate::shared::net::PrivateNetwork;
@@ -118,6 +124,19 @@ pub struct ToolService {
     cipher: Arc<dyn SecretCipher>,
     clock: Arc<dyn Clock>,
     network: PrivateNetwork,
+    /// When a turn last failed to list each server: no turn lists it again before
+    /// `TOOL_REFRESH_BACKOFF_SECS` have passed. Kept in memory (one server process).
+    failures: Arc<Mutex<HashMap<ToolServerId, DateTime<Utc>>>>,
+}
+
+/// What a turn's refresh of one server came to.
+enum Refresh {
+    /// Fresh, or not due: the cached list is current.
+    Current,
+    /// Listing failed now or recently: the stale list is used when it came from the current URL.
+    Failed,
+    /// The URL changed (or the server went) while it was listed.
+    Moved,
 }
 
 impl ToolService {
@@ -135,6 +154,7 @@ impl ToolService {
             cipher,
             clock,
             network,
+            failures: Arc::default(),
         }
     }
 
@@ -243,6 +263,8 @@ impl ToolService {
         }
         let server = server.touched(self.clock.now());
         self.servers.update(&server).await?;
+        // New settings may fix what failed: the next turn lists the server again.
+        self.failures().remove(&id);
         Ok(server)
     }
 
@@ -262,6 +284,7 @@ impl ToolService {
     pub async fn test(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolTest> {
         let server = self.load(actor, id).await?;
         let listing = self.fetch(actor, &server).await?;
+        self.failures().remove(&id);
         let Some((server, changes)) = self.store(actor, server, listing).await? else {
             // Deleted meanwhile (`404`), or its URL changed.
             self.load(actor, id).await?;
@@ -292,9 +315,10 @@ impl ToolService {
 
     /// The server tools a turn with `selection` may use, sorted by alias. Only enabled servers
     /// of the caller count; `off` tools are dropped. A server whose cached list expired (or that
-    /// was never listed at its current URL) is listed again first. When that fails the stale list
-    /// is used if it came from the current URL, and any other server is reported in
-    /// `unavailable`, as is a server whose URL changed while it was listed.
+    /// was never listed at its current URL) is listed again first, at most `MAX_PARALLEL_READS`
+    /// at once, unless a listing of it failed less than `TOOL_REFRESH_BACKOFF_SECS` ago. When
+    /// listing fails the stale list is used if it came from the current URL; any other server is
+    /// reported in `unavailable`, as is a server whose URL changed while it was listed.
     pub async fn effective_tools(
         &self,
         actor: &Actor,
@@ -307,29 +331,29 @@ impl ToolService {
         }
         let servers = self.servers.list(actor.user_id).await?;
         let now = self.clock.now();
-        for id in ids {
-            let Some(server) = servers.iter().find(|server| server.id() == id) else {
-                continue;
+        let chosen: Vec<ToolServer> = ids
+            .iter()
+            .filter_map(|id| servers.iter().find(|server| server.id() == *id))
+            .filter(|server| server.enabled())
+            .cloned()
+            .collect();
+        let refreshed: Vec<(ToolServer, Refresh)> = stream::iter(chosen)
+            .map(|server| self.refresh(actor, server, now))
+            .buffered(MAX_PARALLEL_READS)
+            .try_collect()
+            .await?;
+        for (server, refresh) in refreshed {
+            let usable = match refresh {
+                Refresh::Current => true,
+                Refresh::Failed => server.listed(),
+                Refresh::Moved => false,
             };
-            if !server.enabled() {
+            if !usable {
+                effective.unavailable.push(UnavailableServer {
+                    id: server.id(),
+                    name: server.name().to_owned(),
+                });
                 continue;
-            }
-            let mut server = server.clone();
-            if server.needs_refresh(now) {
-                match self.fetch(actor, &server).await {
-                    Ok(listing) => match self.store(actor, server, listing).await? {
-                        Some((stored, _)) => server = stored,
-                        None => {
-                            effective.unavailable.push(id);
-                            continue;
-                        }
-                    },
-                    Err(_) if server.listed() => {}
-                    Err(_) => {
-                        effective.unavailable.push(id);
-                        continue;
-                    }
-                }
             }
             if let Some(cache) = server.cache() {
                 effective.tools.extend(offered(&server, &cache.tools));
@@ -339,6 +363,45 @@ impl ToolService {
             .tools
             .sort_by(|left, right| left.alias.cmp(&right.alias));
         Ok(effective)
+    }
+
+    /// Lists `server` again when its cache is due and no listing of it failed recently.
+    async fn refresh(
+        &self,
+        actor: &Actor,
+        server: ToolServer,
+        now: DateTime<Utc>,
+    ) -> DomainResult<(ToolServer, Refresh)> {
+        if !server.needs_refresh(now) {
+            return Ok((server, Refresh::Current));
+        }
+        let backoff = Duration::seconds(TOOL_REFRESH_BACKOFF_SECS);
+        let failed = self.failures().get(&server.id()).copied();
+        if failed.is_some_and(|at| now < at + backoff) {
+            return Ok((server, Refresh::Failed));
+        }
+        match self.fetch(actor, &server).await {
+            Ok(listing) => {
+                self.failures().remove(&server.id());
+                Ok(match self.store(actor, server.clone(), listing).await? {
+                    Some((stored, _)) => (stored, Refresh::Current),
+                    None => (server, Refresh::Moved),
+                })
+            }
+            Err(error) => {
+                tracing::warn!(
+                    server_id = %server.id(),
+                    code = error.code(),
+                    "core.tools.refresh.failed"
+                );
+                self.failures().insert(server.id(), now);
+                Ok((server, Refresh::Failed))
+            }
+        }
+    }
+
+    fn failures(&self) -> std::sync::MutexGuard<'_, HashMap<ToolServerId, DateTime<Utc>>> {
+        self.failures.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The adapter's view of a server owned by `actor`: the opened credentials and the network
@@ -454,6 +517,14 @@ mod tests {
             cipher,
             clock,
         }
+    }
+
+    fn unreachable(effective: &EffectiveTools) -> Vec<ToolServerId> {
+        effective
+            .unavailable
+            .iter()
+            .map(|server| server.id)
+            .collect()
     }
 
     fn named(name: &str) -> NewToolServer {
@@ -980,7 +1051,7 @@ mod tests {
             ["github__search"],
             "the stale list is used"
         );
-        assert_eq!(effective.unavailable, [never]);
+        assert_eq!(unreachable(&effective), [never]);
         assert!(
             f.service
                 .effective_tools(&caller, &ToolSelection::default())
@@ -989,6 +1060,71 @@ mod tests {
                 .tools
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_failed_is_listed_again_only_after_the_back_off() {
+        let f = fixture();
+        let caller = actor();
+        let github = listed(&f, &caller, "GitHub", vec![remote_tool("search")]).await;
+        let never = f
+            .service
+            .create(&caller, named("Never"))
+            .await
+            .unwrap()
+            .id();
+        let both = selection(vec![github, never], vec![]);
+        f.clock.advance(chrono::Duration::days(2));
+        let tries = f.host.endpoints().len();
+
+        f.host
+            .push_error(DomainError::business_rule("down", "DOWN"));
+        f.host
+            .push_error(DomainError::business_rule("down", "DOWN"));
+        let effective = f.service.effective_tools(&caller, &both).await.unwrap();
+        assert_eq!(f.host.endpoints().len(), tries + 2, "both listed at once");
+        assert_eq!(aliases(&effective), ["github__search"], "the stale list");
+        assert_eq!(unreachable(&effective), [never], "never listed");
+
+        f.clock
+            .advance(chrono::Duration::seconds(TOOL_REFRESH_BACKOFF_SECS - 1));
+        let effective = f.service.effective_tools(&caller, &both).await.unwrap();
+        assert_eq!(
+            f.host.endpoints().len(),
+            tries + 2,
+            "no turn waits on a server that just failed"
+        );
+        assert_eq!(aliases(&effective), ["github__search"]);
+        assert_eq!(unreachable(&effective), [never]);
+
+        f.service
+            .update(
+                &caller,
+                never,
+                ToolServerUpdate {
+                    name: Some("Renamed".to_owned()),
+                    ..ToolServerUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        f.host.push_tools(vec![remote_tool("read")]);
+        let effective = f
+            .service
+            .effective_tools(&caller, &selection(vec![never], vec![]))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.host.endpoints().len(),
+            tries + 3,
+            "a settings change lists it again at once"
+        );
+        assert!(effective.unavailable.is_empty());
+
+        f.clock.advance(chrono::Duration::seconds(1));
+        f.host.push_tools(vec![remote_tool("search")]);
+        f.service.effective_tools(&caller, &both).await.unwrap();
+        assert_eq!(f.host.endpoints().len(), tries + 4, "past the back-off");
     }
 
     #[tokio::test]
@@ -1032,8 +1168,10 @@ mod tests {
             effective.tools.is_empty(),
             "the old URL's list is never offered for the new URL"
         );
-        assert_eq!(effective.unavailable, [github]);
+        assert_eq!(unreachable(&effective), [github]);
 
+        f.clock
+            .advance(chrono::Duration::seconds(TOOL_REFRESH_BACKOFF_SECS));
         f.host.push_tools(vec![remote_tool("search")]);
         let effective = f
             .service
@@ -1123,7 +1261,7 @@ mod tests {
             .await
             .unwrap();
         assert!(effective.tools.is_empty(), "nothing from the old URL");
-        assert_eq!(effective.unavailable, [server.id()]);
+        assert_eq!(unreachable(&effective), [server.id()]);
         let stored = service.get(&caller, server.id()).await.unwrap().server;
         assert_eq!(stored.url().as_str(), "https://moved-2.example.net/mcp");
         assert!(stored.cache().is_none());

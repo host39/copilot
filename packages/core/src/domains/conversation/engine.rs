@@ -305,6 +305,7 @@ impl Run<'_> {
             message_id: started.id(),
             role: Role::Assistant,
             window_start_id: turn.context.window_start_id,
+            unavailable: self.unavailable(),
         });
         Ok(started)
     }
@@ -493,6 +494,7 @@ impl Run<'_> {
             message_id: draft.id(),
             role: Role::Tool,
             window_start_id: turn.context.window_start_id,
+            unavailable: Vec::new(),
         });
         let mut results = Vec::new();
         let mut stopped = false;
@@ -745,6 +747,7 @@ impl Run<'_> {
             message_id: message.id(),
             role: Role::Tool,
             window_start_id: turn.context.window_start_id,
+            unavailable: Vec::new(),
         });
         for part in message.parts() {
             if let Part::ToolResult(result) = part {
@@ -927,6 +930,23 @@ impl Run<'_> {
 
     /// Assistant messages with tool calls since the last user message, so the round limit
     /// holds across approval pauses.
+    /// The names of the servers the turn's tools lack, for its first answer; later answers of
+    /// the turn (and a decision's continuation, which keeps its snapshot's tools) name none.
+    fn unavailable(&self) -> Vec<String> {
+        let answered = self.history[self.current()..]
+            .iter()
+            .any(|message| message.role() == Role::Assistant);
+        if answered {
+            return Vec::new();
+        }
+        self.turn
+            .tools
+            .unavailable
+            .iter()
+            .map(|server| server.name.clone())
+            .collect()
+    }
+
     fn rounds(&self) -> u32 {
         let rounds = self.history[self.current()..]
             .iter()

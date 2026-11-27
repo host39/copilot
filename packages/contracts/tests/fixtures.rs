@@ -1307,6 +1307,7 @@ fn stream(refusal: Refusal) -> Vec<ChatStreamEvent> {
             message_id,
             role: Role::Assistant,
             window_start_id: Some(id(15)),
+            unavailable: vec!["Docs".to_owned()],
         },
         ChatStreamEvent::PartStarted {
             seq: 2,

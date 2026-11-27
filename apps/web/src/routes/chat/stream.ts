@@ -48,6 +48,8 @@ export type Run = {
   titles: Record<string, string>;
   /** The first message the model saw; `null` when it saw the whole chat. */
   windowStartId: string | null;
+  /** Tool servers the run's answer goes without: they could not be reached. */
+  unavailable: string[];
   /** The run's failure, human-readable. */
   error: RunError | null;
   /** `done` arrived: the run is over and its messages are saved. */
@@ -59,6 +61,7 @@ export const emptyRun: Run = {
   messages: [],
   titles: {},
   windowStartId: null,
+  unavailable: [],
   error: null,
   done: false,
 };
@@ -126,6 +129,14 @@ function tool(message: RunMessage, part: ToolCall | ToolResult): RunMessage {
   return { ...message, tools };
 }
 
+/** The note for the tool servers `run` could not reach, or `null` when it reached them all. */
+export function unreachableNote(run: Run | null): string | null {
+  const names = run?.unavailable ?? [];
+  if (names.length === 0) return null;
+  const them = names.length === 1 ? "it" : "them";
+  return `Could not reach ${names.join(", ")}. This answer has no tools from ${them}.`;
+}
+
 /** The run after `event`. Events at or below the last applied `seq`, or after `done`, change nothing. */
 export function apply(run: Run, event: ChatStreamEvent): Run {
   if (event.seq <= run.seq || run.done) return run;
@@ -138,6 +149,7 @@ export function apply(run: Run, event: ChatStreamEvent): Run {
           role: event.role,
         })),
         windowStartId: event.windowStartId,
+        unavailable: event.unavailable ?? next.unavailable,
       };
     case "part.started": {
       // Tool calls arrive whole with `tool.requested`; spoken audio is played by the page's

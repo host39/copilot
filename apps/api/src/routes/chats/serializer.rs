@@ -142,11 +142,13 @@ pub fn event(event: TurnEvent, seq: u64) -> ChatStreamEvent {
             message_id,
             role,
             window_start_id,
+            unavailable,
         } => ChatStreamEvent::MessageStarted {
             seq,
             message_id: id(message_id),
             role: role.to_dto(),
             window_start_id: window_start_id.map(id),
+            unavailable,
         },
         TurnEvent::PartStarted {
             message_id,

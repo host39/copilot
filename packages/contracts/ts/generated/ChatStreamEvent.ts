@@ -17,7 +17,12 @@ export type ChatStreamEvent = { "type": "message.started", seq: number, messageI
  * The first message the model sees; `null` when the window starts at the first message
  * of the chat. Earlier messages get the "Earlier messages not sent" divider.
  */
-windowStartId: string | null, } | { "type": "part.started", seq: number, messageId: string, index: number, kind: PartKind, } | { "type": "text.delta", seq: number, messageId: string, index: number, text: string, } | { "type": "reasoning.delta", seq: number, messageId: string, index: number, text: string, } | { "type": "audio.delta", seq: number, messageId: string, 
+windowStartId: string | null, 
+/**
+ * The names of the selected tool servers whose tools this answer goes without (they
+ * could not be listed). Sent on a turn's first answer, and only when there are any.
+ */
+unavailable?: Array<string>, } | { "type": "part.started", seq: number, messageId: string, index: number, kind: PartKind, } | { "type": "text.delta", seq: number, messageId: string, index: number, text: string, } | { "type": "reasoning.delta", seq: number, messageId: string, index: number, text: string, } | { "type": "audio.delta", seq: number, messageId: string, 
 /**
  * Base64 audio in `format` (`pcm16`).
  */

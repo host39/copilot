@@ -85,11 +85,18 @@ impl EffectiveTool {
 }
 
 /// The server tools of a turn, sorted by alias, plus the selected servers whose tools could not
-/// be listed (the UI names them).
+/// be listed (the answer's `message.started` names them).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectiveTools {
     pub tools: Vec<EffectiveTool>,
-    pub unavailable: Vec<ToolServerId>,
+    pub unavailable: Vec<UnavailableServer>,
+}
+
+/// A selected tool server whose tools a turn goes without.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnavailableServer {
+    pub id: ToolServerId,
+    pub name: String,
 }
 
 /// The offered tools of one server from `tools` (its cached list): `off` tools dropped, each

@@ -17,6 +17,9 @@ pub enum TurnEvent {
         /// The first message in the context window; `None` when the window starts at the first
         /// message of the chat.
         window_start_id: Option<MessageId>,
+        /// The names of the selected tool servers whose tools this answer goes without (they
+        /// could not be listed); set on a turn's first answer only.
+        unavailable: Vec<String>,
     },
     /// `index` is the part's position in the stored message.
     PartStarted {

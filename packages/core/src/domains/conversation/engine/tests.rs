@@ -432,6 +432,23 @@ async fn streams_a_text_answer() {
 }
 
 #[tokio::test]
+async fn the_first_answer_names_the_tool_servers_the_turn_lacks() {
+    let f = fixture();
+    let chat = f.chat(NewChat::default()).await;
+    f.gateway.push_events(text_reply("Hello"));
+    let mut turn = f.prepare(&chat, send("Hi")).await;
+    turn.tools.unavailable = vec![crate::domains::tool::UnavailableServer {
+        id: crate::shared::ids::ToolServerId::generate(),
+        name: "Docs".to_owned(),
+    }];
+    let (_, events) = f.run(turn).await;
+    assert!(matches!(
+        &events[0],
+        TurnEvent::MessageStarted { unavailable, .. } if unavailable == &["Docs".to_owned()]
+    ));
+}
+
+#[tokio::test]
 async fn keeps_reasoning_and_replays_it_while_the_context_matches() {
     let f = fixture();
     let chat = f.chat(NewChat::default()).await;

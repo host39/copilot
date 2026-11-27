@@ -16,6 +16,7 @@ import {
   type Run,
   resume,
   timeline,
+  unreachableNote,
   view,
 } from "@web/routes/chat/stream";
 
@@ -726,5 +727,31 @@ describe("the streaming routes", () => {
     serve(() => new Response(null, { status: 204 }));
     await stop(CHAT);
     expect(calls).toEqual([{ url: `/api/chats/${CHAT}/stop`, method: "POST", body: undefined }]);
+  });
+});
+
+describe("tool servers a run could not reach", () => {
+  test("the first answer names them, and the note says so", () => {
+    const reply = "00000000-0000-7000-8000-0000000000aa";
+    const started = run([
+      {
+        type: "message.started",
+        seq: 1,
+        messageId: reply,
+        role: "assistant",
+        windowStartId: null,
+        unavailable: ["Docs", "Mail"],
+      },
+      { type: "message.started", seq: 2, messageId: reply, role: "assistant", windowStartId: null },
+    ]);
+    expect(started.unavailable).toEqual(["Docs", "Mail"]);
+    expect(unreachableNote(started)).toBe(
+      "Could not reach Docs, Mail. This answer has no tools from them."
+    );
+    expect(unreachableNote({ ...started, unavailable: ["Docs"] })).toBe(
+      "Could not reach Docs. This answer has no tools from it."
+    );
+    expect(unreachableNote(run([]))).toBeNull();
+    expect(unreachableNote(null)).toBeNull();
   });
 });

@@ -49,7 +49,7 @@ pub use crate::domains::tool::{
     ALIAS_MAX_CHARS, ApprovalMode, CredentialChange, EffectiveTool, EffectiveTools, NewToolServer,
     SLUG_MAX_CHARS, ServerOverride, Slug, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode,
     ToolSelection, ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository,
-    ToolServerUpdate, ToolService, ToolSpec, ToolTest, offered,
+    ToolServerUpdate, ToolService, ToolSpec, ToolTest, UnavailableServer, offered,
 };
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::clock::{Clock, SystemClock};
