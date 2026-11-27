@@ -21,6 +21,11 @@ export function isNative(): boolean {
   return isTauri();
 }
 
+/** Whether this bundle runs in the Android app (the only one with a back button to handle). */
+export function isAndroid(): boolean {
+  return isNative() && /\bAndroid\b/.test(globalThis.navigator?.userAgent ?? "");
+}
+
 /**
  * Checks a server URL and returns it without a trailing slash, or `undefined` when it is not an
  * absolute `http` or `https` URL without credentials, query, or fragment.
