@@ -6,8 +6,8 @@ use bytes::Bytes;
 use copilot_core::{
     AudioOut, BaseUrl, CallId, Dialect, DomainResult, FinishReason, LlmEvent, LlmGateway,
     LlmMessage, LlmPart, LlmRequest, ModelTarget, NetworkScope, Preset, ProviderId, ProviderKind,
-    ProviderTarget, Refusal, RemoteModel, ReportedCapabilities, Role, Secret, ToolAlias,
-    ToolContent, ToolSpec, Usage,
+    ProviderTarget, ReasoningLevel, Refusal, RemoteModel, ReportedCapabilities, Role, Secret,
+    ToolAlias, ToolContent, ToolSpec, Usage,
 };
 use copilot_providers::{Gateway, UNSUPPORTED};
 use copilot_security::{Purpose, clients};
@@ -1173,4 +1173,215 @@ async fn lists_gemini_models_without_their_prefix() {
         .await
         .expect("listed");
     assert_eq!(models[0].remote_id, "gemini-4-hydrogen");
+}
+
+// The Gemini spike (P2.B.5): Google's OpenAI-compatible endpoint, with fixtures shaped after
+// Google's documentation (thought signatures on function calls, only the first call of a
+// parallel step signed, every step of the current turn replayed with its signature). See
+// "Gemini Through the OpenAI-Compatible Endpoint" in docs/adr/005-copilot-architecture.md.
+
+fn signed_call(index: u32, id: &str, location: &str, signature: Option<&str>) -> Value {
+    let mut call = json!({
+        "index": index,
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": "weather__get",
+            "arguments": json!({ "location": location }).to_string(),
+        },
+    });
+    if let Some(signature) = signature {
+        call["extra_content"] = json!({ "google": { "thought_signature": signature } });
+    }
+    call
+}
+
+fn gemini_request(text: &str) -> LlmRequest {
+    let mut request = request(text);
+    request.tools = vec![weather()];
+    request.reasoning = Some(ReasoningLevel::High);
+    request
+}
+
+#[tokio::test]
+async fn gemini_parallel_calls_keep_the_signature_on_the_first_call_only() {
+    let server = MockServer::start().await;
+    let step = json!({ "role": "assistant", "tool_calls": [
+        signed_call(0, "function-call-1", "Paris", Some("c2lnbmF0dXJlLUE=")),
+        signed_call(1, "function-call-2", "Rome", None),
+    ] });
+    Mock::given(method("POST"))
+        .respond_with(sse(&[&data(&step), &finish("tool_calls"), "[DONE]"]))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(sse(&[
+            &chunk("Paris 15, Rome 20."),
+            &finish("stop"),
+            "[DONE]",
+        ]))
+        .mount(&server)
+        .await;
+
+    let target = target(&server, Preset::Gemini);
+    let first = gemini_request("Weather in Paris and Rome?");
+    let events = ok(stream_all(&target, first.clone()).await);
+    let started: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            LlmEvent::ToolCallStarted {
+                provider_call_id, ..
+            } => provider_call_id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, ["function-call-1", "function-call-2"]);
+    let state = events
+        .iter()
+        .find_map(|event| match event {
+            LlmEvent::ReplayState(state) => Some(state.clone()),
+            _ => None,
+        })
+        .expect("a replay state");
+    assert_eq!(
+        state,
+        json!({ "tool_call_extra": {
+            "function-call-1": { "extra_content": { "google": { "thought_signature": "c2lnbmF0dXJlLUE=" } } },
+        } })
+    );
+
+    // FC1 + signature, FC2 in the model turn; FR1, FR2 after it, never interleaved.
+    let mut second = first;
+    second.messages.extend([
+        message(
+            Role::Assistant,
+            vec![
+                call_part("function-call-1", json!({ "location": "Paris" })),
+                call_part("function-call-2", json!({ "location": "Rome" })),
+            ],
+            Some(state),
+        ),
+        message(
+            Role::Tool,
+            vec![
+                result_part("function-call-1", "15 degrees"),
+                result_part("function-call-2", "20 degrees"),
+            ],
+            None,
+        ),
+    ]);
+    let events = ok(stream_all(&target, second).await);
+    assert_eq!(events.last(), Some(&finished(FinishReason::Stop)));
+
+    let sent: Value = requests(&server).await[1].body_json().expect("a JSON body");
+    assert_eq!(sent["reasoning_effort"], "high");
+    let roles: Vec<&str> = sent["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|message| message["role"].as_str().expect("a role"))
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant", "tool", "tool"]);
+    let calls = &sent["messages"][2]["tool_calls"];
+    assert_eq!(
+        calls[0]["extra_content"],
+        json!({ "google": { "thought_signature": "c2lnbmF0dXJlLUE=" } })
+    );
+    assert!(calls[1].get("extra_content").is_none());
+    assert_eq!(sent["messages"][3]["tool_call_id"], "function-call-1");
+    assert_eq!(sent["messages"][4]["tool_call_id"], "function-call-2");
+}
+
+#[tokio::test]
+async fn gemini_sequential_steps_replay_every_signature_of_the_turn() {
+    let server = MockServer::start().await;
+    for (id, location, signature) in [
+        ("function-call-a", "Paris", "c2lnLUE="),
+        ("function-call-b", "Rome", "c2lnLUI="),
+    ] {
+        let step = json!({ "role": "assistant", "tool_calls": [
+            signed_call(0, id, location, Some(signature)),
+        ] });
+        Mock::given(method("POST"))
+            .respond_with(sse(&[&data(&step), &finish("tool_calls"), "[DONE]"]))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .respond_with(sse(&[&chunk("Both checked."), &finish("stop"), "[DONE]"]))
+        .mount(&server)
+        .await;
+
+    let target = target(&server, Preset::Gemini);
+    let mut turn = gemini_request("Check Paris, then Rome.");
+    for (id, location) in [("function-call-a", "Paris"), ("function-call-b", "Rome")] {
+        let events = ok(stream_all(&target, turn.clone()).await);
+        let state = events.iter().find_map(|event| match event {
+            LlmEvent::ReplayState(state) => Some(state.clone()),
+            _ => None,
+        });
+        turn.messages.extend([
+            message(
+                Role::Assistant,
+                vec![call_part(id, json!({ "location": location }))],
+                state,
+            ),
+            message(Role::Tool, vec![result_part(id, "ok")], None),
+        ]);
+    }
+    let events = ok(stream_all(&target, turn).await);
+    assert_eq!(events.last(), Some(&finished(FinishReason::Stop)));
+
+    let sent: Value = requests(&server).await[2].body_json().expect("a JSON body");
+    let signatures: Vec<&Value> = sent["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter_map(|message| message.get("tool_calls"))
+        .map(|calls| &calls[0]["extra_content"]["google"]["thought_signature"])
+        .collect();
+    assert_eq!(signatures, [&json!("c2lnLUE="), &json!("c2lnLUI=")]);
+}
+
+#[tokio::test]
+async fn gemini_takes_images_and_wav_audio_as_documented() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(sse(&[
+            &chunk("A cat and a meow."),
+            &finish("stop"),
+            "[DONE]",
+        ]))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut with_media = request("What is this?");
+    with_media.messages[0].parts.extend([
+        LlmPart::Image {
+            media_type: "image/jpeg".to_owned(),
+            data: Bytes::from_static(b"\xff\xd8\xff"),
+        },
+        LlmPart::Audio {
+            format: "wav".to_owned(),
+            data: Bytes::from_static(b"RIFF"),
+        },
+    ]);
+    let events = ok(stream_all(&target(&server, Preset::Gemini), with_media).await);
+    assert_eq!(events.last(), Some(&finished(FinishReason::Stop)));
+
+    let sent: Value = requests(&server).await[0].body_json().expect("a JSON body");
+    let content = &sent["messages"][1]["content"];
+    assert_eq!(
+        content[1],
+        json!({ "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,/9j/" } })
+    );
+    assert_eq!(
+        content[2],
+        json!({ "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } })
+    );
+    assert_eq!(sent["messages"][0]["role"], "system");
+    assert!(sent.get("stream_options").is_none());
 }

@@ -10,7 +10,8 @@
 //!   binary part only when the model has the capability.
 //! - Assistant messages carry their text and `tool_calls`; a replayed one also carries its
 //!   reasoning under the key it came under (OpenRouter: its `reasoning_details` instead, when it
-//!   has them) and, on Gemini, each call's extra fields (thought signatures).
+//!   has them) and, on Gemini, each call's extra fields (thought signatures); a Gemini step
+//!   whose calls carry none gets Google's stand-in signature on its first call.
 //! - Tool results are one `role: tool` message each, text only (an image becomes a notice);
 //!   text parts after them (results lowered to text) go out as user text. Adjacent user
 //!   messages are merged, for chat templates that need alternating roles.
@@ -30,6 +31,11 @@ use crate::gateway::UNSUPPORTED;
 use crate::openai::calls::CALL_FIELDS;
 use crate::openai::replay::{REASONING, ReplayState};
 use crate::schema::object_schema;
+
+/// The call field Gemini's OpenAI-compatible endpoint keeps its thought signatures under.
+const EXTRA_CONTENT: &str = "extra_content";
+/// The signature Google documents for function calls it did not generate: it skips the check.
+const UNSIGNED: &str = "skip_thought_signature_validator";
 
 /// The request body for `request` in the target's dialect.
 pub(crate) fn body(target: &ModelTarget, request: &LlmRequest) -> DomainResult<Value> {
@@ -207,6 +213,9 @@ fn assistant(dialect: Dialect, message: &LlmMessage) -> DomainResult<Value> {
             LlmPart::ToolResult { .. } => return Err(unsupported("tool results in an answer")),
         }
     }
+    if dialect.keeps_tool_call_extra() {
+        sign(&mut calls);
+    }
 
     let mut out = Map::new();
     out.insert("role".to_owned(), Value::from("assistant"));
@@ -233,6 +242,22 @@ fn assistant(dialect: Dialect, message: &LlmMessage) -> DomainResult<Value> {
         );
     }
     Ok(Value::Object(out))
+}
+
+/// Gives the first call of a step Google's documented stand-in signature when no call of the
+/// step carries `extra_content`: history Gemini did not sign (an answer rebuilt from its parts,
+/// another model's calls) would otherwise fail its thought signature check with a 400. Gemini 3
+/// and later validate the first call of each step in the current turn only.
+fn sign(calls: &mut [Value]) {
+    let signed = calls.iter().any(|call| call.get(EXTRA_CONTENT).is_some());
+    if let Some(Value::Object(first)) = calls.first_mut()
+        && !signed
+    {
+        first.insert(
+            EXTRA_CONTENT.to_owned(),
+            json!({ "google": { "thought_signature": UNSIGNED } }),
+        );
+    }
 }
 
 /// A tool message: one `role: tool` message per result, then its text parts as user text.

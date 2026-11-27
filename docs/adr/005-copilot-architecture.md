@@ -38,6 +38,15 @@ A six-lens review (UX, architecture, security, protocols, footprint, delivery) o
 - The OpenAI Responses API is a later kind; until then, models that need it for tool calling have tool use locked off.
 - Messages are stored as provider-neutral parts plus a separate, verbatim provider state (thinking blocks and signatures, reasoning details). Provider state is replayed only to the same connection, for the current turn or when the turn's context fingerprint matches. Each turn's system prompt and tool list are snapshotted, so settings changes apply from the next user message and never break Anthropic's preserved-thinking prefix check.
 
+### Gemini Through the OpenAI-Compatible Endpoint
+
+Spike outcome (roadmap P2.B.5, 2026-11-27): **no native Gemini adapter in v1.** The `gemini` preset stays on Google's OpenAI-compatible endpoint.
+
+- **What the spike checked.** No Gemini key was available, so the spike ran on wiremock fixtures shaped after Google's documentation (`packages/providers/tests/openai.rs`, the Gemini spike section): a streamed tool call over two turns with its thought signature replayed; parallel calls where only the first call of the step is signed; sequential steps where every signature of the current turn goes back; results sent after the model turn in call order, never interleaved; the system and tool roles; images as base64 data URLs; `input_audio` WAV; `reasoning_effort`.
+- **Why it passes.** The adapter keeps every extra field of a tool call on the `gemini` dialect (Google's pages do not show the field path inside `tool_calls`; the fixtures use `extra_content.google.thought_signature`), so the round trip does not depend on one path. Core replays that state only to the same model on the same connection. A step that carries no signature (an answer rebuilt from its parts, for example after a model switch) gets Google's documented stand-in, `skip_thought_signature_validator`, on its first call, so foreign history does not fail the signature check.
+- **What stays open.** Google calls its OpenAI compatibility "still in beta". PDF `file` parts are not documented there (core keeps `pdf` off for the `gemini` preset unless the user turns it on). Thought summaries are not requested: Google documents them only through `extra_body.google.thinking_config.include_thoughts`, which cannot be combined with `reasoning_effort`, so Gemini reasoning text is not shown in v1. Gemini 3 and 4 cannot turn reasoning off, so the `off` level works only on 2.5 models. A call without an `id` cannot carry its signature, because replay state is keyed by call id.
+- **Live check.** The P3.4 owner checkpoint runs one Gemini 3 or 4 tool loop over two turns. If it fails the signature check (400 "missing a `thought_signature`"), or if thought summaries become a requirement, the native adapter targets the Interactions API with `store: false`, not the legacy `generateContent`.
+
 ### Tools Through MCP
 
 - Tools come from remote MCP servers over Streamable HTTP through the official `rmcp` client, dual-era (2026-07-28 and 2025 servers). Copilot runs every tool call itself, for every provider; it does not use provider-hosted MCP connectors.
@@ -89,7 +98,7 @@ A six-lens review (UX, architecture, security, protocols, footprint, delivery) o
 ### Negative
 
 - PDFs cannot be read by self-hosted models in v1.
-- Gemini depends on Google's OpenAI compatibility layer until the spike proves it, or a native adapter is built.
+- Gemini depends on Google's OpenAI compatibility layer, which Google calls beta: no thought summaries in v1, PDFs undocumented there, and the signature round trip proven on fixtures until the P3.4 live check.
 - Large files in Postgres make the database larger and load whole files into memory (bounded by the upload limit).
 - One process caps scale; serverless hosting is not possible.
 - Users in a household each add their own provider keys until shared connections arrive.
@@ -110,6 +119,7 @@ A six-lens review (UX, architecture, security, protocols, footprint, delivery) o
 | rustauth in a separate database | No foreign keys or cascades across databases, so user deletion and tenant checks would need application code |
 | Local speech or OCR models for missing capabilities | Violates the no-ML constraint and the footprint goal |
 | Native Gemini `generateContent` adapter in v1 | A third wire protocol on an API Google calls legacy; the compatibility endpoint may suffice |
+| Native Gemini Interactions adapter after the spike | The spike's fixtures pass on the compatibility endpoint; a third wire protocol waits until a live check fails or thought summaries are required |
 | Anthropic's MCP connector | Anthropic only, no approval step, public HTTPS servers only |
 | Holding a run in memory while waiting for approval | Lost on restart, holds the run slot for hours, breaks provider history rules |
 | `FOR UPDATE SKIP LOCKED` scheduler | Needs a transaction across ports and holds pool connections during long runs |
