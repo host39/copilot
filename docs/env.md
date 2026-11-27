@@ -84,4 +84,4 @@ The web client calls the server that served it (`/api` and `/health` on the same
 | `API_PROXY_TARGET` | No | `http://localhost:3000` | Where the dev server proxies `/api` and `/health` (for example a worktree's API on another port) |
 | `PUBLIC_API_URL` | No | none (same origin) | Another server to call directly, inlined at build time: requests go to `<PUBLIC_API_URL>/api/...` and `<PUBLIC_API_URL>/health`, and that server must list this origin in `CORS_ALLOWED_ORIGINS` |
 
-Native builds ignore both: they call the server URL stored by the Connect screen.
+Native builds ignore both: they call the server URL stored by the Connect screen. The Tauri CLI sets two more for the dev server it starts (`make native-dev`, `make android-dev`); nobody sets them by hand. `TAURI_ENV_PLATFORM` makes the dev server keep port 4000 (the shell's `devUrl`) instead of moving to a free port, and `TAURI_DEV_HOST` (with `tauri android dev --host`) makes it listen on that address, with live reload connecting there, so a phone on the network can load it.

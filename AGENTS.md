@@ -38,6 +38,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | --- | --- |
 | `apps/api` | axum HTTP adapter: composition root (`helpers/bootstrap.rs`), the lib-rustauth adapter (`helpers/auth.rs`, the only module that names `rustauth`), the run registry (`helpers/runs.rs`), the scheduler loop (`helpers/scheduler.rs`), per-user stream limits (`helpers/streams.rs`), OpenAPI routes under `/api` (core to wire mapping in `routes/convert.rs`), the web bundle (`WEB_DIR`), the `server` binary |
 | `apps/web` | Rsbuild + React Router SPA |
+| `apps/native` | Tauri 2 shell for Linux and Android around the web build: `src-tauri` (the `copilot-native` crate, the capability, the committed Android project), configuration tests in `test/`; see `apps/native/README.md` |
 | `packages/core` | Domain entities, services, repository traits (ports), `DomainError` |
 | `packages/database` | Postgres pool, env parsing, sqlx migrations, seed, repository implementations, `migrate` and `seed` binaries |
 | `packages/contracts` | Shared DTOs: Rust structs (source of truth, OpenAPI schemas) + generated TS types + Zod schemas; re-exports `@rustauth/contracts` for the web app; Rstest tests in `test/` |
@@ -47,7 +48,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/mcp` | `copilot-mcp`: MCP client over Streamable HTTP with rmcp (implements `ToolHost`) |
 | `packages/security` | `copilot-security`: AES-256-GCM sealing (`SecretCipher`) and the hardened outbound reqwest client builder |
 
-The three adapter crates use only core ports and the outbound client the composition root injects. The Tauri shell (`apps/native/src-tauri`, Phase 5) is excluded from the Cargo workspace.
+The three adapter crates use only core ports and the outbound client the composition root injects. The Tauri shell (`apps/native/src-tauri`) is excluded from the Cargo workspace, so `make check` never needs WebKitGTK; check it with `make native-lint` where WebKitGTK is installed.
 
 Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency): users, sessions, passwords, roles, user administration, and the `auth` schema. `copilot-core` never depends on it.
 
