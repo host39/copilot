@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other Phase 2 
 
 ## Status
 
-Complete: P2.A.1 to P2.A.8 are done, ready for the integrator (P2.F). Last green CI: `bd4a1e3` (the merge with P2.A.6); the CI run of the last commit is recorded below once it is green.
+Complete: P2.A.1 to P2.A.8 are done, ready for the integrator (P2.F). Last green CI: `72ad454` (P2.A.8; Code quality with the database tests and Bruno).
 
 What later steps own: Run now (`POST /api/schedules/{id}/run`) and the scheduler loop are P3.2; the other streaming chat routes, stop, decisions (`MessageRepository::decide`), startup recovery (`MessageRepository::recover`), and `GET /api/events` are P3.1. They still answer `501` (or `database.repository.unimplemented`).
 
