@@ -28,7 +28,7 @@ The template keeps the layout and tooling of our TypeScript starter (Hono API, R
 Further choices:
 
 - **Runtime-checked queries** (`sqlx::query_as`) rather than compile-time macros, so builds and CI never need a live database or an offline query cache.
-- **Lazy connection pool**: the API starts while Postgres is down and reports it through `/health/ready`.
+- **Lazy connection pool**: connections open on first use. The server still needs a reachable, migrated database to start (lib-rustauth's startup schema check and the recovery of interrupted answers both query it); `/health/ready` reports outages that happen after startup.
 - **Request context** (request id) uses a Tokio task-local, the counterpart of `AsyncLocalStorage`, so error bodies and log lines carry the id without threading it through handlers.
 - **Workspace lints** forbid `unsafe` and deny `println!`, `eprintln!`, and `dbg!` so all output goes through the logger.
 

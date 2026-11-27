@@ -4,13 +4,12 @@
 //! port, so the composition root wires it once (`ChatRepositories::shared`). Each port has its
 //! own module, and `jsonb` columns go through the versioned records in [`crate::records`].
 //!
-//! The walking skeleton (P1.9) wrote what a turn needs, and roadmap step P2.A wrote every other
-//! domain. Timestamps a repository sets itself come from the `Clock` given to [`PgStore::new`].
-//! Two methods still fail with `database.repository.unimplemented` (see [`store::pending`]) until
-//! P3.1 writes them: `MessageRepository::decide` (the decisions route) and
-//! `MessageRepository::recover` (startup recovery); the routes that would call them answer `501`
-//! meanwhile. Map driver errors with `store::failed("database.<table>.<operation>.failed")` and
-//! unreadable stored values with `store::invalid("database.<table>.<column>.invalid")`.
+//! Every port method is implemented. Timestamps a repository sets itself come from the `Clock`
+//! given to [`PgStore::new`]. Domain rules stay in core: where a write depends on the row's
+//! current state (a decision, a run record), the repository locks the row, applies the core
+//! entity's method, and writes the result. Map driver errors with
+//! `store::failed("database.<table>.<operation>.failed")` and unreadable stored values with
+//! `store::invalid("database.<table>.<column>.invalid")`.
 
 mod chats;
 mod files;

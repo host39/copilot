@@ -1,7 +1,8 @@
 //! `ChatRepository`, `MessageRepository`, and `TurnContextRepository` on Postgres (`chats`,
-//! `chat_tool_servers`, `chat_tool_approvals`, `messages`, `turn_contexts`). The walking skeleton
-//! (P1.9) wrote what a turn needs and roadmap step P2.A the chat list, search, and the tail
-//! changes; P3.1 writes decisions and startup recovery.
+//! `chat_tool_servers`, `chat_tool_approvals`, `messages`, `turn_contexts`): chats with their join
+//! rows, the chat list and search, messages with their tail changes (which also delete the
+//! chat files only the deleted messages named), decisions under a row lock, and startup
+//! recovery.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

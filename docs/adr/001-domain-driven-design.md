@@ -69,8 +69,8 @@ Suppose you are adding a `Widget` domain (the `/add-domain` skill has the detail
 2. **Repository port**: `packages/core/src/domains/widget/ports.rs`, an `async_trait` (`get`, `list`, `save`, `delete`).
 3. **Service**: `packages/core/src/domains/widget/service.rs`, use cases over `Arc<dyn WidgetRepository>`.
 4. **Domain barrel**: `packages/core/src/domains/widget/mod.rs`, then re-export from `packages/core/src/lib.rs`.
-5. **Migration**: `make migrations name=create_widgets`, write the SQL, and let the developer review and run `make migrate`.
-6. **Repository implementation**: `packages/database/src/repositories/widgets/sqlx_widget_repository.rs`, re-exported from `repositories/mod.rs`.
+5. **Migration**: `make migrations name=create_widgets`, write the SQL, and apply it with `make migrate` (ADR-002; never edit a migration a shared or deployed database has applied).
+6. **Repository implementation**: `impl WidgetRepository for PgStore` in `packages/database/src/repositories/widgets.rs` (one store, one module per port, declared in `repositories/mod.rs`), mapping driver errors with `store::failed` and stored values with `store::invalid`.
 7. **Contract**: `packages/contracts/src/widget.rs` DTOs, `make contracts`, and Zod schemas in `packages/contracts/ts/index.ts`.
 8. **API route**: `apps/api/src/routes/widgets.rs` with `#[utoipa::path]` handlers, merged in `routes/mod.rs`; the service is built in the composition root and stored in `AppState`.
 9. **Web**: `apps/web/src/api/routes/widgets.ts` for the typed client and a page under `apps/web/src/routes/widgets/`.

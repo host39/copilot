@@ -17,7 +17,7 @@
 
 </div>
 
-A monorepo starter for full-stack projects: a Rust (axum) API and a React web app on top of shared packages that follow a clean / domain-driven architecture. It ships with health-check endpoints only: a clean starting point rather than a specific product.
+Copilot is a lightweight, self-hosted chat app for OpenAI-compatible, Anthropic, Gemini, and Ollama-type models: projects (file sets and instructions shared by many chats), MCP tool servers with approvals, voice where the provider supports it natively, and schedules the system clock runs. A Rust (axum) API serves a React web app, which also runs in Tauri shells for Linux and Android. The design is [docs/design/copilot.md](./docs/design/copilot.md).
 
 ---
 
@@ -38,7 +38,7 @@ make setup          # install, copy .env.local files, start Postgres, migrate + 
 make dev            # Postgres, API on :3000 + web on :4000
 ```
 
-Open <http://localhost:4000>; the home page calls the API's `/health` endpoint and shows its status. The OpenAPI document is at <http://localhost:3000/api/doc> and Swagger UI at <http://localhost:3000/api/ui>.
+Open <http://localhost:4000> and create the first account with the setup token the API logs at startup (`rustauth.setup.token-issued`). The OpenAPI document is at <http://localhost:3000/api/doc> and Swagger UI at <http://localhost:3000/api/ui>.
 
 For a single app:
 
@@ -107,33 +107,12 @@ The loopback address needs a connection that may reach private addresses: with t
 
 ---
 
-## Bootstrapping a New Project
-
-Use the bootstrap script to copy the template into a new repository with your own names:
-
-```bash
-node scripts/create-project.mjs ../my-app \
-  --name my-app \
-  --title "My App"
-```
-
-This copies everything (excluding `target`, `node_modules`, `.git`, and build output) and rewrites:
-
-- `@copilot/` npm scope -> `@my-app/` (or `--scope`)
-- `copilot-` crate names -> `my-app-` and `copilot_` crate paths -> `my_app_`
-- `copilot` database and package name -> `my_app`
-- `Copilot` display name -> the `--title` value
-
-Pass `--skip-git-init` to keep your own git setup.
-
----
-
 ## Package Map
 
 | Path | Package | Responsibility |
 | --- | --- | --- |
 | `apps/api` | `copilot-api` | axum HTTP adapter; composition root, OpenAPI routes, the `server` entrypoint |
-| `apps/web` | `@copilot/web` | Rsbuild + React Router SPA (minimal placeholder) |
+| `apps/web` | `@copilot/web` | Rsbuild + React Router SPA: chats, projects, schedules, settings |
 | `apps/native` | `@copilot/native` + `copilot-native` | Tauri 2 shell for Linux and Android around the web build; outside the Cargo workspace ([apps/native/README.md](./apps/native/README.md)) |
 | `packages/core` | `copilot-core` | Domain entities, services, ports, shared errors and types |
 | `packages/database` | `copilot-database` | Postgres pool, env, migrations, seed, sqlx repositories |
@@ -171,5 +150,3 @@ See [docs/env.md](./docs/env.md) for the full reference. `make setup` creates `a
 ## License
 
 [PolyForm Noncommercial License 1.0.0](./LICENSE). Noncommercial use, changes, and redistribution are allowed as long as the license terms and the `Required Notice` line travel with the code. Commercial use needs a separate license from the copyright holder.
-
-Projects created with `scripts/create-project.mjs` copy this `LICENSE`; replace it if a new project needs different terms.

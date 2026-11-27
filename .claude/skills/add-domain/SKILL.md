@@ -66,9 +66,9 @@ Apply it with `make migrate` (Postgres must be running). Do not edit a migration
 
 ### 6. Repository Implementation
 
-`packages/database/src/repositories/<name>s/sqlx_<name>_repository.rs`
+`packages/database/src/repositories/<name>s.rs`, declared in `packages/database/src/repositories/mod.rs`
 
-`pub struct SqlxWidgetRepository { pool: DbPool }` implementing the core trait with runtime-checked queries (`sqlx::query_as::<_, WidgetRow>(...)`), so builds never need a live database. Map rows to entities with `Widget::restore`, and driver errors with `DomainError::internal("database.widgets.<operation>.failed", error)`. Re-export from `packages/database/src/repositories/mod.rs`. Use `tokio::try_join!` for independent reads (see `parallel-db-reads`).
+`impl WidgetRepository for PgStore` (the one store over the pool that implements every port) with runtime-checked queries (`sqlx::query_as::<_, WidgetRow>(...)`), so builds never need a live database. Map rows to entities with `Widget::restore`, driver errors with `store::failed("database.widgets.<operation>.failed")`, and unreadable stored values with `store::invalid("database.widgets.<column>.invalid")`. Keep domain rules in core: when a write depends on the row's current state, lock it (`FOR UPDATE`), apply the entity's method, and write the result. Use `tokio::try_join!` for independent reads (see `parallel-db-reads`).
 
 ### 7. Contract
 

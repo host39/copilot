@@ -6,8 +6,9 @@ use crate::types::{DbConfig, DbPool};
 /// Readiness checks give up after this long so a down database cannot stall the probe.
 const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Creates the connection pool. Connections open on first use, so the API starts (and reports
-/// itself not ready) while the database is unreachable.
+/// Creates the connection pool. Connections open on first use, but the API still needs a
+/// reachable, migrated database to start (lib-rustauth checks its schema, and startup recovery
+/// runs a query); `/health/ready` reports outages that happen after startup.
 pub fn create_pool(config: &DbConfig) -> DbPool {
     pool_options(config).connect_lazy_with(connect_options(config))
 }

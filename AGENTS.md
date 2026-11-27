@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Monorepo starter: Rust (axum) API + Rsbuild/React web on clean/DDD layering. Health-check endpoints only; the structure is the product.
+Copilot: a lightweight self-hosted chat app for OpenAI-compatible, Anthropic, Gemini, and Ollama-type models, with projects, MCP tool servers, voice where the provider supports it, and schedules. A Rust (axum) API and a Rsbuild/React web app (also in Tauri shells for Linux and Android) on clean/DDD layering. The product spec is [docs/design/copilot.md](./docs/design/copilot.md).
 
 ## Commands
 

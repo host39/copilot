@@ -1,5 +1,5 @@
-//! The database adapter's store, the placeholder its unfinished methods return, and the helpers
-//! every repository module shares (error keys, `jsonb` records, integer columns).
+//! The database adapter's store and the helpers every repository module shares (error keys,
+//! `jsonb` records, integer columns).
 
 use std::fmt;
 use std::sync::Arc;

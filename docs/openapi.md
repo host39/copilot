@@ -20,7 +20,7 @@ Both endpoints are public (no token required). Swagger UI shares the web app's o
    use axum::Json;
    use axum::extract::{Path, State};
    use copilot_contracts::{DetailsResponse, WidgetDto};
-   use copilot_core::WidgetId;
+   use copilot_core::{Widget, WidgetId};
    use copilot_middleware::HttpError;
    use utoipa_axum::router::OpenApiRouter;
    use utoipa_axum::routes;
@@ -51,7 +51,17 @@ Both endpoints are public (no token required). Swagger UI shares the web app's o
        Path(id): Path<Uuid>,
    ) -> Result<Json<DetailsResponse<WidgetDto>>, HttpError> {
        let widget = state.widgets.get(&caller, WidgetId::new(id)).await?;
-       Ok(Json(DetailsResponse { data: widget.into() }))
+       Ok(Json(DetailsResponse { data: response(&widget) }))
+   }
+
+   /// A widget as the API shows it. Core entities and contract DTOs are both foreign to this
+   /// crate, so `From` cannot join them: map in the route module (or with the local `ToDto`
+   /// traits of `apps/api/src/wire/convert.rs` for shared enums and values).
+   fn response(widget: &Widget) -> WidgetDto {
+       WidgetDto {
+           id: widget.id().to_string(),
+           name: widget.name().to_owned(),
+       }
    }
    ```
 
