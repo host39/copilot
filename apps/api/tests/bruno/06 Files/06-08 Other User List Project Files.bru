@@ -1,0 +1,26 @@
+meta {
+  name: 06-08 Other User List Project Files
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/projects/{{projectId}}/files
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/projects/{id}/files` as user B
+
+  **This test verifies:** user B cannot list the files of user A's project.
+}

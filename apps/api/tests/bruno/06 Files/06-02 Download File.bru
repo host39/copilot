@@ -1,0 +1,37 @@
+meta {
+  name: 06-02 Download File
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/files/{{fileId}}/content
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("sends the bytes as an attachment that never renders", function () {
+    expect(res.getHeader("content-type")).to.equal("text/plain");
+    expect(res.getHeader("content-disposition")).to.equal("attachment; filename*=UTF-8''notes.txt");
+    expect(res.getHeader("x-content-type-options")).to.equal("nosniff");
+    expect(res.getHeader("content-security-policy")).to.equal("default-src 'none'; sandbox");
+    expect(res.getHeader("cross-origin-resource-policy")).to.equal("same-origin");
+    expect(String(res.body)).to.contain("Bruno notes");
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/files/{id}/content`
+
+  **This test verifies:** the download carries the exact allowed type, an attachment
+  disposition, `nosniff`, a sandboxing policy, and the same-origin resource policy.
+}

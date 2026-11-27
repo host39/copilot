@@ -1,0 +1,35 @@
+meta {
+  name: 06-13 Create Chat
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/chats
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {}
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("chatId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+docs {
+  **Endpoint:** `POST /api/chats`
+
+  **This test verifies:** a standalone chat for the attachment checks (`chatId`).
+}

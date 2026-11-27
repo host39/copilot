@@ -1,0 +1,31 @@
+meta {
+  name: 06-03 Unsupported Upload
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/projects/{{projectId}}/files
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:multipart-form {
+  file: @file(fixtures/logo.svg)
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.error: eq "This file type is not supported."
+}
+
+docs {
+  **Endpoint:** `POST /api/projects/{id}/files`
+
+  **This test verifies:** an SVG (which can carry scripts) is refused, never stored.
+}

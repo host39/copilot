@@ -1,0 +1,37 @@
+meta {
+  name: 06-14 Upload Chat Attachment
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/files
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:multipart-form {
+  file: @file(fixtures/notes.txt)
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("attachmentId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.chatId: eq {{chatId}}
+  res.body.data.projectId: isNull
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/files`
+
+  **This test verifies:** a chat attachment is stored (`attachmentId`).
+}

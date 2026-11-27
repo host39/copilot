@@ -1,0 +1,32 @@
+meta {
+  name: 06-06 Other User Update File
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/api/files/{{fileId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "name": "taken.txt"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `PATCH /api/files/{id}` as user B
+
+  **This test verifies:** user B cannot rename user A's file.
+}

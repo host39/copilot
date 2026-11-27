@@ -1,0 +1,25 @@
+meta {
+  name: 06-19 Delete Project With Files
+  type: http
+  seq: 20
+}
+
+delete {
+  url: {{baseUrl}}/api/projects/{{projectId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/projects/{id}`
+
+  **This test verifies:** the owner deletes the project of `05 Projects` with its files.
+}

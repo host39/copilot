@@ -1,0 +1,33 @@
+meta {
+  name: 06-16 Move Attachment to Project
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/api/files/{{attachmentId}}/move
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "projectId": "{{projectId}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.projectId: eq {{projectId}}
+  res.body.data.chatId: isNull
+}
+
+docs {
+  **Endpoint:** `POST /api/files/{id}/move`
+
+  **This test verifies:** "Add to project" moves the attachment without a copy.
+}

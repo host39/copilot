@@ -1,0 +1,26 @@
+meta {
+  name: 06-07 Other User Delete File
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/api/files/{{fileId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `DELETE /api/files/{id}` as user B
+
+  **This test verifies:** user B cannot delete user A's file.
+}

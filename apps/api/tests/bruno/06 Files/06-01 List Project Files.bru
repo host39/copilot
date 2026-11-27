@@ -1,0 +1,27 @@
+meta {
+  name: 06-01 List Project Files
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/projects/{{projectId}}/files
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: eq 1
+  res.body.items[0].id: eq {{fileId}}
+}
+
+docs {
+  **Endpoint:** `GET /api/projects/{id}/files`
+
+  **This test verifies:** the project's files list the upload.
+}

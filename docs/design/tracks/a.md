@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other Phase 2 
 
 ## Status
 
-In progress: P2.A.4 files. Last green CI: none yet on this track.
+Part 1 done (P2.A.1 to P2.A.4); part 2 (chats, read state and search, tool servers, schedules) is open. Last green CI: `a3b30cb` (the merge with P2.A.4).
 
 ## Sub-Steps
 
@@ -12,8 +12,8 @@ Part 1 (this run): settings, providers and models, projects, files. Part 2 (a la
 
 - [x] P2.A.1 User settings: `GET` and `PATCH /api/settings`. Tests: repository upsert test (P1.9), route test on Postgres (a user reads empty instructions, a `PATCH` saves them, another user still reads empty ones), Bruno `03 Settings` with the cross-user check.
 - [x] P2.A.2 Providers and models: `GET`, `PATCH`, and `DELETE /api/providers/{id}` (details with `usage`), `ProviderRepository::usage`. Tests: repository test of the usage counts (only the caller's chats, projects, and schedules that name one of the connection's models), route test on Postgres (update clears the key on a new origin, delete disables schedules and leaves chats without a model), Bruno `04 Providers` with the cross-user check in paths.
-- [x] P2.A.3 Projects: `GET` and `POST /api/projects`, `GET`, `PATCH`, and `DELETE /api/projects/{id}` (details with `capacity`), every `ProjectRepository` method including `insert_with_chat`; the delete handler cancels live runs of the project's chats first. Tests: repository tests (insert and update with the tool server rows in one transaction, list order and filters, delete cascades, save as project moves the chat and its attachments), route test on Postgres, Bruno `05 Projects` with the cross-user check in paths and bodies (another user's tool server and model ids).
-- [ ] P2.A.4 Files: multipart uploads to projects and chats (allowlist, magic bytes, size and quota), list, `PATCH`, move, delete, and `GET /api/files/{id}/content` with the safety headers. Tests: repository tests (create in one transaction, list, content, update, move, delete, usage), route tests (headers, `filename*` encoding, served type, SVG and HTML never served as their own types, multipart field errors), Bruno `06 Files` with the cross-user check in paths and bodies.
+- [x] P2.A.3 Projects: `GET` and `POST /api/projects`, `GET`, `PATCH`, and `DELETE /api/projects/{id}` (details with `capacity`), every `ProjectRepository` method including `insert_with_chat`; the delete handler cancels live runs of the project's chats first. Tests: repository tests (insert and update with the tool server rows in one transaction, list order and filters, delete cascades, save as project moves the chat and its attachments), route tests on Postgres (another user's model and tool server ids in bodies, delete stopping a live run), Bruno `05 Projects` with the cross-user check in paths and in bodies (a chat in another user's project).
+- [x] P2.A.4 Files: multipart uploads to projects and chats (allowlist, magic bytes, size and quota), list, `PATCH`, move, delete, and `GET /api/files/{id}/content` with the safety headers. Tests: repository tests (create in one transaction, list, content, update, move, delete, usage), route tests (headers, `filename*` encoding, served type, SVG and HTML never served as their own types, multipart field errors), Bruno `06 Files` with the cross-user check in paths and bodies.
 
 ## Notes
 
@@ -21,6 +21,9 @@ Part 1 (this run): settings, providers and models, projects, files. Part 2 (a la
 - `apps/api` now depends on `serde` (for `routes::path::Params`, the query string extractor with the shared error body), which adds one line to `Cargo.lock`.
 - `RunRegistry` (`helpers/runs.rs`) gained `chats(owner)` and `stop(chat, wait)`, which cancels a run and waits for its slot to be released; deleting a project stops the live runs of its chats with it, and P3.1's stop route can use it.
 - The file repository landed with P2.A.3, because a project's details read its files for the capacity bar.
+- File downloads also send `Cache-Control: private, no-store` (beyond the spec's list), so no shared cache keeps a user's bytes and a deleted file does not linger.
+- Uploads are read in chunks and refused once they pass `MAX_UPLOAD_MB`; the upload routes allow bodies up to the largest accepted `MAX_UPLOAD_MB` (1000) plus 1 MiB of framing (`DefaultBodyLimit`), and a part other than one named `file` is a `400`. The storage quota is checked before the write (`FileService::upload`), so concurrent uploads of one user can pass it by at most the uploads in flight.
+- Bruno upload fixtures live in `apps/api/tests/bruno/fixtures/`.
 - Bruno has no model provider to refresh against, so its folders hold no models and no tool servers (part 2 writes their routes). The cross-user checks of model and tool server ids in bodies are route tests on Postgres until then; Bruno checks project ids in bodies (`POST /api/chats`, `POST /api/files/{id}/move`).
 - Bruno runs locally against a throwaway database (`DB_NAME=copilot_bruno_a make migrate`, then `DB_NAME=copilot_bruno_a PORT=3017 make test-bruno`), so its accounts never become the administrator of the developer's `copilot` database.
 
@@ -30,4 +33,7 @@ None.
 
 ## Interface-Change Requests
 
-None.
+Both tracks share one branch, so these landed directly, each in the commit that needed it:
+
+- `apps/api` enables axum's `multipart` feature (planned in `docs/research/dependencies.md`), which adds `multer` and `encoding_rs` (with two small helpers) to `Cargo.lock`. Landed with P2.A.4.
+- `apps/api` depends on `serde` directly (see Notes). Landed with P2.A.3.

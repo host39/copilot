@@ -1,0 +1,34 @@
+meta {
+  name: 06-04 Update File
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/api/files/{{fileId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "renamed.txt",
+    "included": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.name: eq renamed.txt
+  res.body.data.included: eq false
+}
+
+docs {
+  **Endpoint:** `PATCH /api/files/{id}`
+
+  **This test verifies:** a project file is renamed and left out of the project context.
+}
