@@ -30,7 +30,7 @@ It is deliberately small: the server only **forwards** requests to model provide
 - **Accounts.** The first account is the administrator; registration is closed by default and the administrator adds people. Sessions, lockout after wrong passwords, and per-address limits come from [lib-rustauth](#identity-lib-rustauth). Nobody sees anyone else's chats, files, keys, or tools.
 - **Apps.** An installable web app, a Linux app (`.deb` and AppImage), and an Android app (APK), all the same interface.
 
-Not in this version: retrieval with vector search, running code inside Copilot, stdio MCP servers, MCP OAuth, branching conversations, live voice, and shared provider connections ([non-goals](./docs/design/copilot.md#non-goals-for-v1)).
+Not in this version: retrieval with vector search, running code inside Copilot, stdio MCP servers (run one [behind a bridge](./docs/self-hosting.md#local-stdio-mcp-servers) instead), MCP OAuth, branching conversations, live voice, and shared provider connections ([non-goals](./docs/design/copilot.md#non-goals-for-v1)).
 
 ## Quick Start
 
@@ -196,7 +196,7 @@ Accounts, sessions, passwords, roles, and user administration come from [lib-rus
 
 | Topic | Where |
 | --- | --- |
-| Self-hosting: compose, secrets, proxy, upgrades, backups, logs | [docs/self-hosting.md](./docs/self-hosting.md) |
+| Self-hosting: compose, secrets, proxy, stdio MCP servers, upgrades, backups, logs | [docs/self-hosting.md](./docs/self-hosting.md) |
 | Release notes and upgrade notes | [CHANGELOG.md](./CHANGELOG.md) |
 | Environment variables | [docs/env.md](./docs/env.md) |
 | Footprint: sizes, crates, memory | [docs/footprint.md](./docs/footprint.md) |

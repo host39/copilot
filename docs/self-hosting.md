@@ -171,6 +171,47 @@ An Ollama connection (the `ollama` preset) needs a URL the server container can 
 
 With the default `admins`, the administrator adds the Ollama connection; other people add their own only with `ALLOW_PRIVATE_NETWORK=all`. Ollama needs no API key. The same rules apply to tool servers on your network (for example an MCP server at `http://mcp.lan:8000/mcp`).
 
+## Local (stdio) MCP Servers
+
+Copilot talks to MCP servers over Streamable HTTP only: it never starts programs itself. Many MCP servers (most of those started with `npx` or `uvx`) speak stdio instead. Run such a server in a container of its own behind a bridge that turns stdio into Streamable HTTP, and register the bridge's URL as a tool server. The server then runs as the bridge's child process in that container, away from Copilot's process, its environment (`SECRET_KEY`, the database password), and its files.
+
+This example runs the reference memory server behind [supergateway](https://github.com/supercorp-ai/supergateway), whose `streamableHttp` output serves the MCP endpoint at `/mcp`:
+
+```yaml
+# deploy/compose.override.yml
+services:
+  mcp-memory:
+    # Pin a tag or digest you have tested; `:uvx` adds uv for Python servers (`uvx mcp-server-time`).
+    image: supercorp/supergateway:latest
+    command:
+      - --stdio
+      - npx -y @modelcontextprotocol/server-memory
+      - --outputTransport
+      - streamableHttp
+      - --stateful
+      - --port
+      - "8000"
+    environment:
+      # Secrets the stdio server needs go here, never into Copilot's environment.
+      MEMORY_FILE_PATH: /data/memory.json
+    volumes:
+      - mcp-memory:/data
+    restart: unless-stopped
+volumes:
+  mcp-memory:
+```
+
+```bash
+docker compose -f deploy/compose.yml -f deploy/compose.override.yml up -d
+```
+
+Then, as the administrator, add a tool server in Settings, Tool servers with the URL `http://mcp-memory:8000/mcp` and no token, and press Test: the server's tools appear with their approval modes like any other tool server's.
+
+- **Reach.** Publish no port for the bridge: the compose network is enough, and the bridge has no authentication of its own. Its address on that network is private, so [`ALLOW_PRIVATE_NETWORK`](#private-network-and-ollama) decides who may register it (the administrator by default).
+- **Sessions.** Copilot opens one MCP session per turn and closes it when the turn ends, and `--stateful` keeps the bridge's state per session. Keep anything a server must remember between turns in a volume, as the memory server's file above.
+- **Start-up.** `npx -y` and `uvx` download the server when the bridge starts, so the container needs internet access then. For an offline or pinned setup, build a small image that installs the server and runs the bridge.
+- **Other bridges.** Any stdio to Streamable HTTP bridge works the same way, for example [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) (`--host 0.0.0.0 --port 8000 --allowed-host mcp-memory:8000`, followed by the server's command; its log lists the Streamable HTTP endpoint to register). The flags above follow each project's README; check them against the version you pin.
+
 ## Upgrades
 
 Install and upgrade are the same `up`: `migrate` runs first and the server starts only after it succeeded. Migrations go forward only, each in its own transaction, lib-rustauth's (schema `auth`, history `auth._sqlx_migrations`) before Copilot's (history `public._sqlx_migrations`). The order:

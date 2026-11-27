@@ -20,7 +20,7 @@ A lightweight, self-hosted chat client for any model provider. The backend store
 | --- | --- |
 | Retrieval-augmented generation and vector search | Project files go to the model as context, with a capacity bar. Later: provider-hosted embeddings plus `pgvector` |
 | Running code or plugins inside Copilot | Tools come from remote MCP servers |
-| stdio MCP servers | Run a stdio server in its own container behind a stdio-to-Streamable-HTTP bridge and register it by URL. The hardening rules for a later stdio mode are in [Security](#later-stdio-servers) |
+| stdio MCP servers | Run a stdio server in its own container behind a stdio-to-Streamable-HTTP bridge and register it by URL ([self-hosting guide](../self-hosting.md#local-stdio-mcp-servers)). The hardening rules for a later stdio mode are in [Security](#later-stdio-servers) |
 | MCP OAuth | Bearer token or static headers. Later: rmcp `auth` feature |
 | Branching conversation trees | Editing a user message deletes the messages after it, after a confirmation |
 | PDF text extraction for models without PDF input | The PDF is replaced by a notice for that model. Later: a pure-Rust text extractor |

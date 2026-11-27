@@ -19,7 +19,7 @@ The first release, planned as `v0.1.0`. It has no predecessor, so there is nothi
 - **Voice:** push to talk (16 kHz WAV clips up to 5 minutes) for models that take audio, and spoken replies saved as WAV files for models that return audio. None for Claude models.
 - **Accounts:** lib-rustauth `v0.1.0` (pinned by commit): the first account is the administrator, registration is closed by default, sessions, lockout, and per-address limits.
 - **Apps:** the installable web app, a Linux app (`.deb` and AppImage, glibc 2.39 or newer), and an Android app (arm64 APK), built by the Native apps workflow.
-- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`) and the self-hosting guide (reverse proxy, private network policy, Ollama, upgrades, backups).
+- **Deployment:** `deploy/compose.yml` (Postgres, `migrate`, the server on `127.0.0.1:3000`) and the self-hosting guide (reverse proxy, private network policy, Ollama, a stdio MCP server behind a bridge, upgrades, backups).
 
 ### Upgrade Notes
 
