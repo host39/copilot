@@ -31,6 +31,9 @@ pub const MCP_LIST_TIMEOUT_SECS: u64 = 30;
 pub const MCP_CLOSE_TIMEOUT_SECS: u64 = 5;
 /// `tools/list` pages read in one listing.
 pub const MCP_LIST_MAX_PAGES: usize = 16;
+/// Tools one server may list. Providers accept far fewer per request; the cap bounds the work
+/// a hostile server's listing can cause.
+pub const MCP_TOOLS_MAX: usize = 512;
 /// Tool list cache lifetime when the server sends no `ttlMs`.
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 /// Longest tool list cache lifetime, whatever `ttlMs` the server sends.

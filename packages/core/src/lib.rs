@@ -64,6 +64,7 @@ pub use crate::ports::tool_host::{
     ToolOutput, ToolSession,
 };
 pub use crate::ports::turn_sink::TurnSink;
+pub use crate::ports::worker::{InlineWorker, Job, Worker, offload};
 // Shared types
 pub use crate::shared::actor::Actor;
 pub use crate::shared::base_url::BaseUrl;

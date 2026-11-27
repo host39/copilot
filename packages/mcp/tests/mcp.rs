@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use copilot_core::shared::constants::MCP_RESPONSE_MAX_BYTES;
+use copilot_core::shared::constants::{MCP_RESPONSE_MAX_BYTES, MCP_TOOLS_MAX};
 use copilot_core::{
     BaseUrl, DomainError, NetworkScope, Secret, TOOL_TIMEOUT, ToolContent, ToolEndpoint,
     ToolHeaders, ToolHost, ToolServerId,
@@ -426,6 +426,31 @@ async fn refuses_a_tool_list_over_the_cap() {
     server.set_tools(tools);
     let error = host().list(&local(&server)).await.unwrap_err();
     assert_eq!(error.code(), TOOL_SERVER_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn refuses_a_tool_list_with_too_many_tools() {
+    let options = Options {
+        page_size: Some(200),
+        ..Options::default()
+    };
+    let server = start(Era::Modern, options).await;
+    let named = |count: usize| {
+        (0..count)
+            .map(|index| {
+                let mut tool = tool("t", "", json!({}));
+                tool.name = format!("tool{index}").into();
+                tool
+            })
+            .collect()
+    };
+    server.set_tools(named(MCP_TOOLS_MAX));
+    let listing = host().list(&local(&server)).await.unwrap();
+    assert_eq!(listing.tools.len(), MCP_TOOLS_MAX);
+    server.set_tools(named(MCP_TOOLS_MAX + 1));
+    let error = host().list(&local(&server)).await.unwrap_err();
+    assert_eq!(error.code(), TOOL_SERVER_TOO_LARGE);
+    assert!(error.to_string().contains("more than 512 tools"), "{error}");
 }
 
 #[tokio::test]

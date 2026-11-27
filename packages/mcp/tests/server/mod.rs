@@ -67,6 +67,7 @@ pub struct TestServer {
     era: Era,
     tools: Arc<Mutex<Vec<Tool>>>,
     ttl_ms: Option<u64>,
+    page_size: usize,
     /// Set when the `sleep` tool saw its request cancelled.
     pub cancelled: Arc<AtomicBool>,
 }
@@ -98,6 +99,8 @@ pub struct Options {
     pub ttl_ms: Option<u64>,
     /// JSON responses instead of SSE streams.
     pub json: bool,
+    /// Tools per `tools/list` page; `PAGE_SIZE` when `None`.
+    pub page_size: Option<usize>,
 }
 
 pub async fn start(era: Era, options: Options) -> Running {
@@ -105,6 +108,7 @@ pub async fn start(era: Era, options: Options) -> Running {
         era,
         tools: Arc::new(Mutex::new(default_tools())),
         ttl_ms: options.ttl_ms,
+        page_size: options.page_size.unwrap_or(PAGE_SIZE),
         cancelled: Arc::new(AtomicBool::new(false)),
     };
     let legacy = matches!(era, Era::Legacy | Era::LegacyDiscover);
@@ -268,7 +272,7 @@ impl ServerHandler for TestServer {
         let start: usize = request
             .and_then(|request| request.cursor)
             .map_or(0, |cursor| cursor.parse().unwrap());
-        let end = (start + PAGE_SIZE).min(tools.len());
+        let end = (start + self.page_size).min(tools.len());
         let last = end == tools.len();
         let mut page = ListToolsResult::with_all_items(tools[start..end].to_vec());
         page.next_cursor = (!last).then(|| end.to_string());

@@ -27,6 +27,7 @@ use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
 use crate::helpers::scheduler::{Scheduler, settle};
 use crate::helpers::uploads::UploadSlots;
+use crate::helpers::worker::BlockingPool;
 use crate::{App, AppDependencies, assemble};
 
 pub struct ApiContext {
@@ -194,7 +195,8 @@ pub fn wire(
         stores.models.clone(),
         clock.clone(),
         config.files,
-    );
+    )
+    .with_worker(Arc::new(BlockingPool));
     let tools = ToolService::new(
         stores.servers.clone(),
         adapters.host.clone(),
