@@ -157,6 +157,7 @@ When generated contract files conflict, rerun `make contracts`; never merge them
 Steps after the v0.1 feature set, each a whole feature with its own tests, docs, and CHANGELOG entry. Two agents may work on Phase 7 steps at once on the same branch; each step keeps a tracks file.
 
 - [ ] P7.1 OpenAI Responses API adapter in `copilot-providers` (tool calling and reasoning summaries on OpenAI's newest models), with a per-connection API choice (`providers.api`), the Responses wire format in `tools/fake-llm`, and a Responses connection in `scripts/smoke.sh`: [`tracks/p7-1.md`](./tracks/p7-1.md).
+- [ ] P7.2 MCP OAuth sign-in for remote MCP servers that require it (MCP authorization, revision `2026-07-28`): a per-server auth mode (`none`, `headers`, `oauth`), discovery, dynamic registration or a Client ID Metadata Document or a configured client id, PKCE, a public callback, sealed tokens refreshed on expiry and on `401`, `PUBLIC_URL`, and the web sign-in controls: [`tracks/p7-2.md`](./tracks/p7-2.md).
 
 ## Notes for the Developer
 
