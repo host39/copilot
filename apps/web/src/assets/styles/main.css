@@ -77,6 +77,20 @@ body {
     @apply flex cursor-pointer rounded-lg border border-line px-3 py-2 text-sm has-checked:border-accent has-checked:bg-accent/10 has-focus-visible:outline-2 has-focus-visible:outline-accent;
   }
 
+  /* A link that looks like the primary button ("Add provider"). */
+  .button-link {
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent;
+  }
+
+  /* A bordered list of rows (providers, tool servers, users) and its rows. */
+  .list-panel {
+    @apply divide-y divide-line overflow-hidden rounded-2xl border border-line bg-canvas;
+  }
+
+  .list-row {
+    @apply flex min-h-14 items-center gap-3 px-4 py-3 hover:bg-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent;
+  }
+
   .nav-item {
     @apply flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-raised aria-[current=page]:bg-raised aria-[current=page]:font-medium;
   }

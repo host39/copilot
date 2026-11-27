@@ -17,7 +17,7 @@ export async function fetchModels(signal?: AbortSignal): Promise<ModelResponse[]
 
 /**
  * `PATCH /models/{id}`: changes only the fields `body` carries; `null` clears the context window
- * or the output limit (the reported value applies again).
+ * or the output limit until a refresh brings the value the provider reports.
  */
 export async function updateModel(
   modelId: string,
