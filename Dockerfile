@@ -3,7 +3,7 @@
 # The Copilot image: the `server` and `migrate` binaries plus the web bundle at /app/web, which
 # the server serves (WEB_DIR). Build from the repository root:
 #   docker build -t copilot .
-# deploy/compose.yml runs it with Postgres; see docs/deployment-container.md.
+# deploy/compose.yml runs it with Postgres; see docs/self-hosting.md.
 #
 # Each base image is pinned by digest (the tag says what it is, the digest what is used), so a
 # rebuild never picks up a new upstream image unseen; Dependabot proposes digest updates.

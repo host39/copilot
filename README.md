@@ -140,7 +140,7 @@ See [docs/env.md](./docs/env.md) for the full reference. `make setup` creates `a
 - **Migrations and seed**: [docs/adr/002-database-migrations-and-seed.md](./docs/adr/002-database-migrations-and-seed.md)
 - **Environment variables**: [docs/env.md](./docs/env.md)
 - **OpenAPI / Swagger**: [docs/openapi.md](./docs/openapi.md)
-- **Deployment**: [container](./docs/deployment-container.md) (one API process per install; see [ADR-005](./docs/adr/005-copilot-architecture.md))
+- **Deployment**: [self-hosting](./docs/self-hosting.md) (one API process per install; see [ADR-005](./docs/adr/005-copilot-architecture.md))
 - **AI assistants**: [AGENTS.md](./AGENTS.md) (Cursor; Claude Code via [CLAUDE.md](./CLAUDE.md))
   - **Rules** (auto-applied by path): `.ai/rules/*.md` via `.cursor/rules/` or `.claude/rules/` wrappers
   - **Skills** (on demand): `/add-domain`, `/architecture`, `/api-response-patterns`, `/bruno-tests`, `/dotted-error-messages`, `/undraw-illustrations`, `/agent-workflows` in `.claude/skills/`

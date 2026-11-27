@@ -10,7 +10,7 @@
 # migrations, then Copilot's, and grants the server's role (`copilot_server`, password
 # DB_SERVER_PASSWORD) the rows of every table and nothing more; the server starts only after
 # it succeeds and never holds the owner's password. The server listens on 127.0.0.1:3000; put
-# a TLS reverse proxy in front for other hosts (docs/deployment-container.md). See docs/env.md
+# a TLS reverse proxy in front for other hosts (docs/self-hosting.md). See docs/env.md
 # for every variable.
 name: copilot
 
