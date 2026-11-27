@@ -87,12 +87,12 @@ Settings, Providers (or the first-run setup) offers these choices. Every connect
 
 | Choice | Base URL (default) | Key | Notes |
 | --- | --- | --- | --- |
-| OpenAI | `https://api.openai.com/v1` | Required | Chat Completions; turn on audio in and out on its audio models for push to talk and spoken replies |
+| OpenAI | `https://api.openai.com/v1` | Required | The Responses API: tool calls and reasoning summaries on the newest models. For push to talk and spoken replies, switch the connection's API to Chat Completions and turn on audio in and out on its audio models |
 | Anthropic | `https://api.anthropic.com` | Required | Messages API with thinking, prompt caching, and tools; no audio |
 | Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Required | Google's OpenAI-compatible endpoint; limits and thinking from Google's model list, images and PDFs on by default, audio input when you turn it on |
 | OpenRouter | `https://openrouter.ai/api/v1` | Required | Capabilities come from OpenRouter's model list |
 | Ollama | `http://localhost:11434/v1` | None | Any self-hosted OpenAI-compatible server works the same way |
-| OpenAI-compatible | Your server's `/v1` URL | Optional | vLLM, LM Studio, llama.cpp server, Groq, Together, gateways |
+| OpenAI-compatible | Your server's `/v1` URL | Optional | vLLM, LM Studio, llama.cpp server, Groq, Together, gateways; Chat Completions, or the Responses API when the server has it |
 | Anthropic-compatible | Your gateway's URL | Optional | Gateways that speak the Messages API |
 
 **Ollama and other servers on your network.** In Docker, `localhost` is the container itself, so point the connection at an address the server can reach: `http://ollama:11434/v1` for an Ollama container in the same compose project, or the machine's LAN address. Private addresses are reachable only by connections that `ALLOW_PRIVATE_NETWORK` permits: by default the administrator's (`admins`); set `all` when you trust every account, or `none` to allow public `https` endpoints only. See [Private Network and Ollama](./docs/self-hosting.md#private-network-and-ollama).
