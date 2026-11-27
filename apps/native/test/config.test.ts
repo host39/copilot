@@ -104,6 +104,22 @@ describe("android", () => {
     expect(release).not.toContain("usesCleartextTraffic");
   });
 
+  test("asks only for the network and the microphone, and never for the camera", () => {
+    const manifest = read("src-tauri/gen/android/app/src/main/AndroidManifest.xml");
+    const permissions = [...manifest.matchAll(/<uses-permission android:name="([^"]+)"/g)];
+    expect(permissions.map((match) => match[1])).toEqual([
+      "android.permission.INTERNET",
+      "android.permission.RECORD_AUDIO",
+      "android.permission.MODIFY_AUDIO_SETTINGS",
+    ]);
+    // Undeclared, CAMERA needs no grant for photos from <input capture> (the camera app takes them).
+    expect(manifest).not.toMatch(/<uses-permission[^>]*CAMERA/);
+    // Devices without a microphone can still install the app.
+    expect(manifest).toContain(
+      '<uses-feature android:name="android.hardware.microphone" android:required="false" />'
+    );
+  });
+
   test("the page sits between the system bars and above the keyboard", () => {
     expect(activity).toContain("enableEdgeToEdge()");
     expect(activity).toContain("setOnApplyWindowInsetsListener");
@@ -161,6 +177,35 @@ describe("capability", () => {
     expect(crates).toEqual(["tauri", "tauri-plugin-http", "tauri-plugin-opener"]);
     const plugins = [...read("src-tauri/src/lib.rs").matchAll(/\.plugin\((\w+)::init\(\)\)/g)];
     expect(plugins.map((match) => match[1])).toEqual(["tauri_plugin_http", "tauri_plugin_opener"]);
+  });
+});
+
+describe("microphone", () => {
+  const lib = read("src-tauri/src/lib.rs");
+  const microphone = read("src-tauri/src/microphone.rs");
+
+  test("every permission request of the web view goes to the microphone-only answer", () => {
+    expect(lib).toContain(".on_permission_request(|_, kind| microphone::answer(kind))");
+    // The answer itself has Rust unit tests: allow the microphone, deny every other kind.
+    expect(microphone).toMatch(
+      /match kind \{\s*PermissionKind::Microphone => PermissionResponse::Allow,\s*_ => PermissionResponse::Deny,\s*\}/
+    );
+  });
+
+  test("Linux turns on WebKitGTK media streams in setup, before the first page commits", () => {
+    expect(lib).toMatch(
+      /\.setup\(\|_app\| \{\s*#\[cfg\(target_os = "linux"\)\]\s*microphone::enable\(_app\)\?;/
+    );
+    expect(microphone).toContain("settings.set_enable_media_stream(true);");
+  });
+
+  test("only Linux builds link WebKitGTK directly, for its settings", () => {
+    const manifest = read("src-tauri/Cargo.toml");
+    const linux = manifest.split(`[target.'cfg(target_os = "linux")'.dependencies]`)[1] ?? "";
+    const crates = [...linux.split(/^\[/m)[0].matchAll(/^([a-z0-9-]+)\s*=/gm)].map(
+      (match) => match[1]
+    );
+    expect(crates).toEqual(["webkit2gtk"]);
   });
 });
 

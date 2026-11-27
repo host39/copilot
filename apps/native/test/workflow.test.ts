@@ -80,9 +80,11 @@ describe("native-linux", () => {
     expect(scripts(linux)).toContain('test "$(printf \'%s\\n\' "$glibc" 2.39 | sort -V');
   });
 
-  test("lints the shell and builds the .deb and the AppImage", () => {
+  test("lints and tests the shell and builds the .deb and the AppImage", () => {
     const commands = scripts(linux);
     expect(commands).toContain("make native-lint");
+    expect(commands).toContain("make native-test");
+    expect(recipe("native-test")).toContain("cargo test --manifest-path $(NATIVE_CRATE)");
     expect(commands).toContain("pnpm --filter @copilot/native tauri build --bundles deb,appimage");
   });
 
@@ -128,6 +130,20 @@ describe("native-android", () => {
       'test "$(cut -d/ -f2 "$RUNNER_TEMP/libs.txt" | sort -u)" = arm64-v8a'
     );
     expect(commands).toContain("package: name='com.host39.copilot' ");
+  });
+
+  test("checks that the APK asks for the microphone and not for the camera", () => {
+    const commands = scripts(android);
+    for (const permission of ["RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS"]) {
+      expect(commands).toContain(
+        `grep -qx "uses-permission: name='android.permission.${permission}'"`
+      );
+    }
+    // `set -e` ignores a failed `! grep`, so the camera check needs an explicit exit.
+    expect(commands).toContain(
+      'if grep -q "android.permission.CAMERA" "$RUNNER_TEMP/badging.txt"; then'
+    );
+    expect(commands).not.toContain("! grep");
   });
 
   test("uploads the APK as an artifact", () => {

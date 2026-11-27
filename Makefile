@@ -1,4 +1,4 @@
-.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke lint format type-check boundaries check ci build native-dev native-lint native-build android-dev android-build clean
+.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke lint format type-check boundaries check ci build native-dev native-lint native-test native-build android-dev android-build clean
 
 .DEFAULT_GOAL := help
 
@@ -34,6 +34,7 @@ help:
 	@echo "  build          Release API binaries + production web bundle"
 	@echo "  native-dev     Desktop app on the web dev server (needs WebKitGTK; apps/native/README.md)"
 	@echo "  native-lint    rustfmt and Clippy for the Tauri shell (needs WebKitGTK)"
+	@echo "  native-test    Rust unit tests of the Tauri shell (needs WebKitGTK)"
 	@echo "  native-build   Linux .deb of the desktop app (needs WebKitGTK)"
 	@echo "  android-dev    Android app on a device or emulator (needs the Android SDK and NDK)"
 	@echo "  android-build  Debug-signed arm64 APK (needs the Android SDK and NDK)"
@@ -139,6 +140,9 @@ native-dev:
 native-lint:
 	cargo fmt --manifest-path $(NATIVE_CRATE) --check
 	cargo clippy --manifest-path $(NATIVE_CRATE) --all-targets -- -D warnings
+
+native-test:
+	cargo test --manifest-path $(NATIVE_CRATE)
 
 native-build:
 	pnpm --filter @copilot/native tauri build --bundles deb

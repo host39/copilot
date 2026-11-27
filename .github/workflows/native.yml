@@ -79,6 +79,9 @@ jobs:
       - name: Lint the shell
         run: make native-lint
 
+      - name: Test the shell
+        run: make native-test
+
       # beforeBuildCommand builds apps/web first.
       - name: Build the .deb and the AppImage
         run: pnpm --filter @copilot/native tauri build --bundles deb,appimage
@@ -219,6 +222,14 @@ jobs:
           echo "$package"
           [[ "$package" == "package: name='com.host39.copilot' "* ]]
           [[ "$package" == *" versionName='$version'"* ]]
+          # The microphone for push to talk, never the camera (apps/native/README.md).
+          grep -E "^uses-(permission|feature)" "$RUNNER_TEMP/badging.txt"
+          grep -qx "uses-permission: name='android.permission.RECORD_AUDIO'" "$RUNNER_TEMP/badging.txt"
+          grep -qx "uses-permission: name='android.permission.MODIFY_AUDIO_SETTINGS'" "$RUNNER_TEMP/badging.txt"
+          if grep -q "android.permission.CAMERA" "$RUNNER_TEMP/badging.txt"; then
+            echo "::error::The APK asks for the camera"
+            exit 1
+          fi
           out="$RUNNER_TEMP/Copilot_${version}_arm64.apk"
           cp "$apk" "$out"
           {

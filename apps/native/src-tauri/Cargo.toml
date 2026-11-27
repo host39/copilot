@@ -20,6 +20,11 @@ tauri = { version = "2.12.7", features = [] }
 tauri-plugin-http = { version = "2.9.0", default-features = false, features = ["rustls-tls", "http2"] }
 tauri-plugin-opener = "2.7.3"
 
+# WebKitGTK's settings, to turn on media streams for the microphone (src/microphone.rs). Tauri
+# links the same crate, so nothing more is built.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0.2", features = ["v2_4"] }
+
 # The workspace's Clippy lints; this crate is outside the root workspace and cannot inherit them.
 # `unsafe_code` is left out: Tauri's Android entry point expands to `no_mangle` JNI functions here.
 [lints.clippy]
