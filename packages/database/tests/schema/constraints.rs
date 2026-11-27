@@ -230,6 +230,18 @@ async fn checks_reject_values_core_cannot_read(pool: DbPool) {
             g.provider
         ),
         format!(
+            "UPDATE providers SET api = 'completions' WHERE id = '{}'",
+            g.provider
+        ),
+        format!(
+            "UPDATE providers SET api = NULL WHERE id = '{}'",
+            g.provider
+        ),
+        format!(
+            "UPDATE providers SET kind = 'anthropic', preset = 'custom' WHERE id = '{}'",
+            g.provider
+        ),
+        format!(
             "UPDATE models SET context_window = -1 WHERE id = '{}'",
             g.model
         ),
@@ -368,7 +380,11 @@ async fn checks_reject_values_core_cannot_read(pool: DbPool) {
 
     let accepted = [
         format!(
-            "UPDATE providers SET kind = 'anthropic', preset = 'custom' WHERE id = '{}'",
+            "UPDATE providers SET api = 'chat_completions' WHERE id = '{}'",
+            g.provider
+        ),
+        format!(
+            "UPDATE providers SET kind = 'anthropic', preset = 'custom', api = NULL WHERE id = '{}'",
             g.provider
         ),
         format!(

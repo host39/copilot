@@ -1,14 +1,16 @@
-//! [`Gateway`]: the `LlmGateway` port over the injected outbound clients, by wire protocol.
+//! [`Gateway`]: the `LlmGateway` port over the injected outbound clients, by wire protocol: an
+//! `openai` connection streams through Chat Completions or the Responses API, as its `api` says,
+//! and lists models through `GET {base}/models` either way.
 
 use async_trait::async_trait;
 use copilot_core::{
-    DomainResult, LlmEvent, LlmGateway, LlmRequest, ModelTarget, Outbound, ProviderKind,
+    DomainResult, LlmEvent, LlmGateway, LlmRequest, ModelTarget, OpenAiApi, Outbound, ProviderKind,
     ProviderTarget, RemoteModel,
 };
 use futures_util::stream::BoxStream;
 use reqwest::Client;
 
-use crate::{anthropic, openai};
+use crate::{anthropic, openai, responses};
 
 /// The code of a request the wire protocol cannot carry (for example audio to the Messages API,
 /// or an audio format `input_audio` does not name). Nothing reaches the provider.
@@ -41,9 +43,12 @@ impl LlmGateway for Gateway {
         target: &ModelTarget,
         request: LlmRequest,
     ) -> DomainResult<BoxStream<'static, DomainResult<LlmEvent>>> {
-        match target.provider.kind {
-            ProviderKind::OpenAi => openai::stream(&self.clients, target, request).await,
-            ProviderKind::Anthropic => anthropic::stream(&self.clients, target, request).await,
+        match (target.provider.kind, target.provider.api) {
+            (ProviderKind::OpenAi, Some(OpenAiApi::Responses)) => {
+                responses::stream(&self.clients, target, request).await
+            }
+            (ProviderKind::OpenAi, _) => openai::stream(&self.clients, target, request).await,
+            (ProviderKind::Anthropic, _) => anthropic::stream(&self.clients, target, request).await,
         }
     }
 }
