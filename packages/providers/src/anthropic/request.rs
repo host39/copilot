@@ -137,7 +137,7 @@ impl Messages {
 
     /// Remembers the last block so far as the end of the first user message.
     fn anchor(&mut self) {
-        if let Some((_, content)) = self.entries.last()
+        if let Some((USER, content)) = self.entries.last()
             && let Some(last) = content.len().checked_sub(1)
         {
             self.anchor = Some((self.entries.len() - 1, last));

@@ -492,3 +492,23 @@ fn never_marks_thinking_blocks() {
     block.insert("type".to_owned(), Value::from("tool_result"));
     assert!(cacheable(&block));
 }
+
+#[test]
+fn the_first_user_breakpoint_never_lands_on_an_answer() {
+    let mut cached = request(vec![
+        message(Role::User, vec![text("")]),
+        message(Role::Assistant, vec![text("An answer")]),
+        message(Role::User, vec![text("A question")]),
+    ]);
+    cached.cache_breakpoints = true;
+    let body = body(&cached).expect("a body");
+    assert!(
+        body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
+    assert_eq!(
+        body["messages"][1]["content"][0]["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
+}
