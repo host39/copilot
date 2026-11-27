@@ -107,3 +107,15 @@ pub async fn anthropic(body: Value) -> Answer {
     )
     .await
 }
+
+/// `POST /v1/responses` with the key.
+pub async fn responses(body: Value) -> Answer {
+    send(
+        Request::post("/v1/responses")
+            .header("authorization", format!("Bearer {KEY}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("a request"),
+    )
+    .await
+}
