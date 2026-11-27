@@ -31,17 +31,20 @@ use crate::domains::chat::{
 };
 use crate::domains::conversation::approval::{Policy, TOOL_OFF, Verdict, decide};
 use crate::domains::conversation::context::{self, ContextInputs};
+use crate::domains::conversation::draft::audio_format;
 use crate::domains::conversation::engine::answer::{Answer, Ceiling};
 use crate::domains::conversation::engine::calls::{builtin, convert, failed, human};
 use crate::domains::conversation::events::TurnEvent;
-use crate::domains::file::{FileService, StoredFile};
+use crate::domains::file::{FileOwner, FileService, MediaType, StoredFile, duration_ms, wav};
 use crate::domains::schedule::{RunOutcome, ScheduleService};
 use crate::domains::tool::{ToolServer, ToolService};
 use crate::ports::clock::Clock;
-use crate::ports::llm_gateway::{LlmEvent, LlmGateway, LlmRequest, Refusal};
+use crate::ports::llm_gateway::{LlmEvent, LlmGateway, LlmRequest, PartKind, Refusal};
 use crate::ports::tool_host::{TOOL_TIMEOUT, TOOL_UNKNOWN, ToolHost, ToolSession};
 use crate::ports::turn_sink::TurnSink;
-use crate::shared::constants::{MAX_PARALLEL_READS, MAX_TOOL_ROUNDS, MCP_CALL_TIMEOUT_SECS};
+use crate::shared::constants::{
+    AUDIO_OUT_SAMPLE_RATE, MAX_PARALLEL_READS, MAX_TOOL_ROUNDS, MCP_CALL_TIMEOUT_SECS,
+};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{CallId, FileId, MessageId, ToolServerId};
 
@@ -65,6 +68,8 @@ pub const PROVIDER_FAILED: &str = "The provider ended the answer with an error."
 pub const REFUSED: &str = "The model declined to answer.";
 /// The failure a scheduled run records when it was stopped.
 pub const RUN_STOPPED: &str = "The run was stopped.";
+/// The name of the chat file that holds a spoken reply.
+pub const SPOKEN_REPLY: &str = "spoken-reply.wav";
 
 /// Runs prepared turns. Cheap to clone; the API spawns one run per reserved slot.
 #[derive(Clone)]
@@ -763,7 +768,7 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Saves the streamed answer with its final status.
+    /// Saves the streamed answer with its final status, and its spoken audio first.
     async fn save(
         &mut self,
         started: &Message,
@@ -772,10 +777,14 @@ impl Run<'_> {
         finish_reason: Option<FinishReason>,
         error: Option<String>,
     ) -> DomainResult<Message> {
+        let mut parts = answer.parts.clone();
+        if let Some(audio) = self.speech(started, answer).await {
+            parts.push(audio);
+        }
         let saved = Message::restore(MessageParts {
             status,
             finish_reason,
-            parts: answer.parts.clone(),
+            parts,
             provider_state: answer.provider_state.clone(),
             usage: answer.usage,
             error,
@@ -788,6 +797,52 @@ impl Run<'_> {
             .await?;
         self.history.push(saved.clone());
         Ok(saved)
+    }
+
+    /// Saves what the answer spoke, on every exit, as a 24 kHz mono WAV chat file (the upload
+    /// rules apply: size, clip length, and storage quota) and returns its `audio` part, the
+    /// answer's last, announced with `part.started`. The transcript is already the answer's text,
+    /// so the part carries none. `None` when the answer spoke nothing or the file could not be
+    /// saved; the answer keeps its transcript either way.
+    async fn speech(&mut self, started: &Message, answer: &Answer) -> Option<Part> {
+        let pcm = answer.speech();
+        if pcm.is_empty() {
+            return None;
+        }
+        let turn = self.turn;
+        let bytes = wav(pcm, AUDIO_OUT_SAMPLE_RATE);
+        let duration = duration_ms(MediaType::Wav, &bytes).and_then(|ms| u32::try_from(ms).ok());
+        let owner = FileOwner::Chat(turn.chat.id());
+        let file = match self
+            .engine
+            .files
+            .upload(&turn.actor, owner, SPOKEN_REPLY, bytes)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) => {
+                tracing::warn!(
+                    message_id = %started.id(),
+                    code = error.code(),
+                    error = %error,
+                    "core.engine.speech.save-failed"
+                );
+                return None;
+            }
+        };
+        self.sink.emit(TurnEvent::PartStarted {
+            message_id: started.id(),
+            index: u32::try_from(answer.parts.len()).unwrap_or(u32::MAX),
+            kind: PartKind::Audio,
+        });
+        let part = Part::Audio {
+            file_id: file.id(),
+            format: audio_format(file.media()).to_owned(),
+            transcript: None,
+            duration_ms: duration,
+        };
+        self.files.insert(file.id(), file);
+        Some(part)
     }
 
     /// `tool.requested` for each call of `message`; `asking` lists the calls that wait for a
