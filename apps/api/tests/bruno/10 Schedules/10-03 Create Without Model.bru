@@ -1,0 +1,36 @@
+meta {
+  name: 10-03 Create Without Model
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/schedules
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Morning",
+    "cron": "0 7 * * *",
+    "timezone": "UTC",
+    "prompt": "Summarize the news."
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq modelId
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules`
+
+  **This test verifies:** a schedule needs a model to run with.
+}

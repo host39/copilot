@@ -1,0 +1,37 @@
+meta {
+  name: 10-07 Other User Schedule in Project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/schedules
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "name": "Taken",
+    "cron": "0 7 * * *",
+    "timezone": "UTC",
+    "prompt": "Read the project.",
+    "projectId": "{{scheduleProjectId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules` as user B, with user A's project id in the body
+
+  **This test verifies:** user B cannot schedule runs in user A's project (and so read its
+  instructions and files).
+}

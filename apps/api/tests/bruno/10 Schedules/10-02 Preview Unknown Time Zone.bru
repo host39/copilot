@@ -1,0 +1,34 @@
+meta {
+  name: 10-02 Preview Unknown Time Zone
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/schedules/preview
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "cron": "0 9 * * *",
+    "timezone": "Mars/Base"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq timezone
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules/preview`
+
+  **This test verifies:** a time zone that is not an IANA name is refused.
+}

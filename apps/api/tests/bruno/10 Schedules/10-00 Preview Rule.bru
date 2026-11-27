@@ -1,0 +1,46 @@
+meta {
+  name: 10-00 Preview Rule
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/schedules/preview
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "cron": "0 9 * * 1-5",
+    "timezone": "Europe/Berlin"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.description: isString
+  res.body.data.timezone: eq Europe/Berlin
+  res.body.data.nextRuns: isArray
+}
+
+tests {
+  test("lists the next 3 runs in order", function () {
+    const runs = res.body.data.nextRuns.map((run) => Date.parse(run));
+    expect(runs.length).to.equal(3);
+    expect(runs[0]).to.be.below(runs[1]);
+    expect(runs[1]).to.be.below(runs[2]);
+    expect(runs[0]).to.be.above(Date.now());
+  });
+}
+
+docs {
+  **Endpoint:** `POST /api/schedules/preview`
+
+  **This test verifies:** a rule is described in words with its next 3 runs, in the future and in
+  order.
+}
