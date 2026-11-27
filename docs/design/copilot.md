@@ -1095,6 +1095,7 @@ Each job uses the smallest GitHub-hosted runner that can finish it (`docs/resear
 | --- | --- | --- |
 | Biome, markdownlint, `tsc`, web build, TS tests (including the contract conformance test, which parses the committed fixtures with the Zod schemas), path filters | `ubuntu-slim` | Every push |
 | Rust fmt, Clippy, tests, `make boundaries`, DB tests (`#[sqlx::test]`, rustauth's migrations then Copilot's) with a Postgres service, contracts drift (bindings and conformance fixtures), Bruno | `ubuntu-latest` | Every push |
+| Smoke test (`scripts/smoke.sh`): the API against `tools/fake-llm` over HTTP, on the Rust job's release binaries with a Postgres service | `ubuntu-latest` | Every push, after the Rust job |
 | Linux Tauri bundle | `ubuntu-24.04` (pinned for a lower glibc floor) | Tags, manual dispatch, changes under `apps/native` |
 | Android APK | `ubuntu-latest` | Tags, manual dispatch, changes under `apps/native` |
 | macOS, iOS, Windows bundles (later) | `macos-latest`, `windows-latest` | Tags only |
