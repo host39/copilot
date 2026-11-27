@@ -40,9 +40,9 @@ use copilot_core::shared::constants::{
     DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
 };
 use copilot_core::{
-    Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId,
-    NewChat, PreparedTurn, ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnEvent,
-    TurnInput, TurnOutcome, TurnSink, UserId,
+    Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, DomainError, FileId, MessageId,
+    ModelId, NewChat, PreparedTurn, ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnInput,
+    TurnOutcome, TurnSink, UserId,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
@@ -75,6 +75,10 @@ pub fn router() -> OpenApiRouter<AppState> {
 /// Loads the caller's chat, reserves it, prepares the turn `input` asks for, and starts it: the
 /// response is the turn's event stream. Another user's chat is a `404`, never `CHAT_BUSY`; a
 /// failed `prepare` frees the chat.
+///
+/// `prepare` and the launch run on a task of their own, which the handler awaits: once `prepare`
+/// may have written (the user message, a decision), a client that disconnects can no longer keep
+/// the turn from starting (dropping a `JoinHandle` does not cancel its task).
 async fn start(
     state: &AppState,
     caller: &Actor,
@@ -83,22 +87,33 @@ async fn start(
 ) -> Result<Response, HttpError> {
     state.chats.get(caller, chat).await?;
     let reservation = state.runs.reserve(caller.user_id, chat)?;
-    let turn = state.chats.prepare(caller, chat, input).await?;
-    Ok(run(state, reservation, turn))
+    let task = tokio::spawn({
+        let state = state.clone();
+        let caller = *caller;
+        async move {
+            let turn = state.chats.prepare(&caller, chat, input).await?;
+            Ok::<_, DomainError>(run(&state, reservation, turn))
+        }
+    });
+    let events = task
+        .await
+        .map_err(|error| DomainError::internal("api.chats.prepare.panicked", error))??;
+    Ok(stream_response(state, events))
 }
 
-/// Starts the prepared turn in its reserved slot and answers with its events. The run goes on
-/// when the client disconnects; it stops on shutdown. The slot is released when the run ends.
-fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Response {
+/// Starts the prepared turn in its reserved slot and returns its events. The run goes on when
+/// the client disconnects; it stops on shutdown. The slot is released when the run ends.
+fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Subscription {
     let events = reservation.subscribe();
     launch(state, reservation, turn);
-    stream_response(state, events)
+    events
 }
 
-/// Runs the prepared turn in its reserved slot on a task of its own, and returns that task: its
-/// output is how the run ended, `None` when it failed with an error or panicked (its streams
-/// still end with `error` and `done`). Nothing cancels the run but [`RunRegistry::stop`] and
-/// shutdown; the slot is released when the run ends.
+/// Starts the prepared turn in its reserved slot ([`Reservation::start`]: streams may attach
+/// from now on) and runs it on a task of its own, and returns that task: its output is how the
+/// run ended, `None` when it failed with an error or panicked (dropping the reservation then
+/// ends its streams with `error` and `done`). Nothing cancels the run but
+/// [`RunRegistry::stop`] and shutdown; the slot is released when the run ends.
 ///
 /// [`RunRegistry::stop`]: crate::helpers::runs::RunRegistry::stop
 pub(crate) fn launch(
@@ -108,10 +123,10 @@ pub(crate) fn launch(
 ) -> JoinHandle<Option<TurnOutcome>> {
     let engine = Arc::clone(&state.engine);
     let chat = turn.chat.id();
+    reservation.start();
     tokio::spawn(async move {
-        let sink = reservation.sink();
         let task = tokio::spawn({
-            let sink: Arc<dyn TurnSink> = sink.clone();
+            let sink: Arc<dyn TurnSink> = reservation.sink();
             let cancel = reservation.cancel();
             async move { engine.run(turn, sink, cancel).await }
         });
@@ -129,14 +144,7 @@ pub(crate) fn launch(
                 None
             }
         };
-        // A run that panicked never sent `done`: end its streams.
-        if !sink.is_done() {
-            sink.emit(TurnEvent::Error {
-                message: "Something went wrong. Please try again.".to_owned(),
-                code: "INTERNAL_ERROR".to_owned(),
-            });
-            sink.emit(TurnEvent::Done);
-        }
+        // A run that panicked never sent `done`: dropping the reservation ends its streams.
         drop(reservation);
         outcome
     })

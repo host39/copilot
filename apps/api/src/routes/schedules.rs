@@ -10,7 +10,8 @@ use copilot_contracts::{
     UpdateScheduleRequest,
 };
 use copilot_core::{
-    ModelId, NewSchedule, ProjectId, Schedule, ScheduleId, ScheduleQuery, ScheduleUpdate,
+    DomainError, ModelId, NewSchedule, ProjectId, Schedule, ScheduleId, ScheduleQuery,
+    ScheduleUpdate,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use utoipa_axum::router::OpenApiRouter;
@@ -232,7 +233,15 @@ pub async fn run(
         .run_now(&caller, ScheduleId::new(id))
         .await?;
     let slot = state.runs.slot_or_busy()?;
-    let chat = scheduler::fire(&state, slot, firing).await?;
+    // On a task of its own: a client that disconnects never leaves a written chat without its
+    // run (dropping a `JoinHandle` does not cancel its task).
+    let task = tokio::spawn({
+        let state = state.clone();
+        async move { scheduler::fire(&state, slot, firing).await }
+    });
+    let chat = task
+        .await
+        .map_err(|error| DomainError::internal("api.schedules.run.panicked", error))??;
     Ok(axum::Json(DetailsResponse {
         data: ScheduleRunResponse {
             chat_id: chat.uuid(),

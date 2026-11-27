@@ -1,6 +1,7 @@
 //! The chat flows of P3.1 end to end (`make test-db`): reattaching after a `seq`, a run that
-//! outlives its client, stop, one run per chat and three per user, regenerate, retry, edit and
-//! resend, a restart's recovery, the shutdown drain, and Continue after the tool round limit. rustauth and Copilot run on a
+//! outlives its client (also one whose client leaves while the turn is prepared), stop, one run
+//! per chat and three per user, regenerate, retry, edit and resend, a restart's recovery, the
+//! shutdown drain, and Continue after the tool round limit. rustauth and Copilot run on a
 //! throwaway Postgres database; the provider is wiremock where whole answers do, and the
 //! scripted [`LlmServer`] where a run must stay live while the test acts.
 
@@ -287,6 +288,61 @@ async fn a_run_goes_on_when_its_client_disconnects(pool: DbPool) {
     assert_eq!(saved.len(), 2);
     assert_eq!(saved[1]["status"], "complete");
     assert_eq!(content(&saved[1]), "Still here");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run `make test-db`"]
+async fn a_turn_starts_when_its_client_leaves_while_it_is_prepared(pool: DbPool) {
+    let server: MockServer = testing::provider().await;
+    mock_answer(&server, "Mocked").await;
+    let (app, token, model) = setup(pool.clone(), &format!("{}/v1", server.uri())).await;
+    let app = app.router;
+    let chat = new_chat(&app, &token, &model).await;
+    let id: uuid::Uuid = chat.parse().expect("a uuid");
+
+    // Hold the chat row, so `prepare` waits on its first write.
+    let mut held = pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT id FROM chats WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .execute(&mut *held)
+        .await
+        .expect("the chat row");
+    let sending = send(
+        app.clone(),
+        request(
+            Method::POST,
+            &format!("/api/chats/{chat}/messages"),
+            Some(&token),
+            Some(json!({ "text": "Hi" })),
+        ),
+    );
+    // The client gives up while the turn is prepared.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), sending)
+            .await
+            .is_err(),
+        "prepare waits for the row"
+    );
+    assert!(
+        attach(&app, &token, &chat, None).await.is_none(),
+        "a turn being prepared is idle to streams"
+    );
+    held.rollback().await.expect("the row is free");
+
+    let started = Instant::now();
+    let saved = loop {
+        let saved = messages(&app, &token, &chat).await;
+        if saved.len() == 2 && saved[1]["status"] == "complete" {
+            break saved;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the turn runs without its client: {saved:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(content(&saved[0]), "Hi");
+    assert_eq!(content(&saved[1]), "Mocked");
 }
 
 #[sqlx::test(migrations = false)]
@@ -722,23 +778,7 @@ async fn continue_after_the_tool_round_limit_starts_a_new_turn(pool: DbPool) {
 #[ignore = "requires Postgres: run `make test-db`"]
 async fn turn_routes_answer_through_wiremock(pool: DbPool) {
     let server: MockServer = testing::provider().await;
-    let body = [
-        json!({ "choices": [{ "index": 0, "delta": { "content": "Mocked" }, "finish_reason": null }] }),
-        json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
-    ]
-    .iter()
-    .map(|chunk| format!("data: {chunk}\n\n"))
-    .collect::<String>()
-        + "data: [DONE]\n\n";
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(body),
-        )
-        .mount(&server)
-        .await;
+    mock_answer(&server, "Mocked").await;
     let (app, token, model) = setup(pool, &format!("{}/v1", server.uri())).await;
     let app = app.router;
     let chat = new_chat(&app, &token, &model).await;
@@ -754,4 +794,25 @@ async fn turn_routes_answer_through_wiremock(pool: DbPool) {
         .filter(|request| request.url.path() == "/v1/chat/completions")
         .count();
     assert_eq!(completions, 2);
+}
+
+/// Answers every completion request on `server` with `text`.
+async fn mock_answer(server: &MockServer, text: &str) {
+    let body = [
+        json!({ "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }] }),
+        json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+    ]
+    .iter()
+    .map(|chunk| format!("data: {chunk}\n\n"))
+    .collect::<String>()
+        + "data: [DONE]\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(server)
+        .await;
 }

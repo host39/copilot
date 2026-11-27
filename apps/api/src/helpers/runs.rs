@@ -23,11 +23,17 @@
 //! a user's chats never wait for their schedules. Otherwise they are runs like any other: one
 //! per chat, stopped and drained the same way, with the same events.
 //!
+//! A reserved run is not visible until it starts ([`Reservation::start`], when its prepared turn
+//! is launched, or its first event): until then `attach` answers idle and `watch` leaves it out,
+//! so a reservation whose `prepare` fails is never attached or announced. A reservation dropped
+//! after its run started but before `done` (its task panicked) ends the run's streams with
+//! `error` and `done`.
+//!
 //! The registry also fans out each user's `GET /api/events` stream ([`RunRegistry::publish`],
 //! [`RunRegistry::watch`]): a channel per user with a stream open, dropped once no stream reads
-//! it. The sink publishes `run.started` with a run's first event, and `approval.pending` (when
-//! the run paused for an approval) and `run.finished` just before it frees the chat at `done`,
-//! so a run started right after `done` always follows the last run's `run.finished`.
+//! it. The sink publishes `run.started` when the run starts, and `approval.pending` (when the
+//! run paused for an approval) and `run.finished` just before it frees the chat at `done`, so a
+//! run started right after `done` always follows the last run's `run.finished`.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -204,11 +210,15 @@ impl RunRegistry {
 
     /// The running turn of `chat`: its events after `after` (all of them for `0`, or for a
     /// `seq` the run never sent), then live ones, ending with `done`. `None` when the chat is
-    /// idle. Load the chat with the caller's id first.
+    /// idle or its run has not started yet (it is still being prepared; the owner's event
+    /// streams hear `run.started` when it starts). Load the chat with the caller's id first.
     pub fn attach(&self, chat: ChatId, after: u64) -> Option<Subscription> {
         // The buffer is locked after the registry lock is released: the sink takes them the
         // other way round when `done` releases the slot.
         let state = Arc::clone(&self.lock().entries.get(&chat)?.state);
+        if !lock(&state).started {
+            return None;
+        }
         Some(subscribe(&state, after))
     }
 
@@ -317,13 +327,33 @@ impl RunRegistry {
         // Listed after subscribing, so a run that starts meanwhile is never missed (at worst
         // its `run.started` comes twice).
         let running = self
-            .chats(owner)
+            .started(owner)
             .into_iter()
             .map(|chat| UserEvent::RunStarted {
                 chat_id: chat.into(),
             })
             .collect();
         UserEvents { running, receiver }
+    }
+
+    /// The chats of `owner` whose runs started and have not sent `done`.
+    fn started(&self, owner: UserId) -> Vec<ChatId> {
+        // The buffers are locked after the registry lock is released (see `attach`).
+        let states: Vec<(ChatId, Arc<Mutex<Buffer>>)> = self
+            .lock()
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.owner == owner)
+            .map(|(chat, entry)| (*chat, Arc::clone(&entry.state)))
+            .collect();
+        states
+            .into_iter()
+            .filter(|(_, state)| {
+                let buffer = lock(state);
+                buffer.started && !buffer.done
+            })
+            .map(|(chat, _)| chat)
+            .collect()
     }
 
     fn lock(&self) -> MutexGuard<'_, Runs> {
@@ -413,16 +443,23 @@ impl Reservation {
     pub fn subscribe(&self) -> Subscription {
         subscribe(&self.sink.state, 0)
     }
+
+    /// Makes the run visible: streams may attach and the owner's event streams hear
+    /// `run.started`. Call it when the prepared turn is launched; the first event also does.
+    pub fn start(&self) {
+        self.sink.start();
+    }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
+        self.sink.close();
         self.registry.release(self.chat, self.run);
     }
 }
 
 /// The run's events: numbered, buffered for replay, and broadcast. `done` releases the slot
-/// before it is sent. The owner's event streams get `run.started` with the first event, and
+/// before it is sent. The owner's event streams get `run.started` when the run starts, and
 /// `approval.pending` and `run.finished` with `done`.
 #[derive(Debug)]
 pub struct RunSink {
@@ -441,6 +478,8 @@ struct Buffer {
     /// The bytes of text each part has streamed so far.
     lengths: HashMap<PartKey, usize>,
     sender: broadcast::Sender<ChatStreamEvent>,
+    /// The run started ([`RunSink::start`]): streams may attach, and `run.started` went out.
+    started: bool,
     done: bool,
     /// How the run ended (`TurnSink::ended`); none when it failed with an error.
     outcome: Option<TurnOutcome>,
@@ -577,6 +616,7 @@ impl RunSink {
                 seq: 0,
                 lengths: HashMap::new(),
                 sender,
+                started: false,
                 done: false,
                 outcome: None,
             })),
@@ -613,8 +653,52 @@ impl RunSink {
     }
 
     /// Whether the run sent its last event (`done`).
-    pub fn is_done(&self) -> bool {
+    #[cfg(test)]
+    fn is_done(&self) -> bool {
         lock(&self.state).done
+    }
+
+    /// Starts the run (see [`Reservation::start`]); once only.
+    fn start(&self) {
+        let mut buffer = lock(&self.state);
+        if !buffer.done {
+            self.begin(&mut buffer);
+        }
+    }
+
+    /// Marks the run started and tells the owner's event streams, the first time.
+    fn begin(&self, buffer: &mut Buffer) {
+        if buffer.started {
+            return;
+        }
+        buffer.started = true;
+        self.registry.publish(
+            self.owner,
+            UserEvent::RunStarted {
+                chat_id: self.chat.into(),
+            },
+        );
+    }
+
+    /// Ends a run whose reservation is dropped: one that started but never sent `done` (its
+    /// task panicked) sends `error` and `done`, so its streams end and its owner hears
+    /// `run.finished`; one that never started (a failed `prepare`) ends silently.
+    fn close(&self) {
+        {
+            let mut buffer = lock(&self.state);
+            if buffer.done {
+                return;
+            }
+            if !buffer.started {
+                buffer.done = true;
+                return;
+            }
+        }
+        self.emit(TurnEvent::Error {
+            message: "Something went wrong. Please try again.".to_owned(),
+            code: "INTERNAL_ERROR".to_owned(),
+        });
+        self.emit(TurnEvent::Done);
     }
 
     /// Events in the replay buffer.
@@ -631,14 +715,7 @@ impl TurnSink for RunSink {
             return;
         }
         buffer.seq += 1;
-        if buffer.seq == 1 {
-            self.registry.publish(
-                self.owner,
-                UserEvent::RunStarted {
-                    chat_id: self.chat.into(),
-                },
-            );
-        }
+        self.begin(&mut buffer);
         let event = serializer::event(event, buffer.seq);
         buffer.done = is_done(&event);
         if buffer.done {
@@ -1284,6 +1361,107 @@ mod tests {
         }
         assert_eq!(heard(&mut events).await, None, "each event once");
         assert_eq!(heard(&mut theirs).await, None, "another user hears nothing");
+    }
+
+    #[tokio::test]
+    async fn a_run_is_hidden_until_it_starts_and_a_failed_prepare_announces_nothing() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let chat_id: Uuid = chat.into();
+        let mut events = Box::pin(registry.watch(owner).into_stream());
+
+        // `prepare` runs: the chat is taken, but no stream attaches and nobody hears of it.
+        let preparing = registry.reserve(owner, chat).unwrap();
+        assert!(registry.is_running(chat));
+        assert!(registry.attach(chat, 0).is_none(), "idle until it starts");
+        let mut connected = Box::pin(registry.watch(owner).into_stream());
+        assert_eq!(
+            heard(&mut connected).await,
+            None,
+            "not listed while prepared"
+        );
+        // `prepare` failed.
+        drop(preparing);
+        assert!(!registry.is_running(chat));
+        assert_eq!(
+            heard(&mut events).await,
+            None,
+            "a failed prepare announces nothing"
+        );
+        assert_eq!(heard(&mut connected).await, None);
+
+        let reservation = registry.reserve(owner, chat).unwrap();
+        reservation.start();
+        reservation.start();
+        let attached = registry
+            .attach(chat, 0)
+            .expect("a started run")
+            .into_stream();
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::RunStarted { chat_id }),
+            "starting announces the run once"
+        );
+        assert_eq!(heard(&mut events).await, None);
+        let mut late = Box::pin(registry.watch(owner).into_stream());
+        assert_eq!(
+            heard(&mut late).await,
+            Some(UserEvent::RunStarted { chat_id })
+        );
+        let sink = reservation.sink();
+        sink.emit(text(0));
+        sink.emit(TurnEvent::Done);
+        let seqs: Vec<u64> = attached.map(|event| event.seq()).collect().await;
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::RunFinished {
+                chat_id,
+                status: copilot_contracts::MessageStatus::Error,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_started_run_dropped_before_done_ends_its_streams() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let chat_id: Uuid = chat.into();
+        let mut events = Box::pin(registry.watch(owner).into_stream());
+        let reservation = registry.reserve(owner, chat).unwrap();
+        reservation.start();
+        let attached = registry.attach(chat, 0).expect("started").into_stream();
+        reservation.sink().emit(text(0));
+        // The run's task panicked: only the reservation is left to drop.
+        drop(reservation);
+        assert!(!registry.is_running(chat));
+
+        let streamed = tokio::time::timeout(Duration::from_secs(2), attached.collect::<Vec<_>>())
+            .await
+            .expect("the stream ends");
+        let kinds: Vec<&str> = streamed
+            .iter()
+            .map(|event| match event {
+                ChatStreamEvent::TextDelta { .. } => "text",
+                ChatStreamEvent::Error { code, .. } if code == "INTERNAL_ERROR" => "error",
+                ChatStreamEvent::Done { .. } => "done",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["text", "error", "done"]);
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::RunStarted { chat_id })
+        );
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::RunFinished {
+                chat_id,
+                status: copilot_contracts::MessageStatus::Error,
+            })
+        );
     }
 
     #[tokio::test]
