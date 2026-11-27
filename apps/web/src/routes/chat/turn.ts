@@ -334,10 +334,12 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
   const halt = useCallback(async () => {
     try {
       await stop(chatId);
+      // The stopped answer is saved now; without a stream to end the run, read it.
+      if (!connection.current && current.current) await settle();
     } catch (error) {
       setAlert(describeError(error).message);
     }
-  }, [chatId]);
+  }, [chatId, settle]);
 
   // Leaving the page stops reading. The abort waits a tick, so a remount right away (React's
   // strict mode) keeps the stream.

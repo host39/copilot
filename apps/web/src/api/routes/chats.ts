@@ -18,6 +18,7 @@ import {
   type ProjectResponse,
   projectBodySchema,
   type SendMessageRequest,
+  type StreamQuery,
   type UpdateChatRequest,
 } from "@copilot/contracts";
 import { apiFetch, apiRequest, apiStream } from "@web/api/client";
@@ -153,13 +154,14 @@ export async function decide(
 
 /**
  * `GET /chats/{id}/stream`: the running turn's events, then live ones. `after` asks only for the
- * events past that `seq` (a reconnect); a server may still replay from the start. Resolves `false`
- * when no turn is running (`204`), `true` after the stream ends.
+ * events past that `seq` (a reconnect; no text repeats); a `seq` the running turn never sent
+ * replays it from the start. Resolves `false` when no turn is running (`204`), `true` after the
+ * stream ends.
  */
 export async function attach(
   chatId: string,
   onEvent: (event: ChatStreamEvent) => void,
-  options: { after?: number; signal?: AbortSignal } = {}
+  options: StreamQuery & { signal?: AbortSignal } = {}
 ): Promise<boolean> {
   return apiStream(API.chatStream(chatId), chatStreamEventSchema, onEvent, {
     query: { after: options.after },
@@ -167,7 +169,10 @@ export async function attach(
   });
 }
 
-/** `POST /chats/{id}/stop`: the running turn stops and keeps its partial answer. */
+/**
+ * `POST /chats/{id}/stop`: the running turn stops and keeps its partial answer; resolves once
+ * that answer is saved.
+ */
 export async function stop(chatId: string): Promise<void> {
   await apiRequest(API.chatStop(chatId), { method: "POST" });
 }
