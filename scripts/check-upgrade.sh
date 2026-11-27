@@ -8,13 +8,13 @@
 #    `fake-llm` are built in a temporary git worktree (target directory `<target>/upgrade`), and
 #    its own scripts/smoke.sh runs on them with SMOKE_KEEP=1: a fresh database migrated by that
 #    release and filled through its API (the administrator, its provider connections with
-#    sealed keys, chats with answers and an error, a tool server, an approved tool call). The
+#    sealed keys, chats with answers and an error, its tool servers, an approved tool call). The
 #    database is kept.
 # 2. This commit's `migrate` runs on that database: the upgrade. Every migration of this commit
 #    must then be applied.
 # 3. This commit's fake-llm and server start on it with the same fake key and SECRET_KEY, and the
 #    checks run over HTTP: the administrator signs in with the old password; the chats, their
-#    messages, the connections (keys still readable), and the tool server are there; and a new
+#    messages, the connections (keys still readable), and the tool servers are there; and a new
 #    turn in an old chat streams an answer through the old connection.
 #
 # Before the first release tag there is nothing to upgrade from: step 1 then uses this commit's
@@ -173,9 +173,11 @@ SMOKE_KEEP=1 SMOKE_BIN_DIR="$seed_bin" SMOKE_SECRET_KEY="$SECRET" SMOKE_FAKE_KEY
   bash "$seed_root/scripts/smoke.sh" >"$RUN_DIR/seed.log" 2>&1 || fail "the seeding smoke run (see $RUN_DIR/seed.log)"
 db="$(sed -n 's/^scripts\.smoke\.kept //p' "$RUN_DIR/seed.log" | tail -n 1)"
 [[ "$db" =~ ^copilot_smoke_[0-9a-f]+$ ]] || fail "the seeding smoke run kept no database (see $RUN_DIR/seed.log)"
-# The connections that release's smoke test made (a later smoke test may add more).
+# The connections and tool servers that release's smoke test made (a later smoke test may add
+# more).
 connections="$(sql "SELECT count(*) FROM providers" "$db")"
-pass "the ${previous:-current} release wrote its data to $db ($connections connections)"
+servers="$(sql "SELECT count(*) FROM tool_servers" "$db")"
+pass "the ${previous:-current} release wrote its data to $db ($connections connections, $servers tool servers)"
 
 # --- 2. The upgrade ---------------------------------------------------------------------------
 
@@ -256,8 +258,9 @@ for provider in $providers; do
   jq -e '.data.key == "set"' >/dev/null <<<"$body" || fail "a stored key no longer opens: $body"
 done
 request GET /tool-servers
-jq -e '.items | length == 1' >/dev/null <<<"$body" || fail "the tool server should remain: $body"
-pass "connections (keys readable) and the tool server remain"
+jq -e --argjson servers "$servers" '.items | length == $servers' >/dev/null <<<"$body" ||
+  fail "the $servers tool servers should remain: $body"
+pass "connections (keys readable) and the tool servers remain"
 
 code="$(curl -sS -N --max-time 60 -o "$RUN_DIR/stream" -w '%{http_code}' -X POST "$API/api/chats/$long/messages" \
   -H "authorization: Bearer $token" -H 'content-type: application/json' --data '{"text":"hello again"}')"
