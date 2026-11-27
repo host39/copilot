@@ -113,6 +113,37 @@ export function speaks(event: ChatStreamEvent, speaking: boolean, played: number
   return event.type === "audio.delta" && speaking && event.seq > played;
 }
 
+/**
+ * The spoken audio of the turns a page starts, played through `speaker` (read when used, so it
+ * may change). `begin`, in the click that starts a turn, lets the turn's `audio.delta` events
+ * play, each once; `quiet` when the turn ends lets what is queued play to its end; `stop` (the
+ * Stop button) silences it at once and keeps the deltas that still arrive while the stopped turn
+ * winds down from playing.
+ */
+export function turnVoice(speaker: () => Speaker | undefined) {
+  let speaking = false;
+  let played = 0;
+  return {
+    begin() {
+      speaker()?.begin();
+      speaking = true;
+      played = 0;
+    },
+    hear(event: ChatStreamEvent) {
+      if (event.type !== "audio.delta" || !speaks(event, speaking, played)) return;
+      played = event.seq;
+      speaker()?.play(event.data, event.format);
+    },
+    quiet() {
+      speaking = false;
+    },
+    stop() {
+      speaking = false;
+      speaker()?.stop();
+    },
+  };
+}
+
 /** The first message regenerating replaces: the one after the last user message. */
 export function regenerateCut(messages: MessageResponse[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -168,11 +199,9 @@ export function useTurn(
   const mounted = useRef(true);
   const savedRef = useRef(saved);
   savedRef.current = saved;
-  const voice = useRef(speaker);
-  voice.current = speaker;
-  // A turn this page started speaks; the last `seq` of its audio played.
-  const speaking = useRef(false);
-  const played = useRef(0);
+  const speakerRef = useRef(speaker);
+  speakerRef.current = speaker;
+  const [voice] = useState(() => turnVoice(() => speakerRef.current));
 
   const show = useCallback((next: Run | null) => {
     current.current = next;
@@ -201,10 +230,7 @@ export function useTurn(
         }
         events += 1;
         if (event.type === "message.started") setWindowStart(event.windowStartId);
-        if (event.type === "audio.delta" && speaks(event, speaking.current, played.current)) {
-          played.current = event.seq;
-          voice.current?.play(event.data, event.format);
-        }
+        voice.hear(event);
         ended ||= event.type === "done";
         show(next);
       };
@@ -218,13 +244,13 @@ export function useTurn(
         if (connection.current === controller) connection.current = null;
       }
     },
-    [show]
+    [show, voice]
   );
 
   /** The run is over: read the saved messages, which replace the run's, then let it go. */
   const settle = useCallback(async () => {
     // Audio already queued plays to its end.
-    speaking.current = false;
+    voice.quiet();
     await client.invalidateQueries({ queryKey: keys.chat(chatId) });
     const ended = current.current;
     // A failure without a failed answer (nothing was saved) stays on screen.
@@ -235,7 +261,7 @@ export function useTurn(
     setDraft(null);
     setPhase("idle");
     setAttempt(0);
-  }, [chatId, client, show]);
+  }, [chatId, client, show, voice]);
 
   /** Done following without a run to finish: the page is idle again. */
   const release = useCallback(async () => {
@@ -309,9 +335,7 @@ export function useTurn(
   const start = useCallback(
     async (open: Open, next: Draft | null): Promise<boolean> => {
       // Still in the click that started the turn, so audio may start.
-      voice.current?.begin();
-      speaking.current = true;
-      played.current = 0;
+      voice.begin();
       setAlert(null);
       setDraft(next);
       show(null);
@@ -331,7 +355,7 @@ export function useTurn(
           return true;
       }
     },
-    [follow, lost, refused, settle, show]
+    [follow, lost, refused, settle, show, voice]
   );
 
   const send = useCallback(
@@ -395,7 +419,8 @@ export function useTurn(
   );
 
   const halt = useCallback(async () => {
-    voice.current?.stop();
+    // Deltas keep arriving while the stopped run winds down: none of them plays.
+    voice.stop();
     try {
       await stop(chatId);
       // The stopped answer is saved now; without a stream to end the run, read it.
@@ -403,7 +428,7 @@ export function useTurn(
     } catch (error) {
       setAlert(describeError(error).message);
     }
-  }, [chatId, settle]);
+  }, [chatId, settle, voice]);
 
   // Leaving the page stops reading. The abort waits a tick, so a remount right away (React's
   // strict mode) keeps the stream.

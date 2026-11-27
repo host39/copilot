@@ -9,6 +9,8 @@ import {
   enterSends,
   finePointer,
   mediaType,
+  type RecordingEnd,
+  refocus,
   unreadable,
   uploaded,
 } from "@web/components/Chat/composer";
@@ -171,11 +173,30 @@ export function Composer({
   const counter = useRef(0);
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const micButton = useRef<HTMLButtonElement>(null);
   const id = useId();
   const recorder = useRecorder((clip) => pick([clip]));
   const idle = recorder.state.kind === "idle";
   const ready = canSend(text, list) && idle;
   const blocked = busy || disabled || running;
+  // Whether the recording bar is showing, and how it closed (Cancel, or else Stop).
+  const recording = useRef(false);
+  const ending = useRef<RecordingEnd>("stop");
+
+  // The bar's buttons leave the page with it: put focus back in the composer.
+  useEffect(() => {
+    if (!idle) {
+      recording.current = true;
+      return;
+    }
+    if (!recording.current) return;
+    recording.current = false;
+    const active = document.activeElement;
+    const target = refocus(ending.current, !active || active === document.body, finePointer());
+    ending.current = "stop";
+    if (target === "field") field.current?.focus();
+    if (target === "mic") micButton.current?.focus();
+  }, [idle]);
 
   // Browsers without `field-sizing` grow the field from its scroll height (capped by max-height),
   // also when it comes back after a recording.
@@ -283,8 +304,14 @@ export function Composer({
         {recorder.state.kind !== "idle" ? (
           <RecordingBar
             state={recorder.state}
-            onStop={() => void recorder.stop()}
-            onCancel={recorder.cancel}
+            onStop={() => {
+              ending.current = "stop";
+              void recorder.stop();
+            }}
+            onCancel={() => {
+              ending.current = "cancel";
+              recorder.cancel();
+            }}
           />
         ) : (
           <>
@@ -331,7 +358,11 @@ export function Composer({
               className="field-input mt-0 max-h-60 min-h-11 resize-none [field-sizing:content]"
             />
             {capabilities?.audioIn ? (
-              <MicButton onClick={() => void recorder.start()} disabled={disabled} />
+              <MicButton
+                ref={micButton}
+                onClick={() => void recorder.start()}
+                disabled={disabled}
+              />
             ) : null}
           </>
         )}

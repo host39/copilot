@@ -140,3 +140,18 @@ export function canSend(text: string, list: Attachment[]): boolean {
   if (list.some((item) => item.status === "uploading")) return false;
   return text.trim() !== "" || list.some((item) => item.status === "ready");
 }
+
+/** How the composer's recording bar closed: Stop (or the cap, or a failure), or Cancel. */
+export type RecordingEnd = "stop" | "cancel";
+
+/**
+ * Where focus goes when the recording bar closes, so a keyboard or screen reader user lands back
+ * in the composer instead of at the top of the page: the message field after Stop, to write and
+ * send with the clip, and the microphone after Cancel. On touch screens (`fine` false) the
+ * microphone either way, so the on-screen keyboard does not open over the clip. Nowhere when
+ * focus already moved on (`lost` false: it is not on the page's body).
+ */
+export function refocus(end: RecordingEnd, lost: boolean, fine: boolean): "field" | "mic" | null {
+  if (!lost) return null;
+  return end === "stop" && fine ? "field" : "mic";
+}

@@ -4,13 +4,22 @@ import { fetchFileContent } from "@web/api/routes/files";
 import { claim } from "@web/audio/player";
 import { CLIP_MAX_SECS, clock } from "@web/audio/wav";
 import type { MicState } from "@web/hooks/useRecorder";
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useRef, useState } from "react";
 import { LuMic, LuPlay, LuSquare, LuVolume2, LuVolumeX, LuX } from "react-icons/lu";
 
 /** The microphone button, shown only for models with `audioIn`. */
-export function MicButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+export function MicButton({
+  onClick,
+  disabled,
+  ref,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  ref?: Ref<HTMLButtonElement>;
+}) {
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
       disabled={disabled}

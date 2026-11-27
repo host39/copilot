@@ -6,14 +6,16 @@ import type { Capabilities, ChatStreamEvent, MessagePartDto } from "@copilot/con
 import { describe, expect, test } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Composer } from "@web/components/Chat/Composer";
+import { refocus } from "@web/components/Chat/composer";
 import { MessageList } from "@web/components/Chat/MessageList";
 import { VOICE_MESSAGE } from "@web/components/Chat/messages";
 import { draftBody } from "@web/components/Chat/StartChat";
 import { AudioPart, RecordingBar, recordingTime, SpeakToggle } from "@web/components/Chat/Voice";
 import { clipOutcome, MIN_CLIP_MS, type MicState, mic, micHost } from "@web/hooks/useRecorder";
+import type { Speaker } from "@web/hooks/useSpeaker";
 import { messageFiles, speaksReplies } from "@web/routes/chat/page";
 import type { ViewMessage } from "@web/routes/chat/stream";
-import { audioFormat, draftMessage, speaks } from "@web/routes/chat/turn";
+import { audioFormat, draftMessage, speaks, turnVoice } from "@web/routes/chat/turn";
 import type { ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 
@@ -143,6 +145,18 @@ describe("the recording bar", () => {
     expect(html).not.toContain('role="timer"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Stop recording"/);
     expect(html).toContain('aria-label="Cancel recording"');
+  });
+
+  test("closing it puts focus back in the composer", () => {
+    // After Stop, the field, to write and send with the clip; after Cancel, the microphone.
+    expect(refocus("stop", true, true)).toBe("field");
+    expect(refocus("cancel", true, true)).toBe("mic");
+    // Touch screens get the microphone, so the keyboard does not open over the clip.
+    expect(refocus("stop", true, false)).toBe("mic");
+    expect(refocus("cancel", true, false)).toBe("mic");
+    // Focus that already moved elsewhere stays there.
+    expect(refocus("stop", false, true)).toBeNull();
+    expect(refocus("cancel", false, false)).toBeNull();
   });
 });
 
@@ -287,6 +301,67 @@ describe("Speak replies", () => {
     // A run attached to on opening the chat stays quiet.
     expect(speaks(delta, false, 0)).toBe(false);
     expect(speaks({ type: "done", seq: 5 }, true, 0)).toBe(false);
+  });
+
+  /** A speaker that records what it was asked to do. */
+  function recorded() {
+    const calls: string[] = [];
+    const speaker: Speaker = {
+      begin: () => calls.push("begin"),
+      play: (data) => calls.push(`play ${data}`),
+      stop: () => calls.push("stop"),
+      unlock: () => calls.push("unlock"),
+    };
+    return { calls, speaker };
+  }
+
+  const delta = (seq: number): ChatStreamEvent => ({
+    type: "audio.delta",
+    seq,
+    messageId: MESSAGE,
+    data: `d${seq}`,
+    format: "pcm16",
+  });
+
+  test("Stop silences the turn, and deltas that arrive after it never play", () => {
+    const { calls, speaker } = recorded();
+    const voice = turnVoice(() => speaker);
+    voice.begin();
+    voice.hear(delta(1));
+    voice.hear(delta(2));
+    voice.stop();
+    // The stopped run winds down and the stream still carries its deltas.
+    voice.hear(delta(3));
+    voice.hear(delta(4));
+    expect(calls).toEqual(["begin", "play d1", "play d2", "stop"]);
+
+    // The next turn speaks again, from its own first delta.
+    voice.begin();
+    voice.hear(delta(1));
+    expect(calls.slice(4)).toEqual(["begin", "play d1"]);
+  });
+
+  test("a turn that ends lets queued audio play out and plays nothing more", () => {
+    const { calls, speaker } = recorded();
+    const voice = turnVoice(() => speaker);
+    voice.begin();
+    voice.hear(delta(1));
+    voice.hear(delta(1));
+    voice.quiet();
+    voice.hear(delta(2));
+    expect(calls).toEqual(["begin", "play d1"]);
+  });
+
+  test("a page without a speaker, or a turn it did not start, stays quiet", () => {
+    const { calls, speaker } = recorded();
+    let current: Speaker | undefined;
+    const voice = turnVoice(() => current);
+    voice.hear(delta(1));
+    voice.begin();
+    voice.hear(delta(2));
+    current = speaker;
+    voice.hear(delta(3));
+    expect(calls).toEqual(["play d3"]);
   });
 });
 
