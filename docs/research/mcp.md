@@ -273,6 +273,8 @@ What a full OAuth client must do (for the v2 plan), per [Authorization](https://
 3. Authorization code flow with PKCE, `resource` = canonical server URI ("**MUST** be included in both authorization requests and token requests"), record the expected `issuer` and validate `iss` on the callback (RFC 9207).
 4. Refresh tokens kept confidential; on `403 insufficient_scope`, re-authorize with the union of scopes.
 
+Outcome (P7.2, 2026-11-27): implemented, with the redirect URI at the API (`/api/oauth/callback`) as planned below, but without rmcp's `auth` feature. Rechecked that day: the current revision is still `2026-07-28` (Dynamic Client Registration is marked deprecated there, kept for servers without Client ID Metadata Document support), and rmcp 3.12.0 (2026-11-26) is still the newest release; its `auth` feature adds 14 crates to the server's graph (210 to 224), including second copies of `base64`, `rand`, `sha2`, and `thiserror`, and no `aws-lc-rs`. The four OAuth requests are hand-written in `copilot-mcp` on the hardened clients so every URL a server hands back picks its client by URL and network scope; see `docs/design/tracks/p7-2.md`.
+
 Copilot-specific v2 shape: the redirect URI points at the API (for example `/tool-servers/{id}/oauth/callback`), not at the device. Web, the Linux desktop app and Android then all just open the authorization URL in a browser, and tokens never touch the client. A Client ID Metadata Document needs a public HTTPS URL for the Copilot instance; LAN-only installs fall back to DCR or a pre-registered client id.
 
 ## 5. Security

@@ -1,4 +1,10 @@
-import type { ApprovalMode, ServerTool, ToolMode, ToolServerResponse } from "@copilot/contracts";
+import type {
+  ApprovalMode,
+  AuthMode,
+  ServerTool,
+  ToolMode,
+  ToolServerResponse,
+} from "@copilot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
 import { keys } from "@web/api/routes/keys";
@@ -6,6 +12,8 @@ import {
   deleteToolServer,
   fetchToolServer,
   reviewToolServer,
+  signOut,
+  startSignIn,
   testToolServer,
   updateToolServer,
 } from "@web/api/routes/tool-servers";
@@ -17,16 +25,20 @@ import { FormNotice } from "@web/components/Form/FormNotice";
 import { Switch } from "@web/components/Form/Switch";
 import { TextField } from "@web/components/Form/TextField";
 import { ApprovalPicker } from "@web/components/Settings/ApprovalPicker";
+import { AuthPicker } from "@web/components/Settings/AuthPicker";
+import { ClientFields } from "@web/components/Settings/ClientFields";
 import { HeaderRows } from "@web/components/Settings/HeaderRows";
 import { QueryState } from "@web/components/Settings/QueryState";
 import { Section } from "@web/components/Settings/Section";
 import { SettingsPage } from "@web/components/Settings/SettingsPage";
+import { isNative } from "@web/config";
 import { text } from "@web/forms";
 import { useSubmit } from "@web/hooks/useSubmit";
 import path from "@web/routes/path";
 import { ago } from "@web/routes/settings/format";
 import {
   type AddedState,
+  clientSchema,
   credentialsSchema,
   type HeaderRow,
   settingsSchema,
@@ -38,8 +50,14 @@ import {
   sortTools,
   testSummary,
 } from "@web/routes/settings/tool-server/modes";
-import { useState } from "react";
-import { LuPlugZap } from "react-icons/lu";
+import {
+  openSignIn,
+  SIGN_IN_POLL_MS,
+  SIGN_IN_WAIT_MS,
+  signInBadge,
+} from "@web/routes/settings/tool-server/sign-in";
+import { useEffect, useState } from "react";
+import { LuLogIn, LuPlugZap } from "react-icons/lu";
 import { useLocation, useNavigate } from "react-router-dom";
 
 const BACK = { to: path.toolServers, label: "Tool servers" };
@@ -316,12 +334,14 @@ function CredentialsBadge({ server }: { server: ToolServerResponse }) {
   }
 }
 
-function Credentials({ server }: { server: ToolServerResponse }) {
+/** The bearer token and custom headers. Saving them switches the server to them. */
+function HeaderCredentials({ server }: { server: ToolServerResponse }) {
   const store = useStore();
   const [rows, setRows] = useState<HeaderRow[]>([]);
   const [notice, setNotice] = useState<string>();
   const [removing, setRemoving] = useState(false);
   const [round, setRound] = useState(0);
+  const current = server.authMode === "headers";
   const form = useSubmit(
     credentialsSchema,
     (credentials) => updateToolServer(server.id, { credentials }),
@@ -329,7 +349,7 @@ function Credentials({ server }: { server: ToolServerResponse }) {
       store(saved);
       setRows([]);
       setRound((value) => value + 1);
-      setNotice("Credentials replaced.");
+      setNotice(current ? "Credentials replaced." : "Credentials saved.");
     }
   );
   const remove = useMutation({
@@ -342,15 +362,7 @@ function Credentials({ server }: { server: ToolServerResponse }) {
   });
 
   return (
-    <Section
-      title="Credentials"
-      description={
-        <span className="flex flex-wrap items-center gap-2">
-          A bearer token and custom headers, stored encrypted and never shown again.
-          <CredentialsBadge server={server} />
-        </span>
-      }
-    >
+    <>
       <form
         key={round}
         noValidate
@@ -361,6 +373,15 @@ function Credentials({ server }: { server: ToolServerResponse }) {
           void form.submit({ bearer: text(new FormData(event.currentTarget), "bearer"), rows });
         }}
       >
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted">
+          A bearer token and custom headers, stored encrypted and never shown again.
+          {current ? <CredentialsBadge server={server} /> : null}
+        </p>
+        {server.authMode === "oauth" ? (
+          <p role="note" className="form-warning">
+            Saving credentials ends the sign-in and forgets the OAuth client.
+          </p>
+        ) : null}
         <FormAlert>{form.alert}</FormAlert>
         <FormNotice>{notice}</FormNotice>
         <TextField
@@ -374,13 +395,15 @@ function Credentials({ server }: { server: ToolServerResponse }) {
         />
         <HeaderRows rows={rows} onChange={setRows} error={form.errors.headers} />
         <div className="flex flex-wrap justify-end gap-2">
-          {server.credentials === "missing" ? null : (
+          {current && server.credentials !== "missing" ? (
             <Button variant="secondary" onClick={() => setRemoving(true)}>
               Remove credentials
             </Button>
-          )}
+          ) : null}
           <Button type="submit" busy={form.busy} disabled={form.wait > 0}>
-            {server.credentials === "missing" ? "Save credentials" : "Replace credentials"}
+            {current && server.credentials !== "missing"
+              ? "Replace credentials"
+              : "Save credentials"}
           </Button>
         </div>
       </form>
@@ -398,6 +421,184 @@ function Credentials({ server }: { server: ToolServerResponse }) {
       >
         <p>The bearer token and every custom header are deleted.</p>
       </ConfirmDialog>
+    </>
+  );
+}
+
+/** Switches the server to `to`, dropping the old mode's credentials after a confirmation. */
+function SwitchMode({ server, to }: { server: ToolServerResponse; to: AuthMode }) {
+  const store = useStore();
+  const [open, setOpen] = useState(false);
+  const change = useMutation({
+    mutationFn: () => updateToolServer(server.id, { authMode: to }),
+    onSuccess: (saved) => {
+      store(saved);
+      setOpen(false);
+    },
+  });
+  const label = to === "oauth" ? "Use sign-in" : "Use no credentials";
+  const dropped =
+    server.authMode === "headers"
+      ? "The stored bearer token and headers are deleted."
+      : "The sign-in ends and the OAuth client is forgotten.";
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted">
+        {to === "oauth"
+          ? "Requests carry the access token of a sign-in at the server's sign-in page, renewed when it expires."
+          : "Requests carry no credentials."}
+      </p>
+      <div className="flex justify-end">
+        <Button onClick={() => setOpen(true)}>{label}</Button>
+      </div>
+      <ConfirmDialog
+        open={open}
+        title={`${label}?`}
+        confirm={label}
+        busy={change.isPending}
+        error={change.error ? describeError(change.error).message : undefined}
+        onConfirm={() => change.mutate()}
+        onCancel={() => {
+          setOpen(false);
+          change.reset();
+        }}
+      >
+        <p>{dropped}</p>
+      </ConfirmDialog>
+    </div>
+  );
+}
+
+/**
+ * An OAuth server's sign-in: its state, Sign in (the authorization page opens in the browser;
+ * a native app checks every few seconds until the sign-in in the system browser is done), Sign
+ * out, and an optional pre-registered client.
+ */
+function SignIn({ server }: { server: ToolServerResponse }) {
+  const store = useStore();
+  const [notice, setNotice] = useState<string>();
+  const [waitUntil, setWaitUntil] = useState<number>();
+  const state = server.oauth?.state ?? "needs_sign_in";
+  const waiting = waitUntil !== undefined && state !== "signed_in";
+  useQuery({
+    queryKey: keys.toolServer(server.id),
+    queryFn: ({ signal }) => fetchToolServer(server.id, signal),
+    enabled: waiting,
+    refetchInterval: waiting ? SIGN_IN_POLL_MS : false,
+  });
+  useEffect(() => {
+    if (waitUntil === undefined) return;
+    if (state === "signed_in") {
+      setWaitUntil(undefined);
+      setNotice("Signed in.");
+      return;
+    }
+    const timer = window.setTimeout(() => setWaitUntil(undefined), waitUntil - Date.now());
+    return () => window.clearTimeout(timer);
+  }, [waitUntil, state]);
+  const start = useMutation({
+    mutationFn: () => startSignIn(server.id),
+    onMutate: () => setNotice(undefined),
+    onSuccess: (started) => {
+      if (isNative()) {
+        setWaitUntil(Date.now() + SIGN_IN_WAIT_MS);
+        setNotice("Finish signing in in your browser. This page updates when you are done.");
+      }
+      openSignIn(started.authorizationUrl);
+    },
+  });
+  const out = useMutation({
+    mutationFn: () => signOut(server.id),
+    onMutate: () => setNotice(undefined),
+    onSuccess: (saved) => {
+      store(saved);
+      setNotice("Signed out.");
+    },
+  });
+  const client = useSubmit(
+    clientSchema,
+    (oauthClient) => updateToolServer(server.id, { oauthClient }),
+    (saved) => {
+      store(saved);
+      setNotice(saved.oauth?.clientId ? "Client saved." : "Client removed.");
+    }
+  );
+  const badge = signInBadge(state);
+  const failure = start.error ?? out.error;
+
+  return (
+    <div className="space-y-4">
+      <p className="flex flex-wrap items-center gap-2 text-sm text-muted">
+        Requests carry the access token of your sign-in, renewed when it expires.
+        <Badge tone={badge.tone}>{badge.label}</Badge>
+      </p>
+      <FormAlert>{failure ? describeError(failure).message : null}</FormAlert>
+      <FormNotice>{notice}</FormNotice>
+      <div className="flex flex-wrap justify-end gap-2">
+        {state === "needs_sign_in" ? null : (
+          <Button variant="secondary" busy={out.isPending} onClick={() => out.mutate()}>
+            Sign out
+          </Button>
+        )}
+        <Button busy={start.isPending || waiting} onClick={() => start.mutate()}>
+          {start.isPending || waiting ? null : <LuLogIn aria-hidden />}
+          {state === "signed_in" ? "Sign in again" : "Sign in"}
+        </Button>
+      </div>
+      <form
+        key={server.updatedAt}
+        noValidate
+        className="space-y-4 border-t border-line pt-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setNotice(undefined);
+          const data = new FormData(event.currentTarget);
+          void client.submit({
+            clientId: text(data, "clientId"),
+            clientSecret: text(data, "clientSecret"),
+          });
+        }}
+      >
+        <FormAlert>{client.alert}</FormAlert>
+        <ClientFields
+          error={client.errors.clientId}
+          defaultId={server.oauth?.clientId ?? undefined}
+          secretStored={server.oauth?.clientSecret === "set"}
+        />
+        <div className="flex justify-end">
+          <Button variant="secondary" type="submit" busy={client.busy} disabled={client.wait > 0}>
+            Save client
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** How the server's requests authenticate, with the chosen mode's controls. */
+function Authentication({ server }: { server: ToolServerResponse }) {
+  const [mode, setMode] = useState<AuthMode>(server.authMode);
+
+  return (
+    <Section
+      title="Authentication"
+      description="What Copilot sends to the server. Switching drops the other mode's credentials."
+    >
+      <div className="space-y-6">
+        <AuthPicker value={mode} onChange={setMode} />
+        {mode === "headers" ? <HeaderCredentials server={server} /> : null}
+        {mode === "oauth" && server.authMode === "oauth" ? <SignIn server={server} /> : null}
+        {mode === "oauth" && server.authMode !== "oauth" ? (
+          <SwitchMode server={server} to="oauth" />
+        ) : null}
+        {mode === "none" && server.authMode !== "none" ? (
+          <SwitchMode server={server} to="none" />
+        ) : null}
+        {mode === "none" && server.authMode === "none" ? (
+          <p className="text-sm text-muted">Requests carry no credentials.</p>
+        ) : null}
+      </div>
     </Section>
   );
 }
@@ -444,7 +645,10 @@ function Remove({ server }: { server: ToolServerResponse }) {
   );
 }
 
-/** Settings, Tool servers, one server: its tools and their modes, settings, credentials, delete. */
+/**
+ * Settings, Tool servers, one server: its tools and their modes, settings, authentication
+ * (credentials or sign-in), delete.
+ */
 export function ToolServerDetails({ id }: { id: string }) {
   const state = useLocation().state as AddedState | null;
   const server = useQuery({
@@ -460,7 +664,7 @@ export function ToolServerDetails({ id }: { id: string }) {
           <>
             <Tools server={data} state={state} />
             <Settings server={data} />
-            <Credentials server={data} />
+            <Authentication key={data.authMode} server={data} />
             <Remove server={data} />
           </>
         ) : null}

@@ -50,6 +50,8 @@ const API = {
   toolServer: (serverId: string) => `/tool-servers/${id(serverId)}`,
   toolServerTest: (serverId: string) => `/tool-servers/${id(serverId)}/test`,
   toolServerReview: (serverId: string) => `/tool-servers/${id(serverId)}/review`,
+  toolServerSignIn: (serverId: string) => `/tool-servers/${id(serverId)}/oauth/start`,
+  toolServerSignOut: (serverId: string) => `/tool-servers/${id(serverId)}/oauth`,
 
   schedules: "/schedules",
   schedule: (scheduleId: string) => `/schedules/${id(scheduleId)}`,

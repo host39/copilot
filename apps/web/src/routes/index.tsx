@@ -14,6 +14,7 @@ const Register = lazy(() => import("@web/routes/auth/register/page"));
 const Setup = lazy(() => import("@web/routes/auth/setup/page"));
 const Connect = lazy(() => import("@web/routes/connect/page"));
 const Welcome = lazy(() => import("@web/routes/welcome/page"));
+const SignInDone = lazy(() => import("@web/routes/oauth-done/page"));
 
 const Home = lazy(() => import("@web/routes/home/page"));
 const Chat = lazy(() => import("@web/routes/chat/page"));
@@ -41,6 +42,7 @@ export function AppRouter() {
         path={path.connect}
         element={isNative() ? <Connect /> : <Navigate to={path.home} replace />}
       />
+      <Route path={path.oauthDone} element={<SignInDone />} />
       <Route element={<RequireServer />}>
         <Route element={<GuestOnly />}>
           <Route path={path.login} element={<Login />} />

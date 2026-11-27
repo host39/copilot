@@ -21,7 +21,7 @@ A lightweight, self-hosted chat client for any model provider. The backend store
 | Retrieval-augmented generation and vector search | Project files go to the model as context, with a capacity bar. Later: provider-hosted embeddings plus `pgvector` |
 | Running code or plugins inside Copilot | Tools come from remote MCP servers |
 | stdio MCP servers | Run a stdio server in its own container behind a stdio-to-Streamable-HTTP bridge and register it by URL ([self-hosting guide](../self-hosting.md#local-stdio-mcp-servers)). The hardening rules for a later stdio mode are in [Security](#later-stdio-servers) |
-| MCP OAuth | Bearer token or static headers. Later: rmcp `auth` feature |
+| MCP OAuth | Bearer token or static headers. OAuth sign-in came after v0.1 (P7.2): see [Tool Server Sign-In](#tool-server-sign-in) |
 | Branching conversation trees | Editing a user message deletes the messages after it, after a confirmation |
 | PDF text extraction for models without PDF input | The PDF is replaced by a notice for that model. Later: a pure-Rust text extractor |
 | Speech endpoints (read-aloud for text models, transcription for the microphone) | Voice only where the chat model itself takes or returns audio. Later, if the owner opts in: the off-by-default "voice for models without audio" option |
@@ -138,13 +138,27 @@ A schedule runs a prompt on a cron rule in a time zone. **Each firing creates a 
 
 ### Tools (MCP Servers)
 
-Users register remote MCP servers in Settings: name, URL, optional bearer token or custom headers, and a default approval mode. Transport is Streamable HTTP through the official `rmcp` client, which speaks both the stateless 2026-07-28 revision and older 2025 servers (dual-era). A project enables a subset of servers; a chat can add or remove servers on top of its project.
+Users register remote MCP servers in Settings: name, URL, how requests authenticate (nothing, a bearer token or custom headers, or an OAuth sign-in), and a default approval mode. Transport is Streamable HTTP through the official `rmcp` client, which speaks both the stateless 2026-07-28 revision and older 2025 servers (dual-era). A project enables a subset of servers; a chat can add or remove servers on top of its project.
 
 - **Approval:** new servers default to `ask`; `auto` is an explicit choice with a warning. After Test, the server page lists its tools, each set to Off, Ask, or Auto (default: the server mode). Auto is suggested, as a hint only, for tools annotated `readOnlyHint` (annotations are untrusted). Off tools are never sent to the model.
 - **Approval card:** Approve, Approve for this chat, Deny (with an optional reason passed to the model). Approvals are stored, so any device can answer them, and nothing waits in memory.
 - **Changed tools:** when a refresh changes any tool's name, description, or input schema, the server falls back to `ask` for every tool until the user reviews the change.
 - **Tool list cache:** Copilot stores each server's tool list (refreshed on Test, on expiry using the server's `ttlMs` capped at 24 hours, or 1 hour without one, and when a call reports an unknown tool), so building a request does not connect to every server. Changing a server's URL makes the next turn list the new URL first (a stale list from the old URL is never offered, and a list fetched from the old URL while the URL changed is never stored: Test then answers `TOOL_SERVER_CHANGED` and a turn reports the server unavailable) and puts every tool back to `ask` until the user reviews the server. A turn lists the servers it needs at most `MAX_PARALLEL_READS` at once; a server whose listing failed is listed again only after `TOOL_REFRESH_BACKOFF_SECS` (300; a settings change or Test clears the wait), and meanwhile its stale list is used when it came from the current URL, so a server that is down slows at most one turn every few minutes. The answer's `message.started` names the selected servers whose tools the turn goes without (`unavailable`), and the chat shows "Could not reach Docs. This answer has no tools from it."
-- **Authentication:** bearer token or custom headers in v1. A custom `Authorization` header is rejected when the bearer field is set.
+- **Authentication:** an auth mode per server: `none`, `headers` (a bearer token or custom headers; a custom `Authorization` header is rejected when the bearer field is set), or `oauth` (a sign-in, below). Headers exist only in `headers` mode and the OAuth client and sign-in only in `oauth` mode: switching modes drops the other mode's credentials, and credentials sent without a mode switch the server to `headers`.
+
+### Tool Server Sign-In
+
+Added after v0.1 (P7.2) for remote MCP servers that require OAuth, per the MCP authorization specification, revision `2026-07-28`. Decisions and their reasons: [tracks/p7-2.md](./tracks/p7-2.md).
+
+1. **Start** (`POST /tool-servers/{id}/oauth/start`, `oauth` mode only, and only with `PUBLIC_URL` set, else `SIGN_IN_UNAVAILABLE`). `copilot-mcp` (`McpAuth`, the `ToolAuth` port) sends an unauthenticated MCP request for the `401` challenge, reads the protected resource metadata (the challenge's `resource_metadata`, else the well-known URIs with the path inserted, then at the root), checks that its `resource` covers the server's URL (same origin, the URL's path at or below it), and reads the first listed authorization server's metadata from the RFC 8414 and OpenID Connect URLs in the specification's order. The metadata's `issuer` must equal the issuer it was fetched for, `code_challenge_methods_supported` must list `S256`, the token and registration endpoints must pass the outbound policy, and the authorization endpoint (opened in the user's browser) must be `https` (plain `http` only for a private-scope account).
+2. **Client id**, in the specification's order: the server's pre-registered client (id and optional secret, entered in its settings); this install's Client ID Metadata Document (`<PUBLIC_URL>/api/oauth/client`) when the authorization server advertises `client_id_metadata_document_supported`, `PUBLIC_URL` is `https`, and `OAUTH_CLIENT_METADATA` is on; dynamic registration (`client_name` Copilot, `application_type` `web`, or `native` for a loopback redirect URI); else `CLIENT_ID_REQUIRED`.
+3. **Flow.** Core makes a PKCE verifier and a `state` (32 random bytes each), stores the flow in `oauth_flows` for `SIGN_IN_FLOW_SECS` (600) with the `state` only as its SHA-256 and the verifier, recorded issuer, and token request sealed, replacing an unfinished flow of the same server, and answers the authorization URL: `response_type=code`, `client_id`, `redirect_uri` (`<PUBLIC_URL>/api/oauth/callback`), `code_challenge` (`S256`), `state`, `resource`, and `scope` (the challenge's `scope`, else the metadata's `scopes_supported`, plus `offline_access` when the authorization server lists it).
+4. **Callback** (`GET /api/oauth/callback`, public: the browser that returns carries no Copilot session). The `state` names the flow, which is deleted before anything else, so it works once; past its time it is `expired`. A present `iss` must equal the recorded issuer, and an absent one is refused when the issuer advertises `authorization_response_iss_parameter_supported` (RFC 9207); on a mismatch the `error` is not acted on. `error=access_denied` is `denied`. The server must still be the flow user's, in `oauth` mode, at the URL the flow started with. The code is exchanged (with the verifier, the redirect URI, and `resource`), and the tokens are sealed into the server's row. The browser goes on to `<PUBLIC_URL>/oauth/done?result=signed-in|denied|expired|failed&server=<id>`, a web page that needs no session; the authorization server's text is never shown or logged.
+5. **Use.** The engine and tests get the access token through `ToolEndpoint::tokens` (`AccessTokens`): one within `TOKEN_EXPIRY_SKEW_SECS` (60) of its expiry is refreshed first, and when the server answers `401` the adapter asks for a fresh token once (`rejected`) and reconnects, before a run or during one (the refused call never ran, so it is sent again). Refreshes of one server run one at a time, and one that finds the token already replaced uses the new one; a refresh is stored compare-and-set on the sealed bytes. A refresh the token endpoint refuses with an OAuth error (`OAUTH_REJECTED`) clears the sign-in, so the server needs sign-in (`SIGN_IN_REQUIRED`); any other failure keeps it. A `403` with `insufficient_scope` asks for a new sign-in; step-up scope accumulation is not implemented.
+6. **State** shown in Settings: `signed_in` (a good access token, or one that can be refreshed), `expired` (expired without a refresh token), `needs_sign_in` (never signed in, signed out, refresh rejected, a sign-in that no longer opens, or a new URL, since tokens are bound to their `resource`). Sign out (`DELETE /tool-servers/{id}/oauth`) forgets the sign-in; the authorization server keeps its grant until it expires.
+7. **Clients.** The web app opens the authorization URL in place of itself; the native apps' navigation guard hands it to the system browser, and the app checks the server every 3 seconds until it is signed in or 10 minutes pass.
+
+Residual risk: because the callback is public, a user of the same instance could send another user the authorization URL of a flow they started; completing it would sign the sender's server in with the receiver's account at the authorization server. The link works once and for 10 minutes, and the authorization server's consent screen comes first. Binding the callback to the browser that started it would need a session cookie, which the native apps cannot share with the system browser.
 
 ### Providers and Models
 
@@ -195,7 +209,7 @@ flowchart LR
 | `copilot-core` | Entities, value objects, services, ports, the conversation engine, the cron rule, the outbound address policy and client choice (`Outbound`, `Blocked`), the response size caps | none |
 | `copilot-database` | sqlx repositories, versioned JSON records, file bytes in `file_contents`, `migrate` (rustauth's migrations, then Copilot's) and `seed` binaries | repository ports |
 | `copilot-providers` | OpenAI-compatible (Chat Completions and Responses) and Anthropic wire protocols over reqwest with SSE parsing | `LlmGateway` |
-| `copilot-mcp` | MCP client over Streamable HTTP (rmcp) | `ToolHost` |
+| `copilot-mcp` | MCP client over Streamable HTTP (rmcp), and the OAuth requests of a tool server sign-in | `ToolHost`, `ToolAuth` |
 | `copilot-security` | AES-256-GCM sealing, the hardened outbound `reqwest::Client` builder (a DNS resolver and a peer check that apply the core address policy) | `SecretCipher` |
 | `copilot-contracts` | DTOs, `ChatStreamEvent`, `UserEvent`, Zod schemas (re-exports rustauth's for the web app) | none |
 | `copilot-middleware` | CORS (dev), errors, request id, request logger | none |
@@ -276,7 +290,7 @@ Copilot does not build accounts, passwords, sessions, roles, user administration
 | `schedule` | `Schedule`, `CronRule`, built-in schedule tools | `ScheduleRepository` |
 | `conversation` | `ChatEngine`, `context::build`, approval policy, `TurnEvent` | none (uses the ports above) |
 
-Ports used by several domains live in `core/src/ports/`: `Clock`, `SecretCipher`, `LlmGateway`, `ToolHost`, `TurnSink`. There is no logger port: core logs through the `tracing` facade (`copilot-logger` installs the subscriber), and `ports::logger` only holds the shared `LogLevel`. There are no identity ports: rustauth owns users, passwords, and tokens.
+Ports used by several domains live in `core/src/ports/`: `Clock`, `SecretCipher`, `LlmGateway`, `ToolHost`, `ToolAuth` (with `AccessTokens`, P7.2), `TurnSink`. There is no logger port: core logs through the `tracing` facade (`copilot-logger` installs the subscriber), and `ports::logger` only holds the shared `LogLevel`. There are no identity ports: rustauth owns users, passwords, and tokens.
 
 ### Value Objects
 
@@ -352,7 +366,16 @@ trait ToolSession {
     async fn call(&self, server_id: ToolServerId, name: &str, arguments: serde_json::Value, timeout: Duration) -> DomainResult<ToolOutput>;
     async fn close(self: Box<Self>);
 }
-struct ToolEndpoint { server_id, url: BaseUrl, headers: Option<Secret>, protocol_version: Option<String>, network: NetworkScope }
+struct ToolEndpoint { server_id, url: BaseUrl, headers: Option<Secret>, tokens: Option<TokenSource>, protocol_version: Option<String>, network: NetworkScope }
+trait AccessTokens {                                                            // core implements it on the stored sign-in (P7.2)
+    async fn current(&self) -> DomainResult<Secret>;                            // refreshed first when expired; Err(SIGN_IN_REQUIRED)
+    async fn rejected(&self, token: &Secret) -> DomainResult<Secret>;           // after a 401: a fresh token, or Err(SIGN_IN_REQUIRED)
+}
+trait ToolAuth {                                                                // copilot-mcp's McpAuth (P7.2)
+    async fn discover(&self, url: &BaseUrl, network: NetworkScope) -> DomainResult<Discovery>;
+    async fn register(&self, server: &AuthServer, registration: &Registration, network: NetworkScope) -> DomainResult<OAuthClient>;
+    async fn token(&self, request: &TokenRequest, network: NetworkScope) -> DomainResult<TokenSet>; // OAUTH_REJECTED for an OAuth error
+}
 struct ToolListing { tools: Vec<RemoteTool>, protocol_version: String, ttl: Option<Duration> }
 struct ToolOutput { content: Vec<ToolContent>, is_error: bool }               // core truncates to MCP_RESULT_MAX_BYTES
 enum ToolContent { Text(String), Image { media_type, data: Bytes }, Audio { media_type, data: Bytes }, Link { uri, name: Option<String> }, Binary { media_type: Option<String> } }
@@ -643,7 +666,7 @@ Every event has `type` and `seq` (per run).
 
 ## HTTP API (v1)
 
-All routes below are under `/api`. rustauth's guard requires `Authorization: Bearer <token>` on every route except rustauth's public routes (`GET /auth/setup`, `POST /auth/register`, `POST /auth/login`) and the docs. Lists use `ListResponse`, single items `DetailsResponse`, and `GET /chats` a cursor page (`PageResponse { items, next }`, where `next` goes back as `cursor` and is `null` on the last page). JSON fields are camelCase. Errors use the template's error body.
+All routes below are under `/api`. rustauth's guard requires `Authorization: Bearer <token>` on every route except rustauth's public routes (`GET /auth/setup`, `POST /auth/register`, `POST /auth/login`), the docs, and the two sign-in routes (`GET /oauth/callback`, `GET /oauth/client`, P7.2), which answer `404` without `PUBLIC_URL`. Lists use `ListResponse`, single items `DetailsResponse`, and `GET /chats` a cursor page (`PageResponse { items, next }`, where `next` goes back as `cursor` and is `null` on the last page). JSON fields are camelCase. Errors use the template's error body.
 
 | Area | Routes |
 | --- | --- |
@@ -655,7 +678,7 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
 | Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204; `after`), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
 | Search | `GET /search?q=` (titles and message text; returns `chatId`, `chatTitle`, `messageId`, `snippet`) |
-| Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list) |
+| Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes`, `authMode`, and `oauthClient` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list), `POST /tool-servers/{id}/oauth/start` (the authorization URL), `DELETE /tool-servers/{id}/oauth` (sign out); public: `GET /oauth/callback` (finishes a sign-in, `303` to `/oauth/done`) and `GET /oauth/client` (the Client ID Metadata Document) |
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |
 | Events | `GET /events` (SSE) |
 | Docs | `GET /doc` (OpenAPI), `GET /ui` |
@@ -665,7 +688,7 @@ Contracts (`copilot-contracts`, one module per route family) follow these rules 
 - Responses send every field, `null` for a missing value. Request fields with a default may be left out.
 - `PATCH` bodies change only the fields they carry; `null` clears a nullable field (for example `defaultModelId`, `reasoning`, a chat's `projectId` or `builtinTools`, a model's `contextWindow`, a tool server's `credentials`).
 - Enum values follow this spec's spelling: statuses, reasons, and modes in snake_case (`awaiting_approval`, `tool_limit`); part kinds and capability names in camelCase, like the fields they name (`toolCall`, `audioIn`).
-- Secrets only go in. Providers report `key` and tool servers `credentials` as `missing`, `set`, or `unreadable` (`KeyState`; lists report `set` without opening the secret), and `Debug` on request DTOs prints `***`.
+- Secrets only go in. Providers report `key` and tool servers `credentials` as `missing`, `set`, or `unreadable` (`KeyState`; lists report `set` without opening the secret), and `Debug` on request DTOs prints `***`. An `oauth` tool server reports `oauth: { state, clientId, clientSecret, expiresAt }` (`state`: `signed_in`, `expired`, `needs_sign_in`); tokens never appear.
 - `GET /providers/{id}` is the provider with `usage` beside its fields; `GET /projects/{id}` is the project with its `capacity` (`used`, `window`, `level`: `unknown`, `fits`, `warn`, `over`). Models carry the effective `capabilities`, the `detected` ones, `overrides`, and `locks` (`{capability, reason}`). Tool servers carry `toolModes`, the cached `tools` (`null` before a Test), and `reviewRequired`.
 - `GET /chats` also takes `scheduled` (schedule runs or the others) and `limit`; `GET /projects` takes `pinned` and `limit`; `GET /schedules` takes `projectId`. List rows of chats (`ChatSummaryResponse`) carry `unread` and `awaitingApproval`.
 - `MessagePartDto` is tagged by `type` (`text`, `file`, `audio`, `reasoning`, `toolCall`, `toolResult`) and names calls by `callId`; it never carries `provider_state`, provider call ids, or aliases. Tool results and `tool.finished` output share `ResultContent` (`text`, or `image` with a `fileId`).
@@ -754,10 +777,28 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `slug` | `text` | not null; `^[a-z0-9]{1,12}$`; `UNIQUE (user_id, slug)`; immutable |
 | `url` | `text` | not null |
 | `approval` | `text` | not null, default `ask`; `ask` or `auto` |
-| `headers_sealed` | `bytea` | null; sealed JSON map of the bearer token and custom headers |
+| `headers_sealed` | `bytea` | null; sealed JSON map of the bearer token and custom headers; only in `headers` mode |
 | `protocol_version` | `text` | null; negotiated MCP revision |
 | `tool_modes` | `jsonb` | not null, default `'{}'`; tool name to `off`, `ask`, or `auto` |
 | `tools_cached` | `jsonb` | null; last `tools/list` result with `ttlMs` |
+| `oauth_expires_at` | `timestamptz` | null; when the sign-in's access token expires (P7.2, appended) |
+| `oauth_refreshable` | `boolean` | not null, default false; the sign-in holds a refresh token (appended) |
+| `auth_mode` | `text` | not null, default `none`; `none`, `headers`, or `oauth`; a `CHECK` keeps each mode's columns to that mode |
+| `oauth_client_id` | `text` | null; a pre-registered OAuth client id the user entered |
+| `oauth_client_secret_sealed` | `bytea` | null; its secret, sealed (needs `oauth_client_id`) |
+| `oauth_tokens_sealed` | `bytea` | null; the sealed sign-in: access and refresh tokens with the issuer, token endpoint, client, resource, and scope a refresh needs. Settings writes never store it and clear it only when the mode leaves `oauth` or the URL changes |
+
+#### `oauth_flows`
+
+Sign-ins in progress (P7.2); the readonly role reads none of it.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `created_at`, `expires_at` | `timestamptz` | not null; a flow lives `SIGN_IN_FLOW_SECS`; expired rows go when the next sign-in starts |
+| `id` | `uuid` | primary key; the row `sealed` is bound to |
+| `user_id`, `tool_server_id` | `uuid` | not null; `FOREIGN KEY (tool_server_id, user_id) REFERENCES tool_servers (id, user_id) ON DELETE CASCADE`; `UNIQUE (tool_server_id)` (a new start replaces the flow) |
+| `state_hash` | `bytea` | not null, unique; SHA-256 of the `state` (32 bytes) |
+| `sealed` | `bytea` | not null; the PKCE verifier, recorded issuer, and token request, sealed |
 
 #### `projects`
 
@@ -928,7 +969,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Readonly Role
 
-`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, and `tools_cached`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
+`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, `tools_cached`, `oauth_client_id`, `oauth_client_secret_sealed`, and `oauth_tokens_sealed`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, `oauth_flows`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
 
 ### Portability
 
@@ -949,7 +990,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 - Sealed format: version byte (`1`) || key id (1 byte) || 12-byte nonce || AES-256-GCM ciphertext with its 16-byte tag. AAD = `<table>.<column>:<row id>:<user_id>`, so a value copied into another row does not decrypt. The key id is the first byte of `SHA-256("copilot.secret-key.id" || key)`, so a later keyring finds the sealing key without a migration, and a changed key reads as "Key must be re-entered" before any decryption. Nonces are random (`getrandom`), one per seal. Every value that does not open (wrong version, key id, AAD, or tag, or truncated) gives `SECRET_UNREADABLE` and logs `security.seal.open.refused` with the reason, table, and column.
 - `SECRET_KEY` is required in every environment and must decode (standard base64, surrounding whitespace ignored) to exactly 32 bytes, or startup fails with `api.config.env.invalid SECRET_KEY` (`copilot_security::SecretKey::parse`). The decoded bytes and the key schedule are zeroized on drop.
 - If unsealing fails (key changed), the provider or tool server shows "Key must be re-entered" instead of a 500.
-- Responses never include secrets, only whether one is set.
+- Responses never include secrets, only whether one is set. OAuth access and refresh tokens, a pre-registered client's secret, and a sign-in flow's PKCE verifier are sealed like keys (`oauth_tokens_sealed`, `oauth_client_secret_sealed`, `oauth_flows.sealed`, each bound to its row); a flow's `state` is stored only as its SHA-256.
 - When a `PATCH` changes the origin (scheme, host, or port) of a provider base URL or a tool server URL, the service clears the sealed key or headers unless the same request supplies new ones; the UI says the key must be re-entered.
 
 ### Outbound Requests
@@ -962,6 +1003,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 6. `redirect::Policy::none()` and `.no_proxy()` on every client; `connect_timeout` `OUTBOUND_CONNECT_TIMEOUT_SECS` (10); `read_timeout` as an idle timeout (`PROVIDER_IDLE_TIMEOUT_SECS`, 300, for providers; `MCP_IDLE_TIMEOUT_SECS`, 60, for MCP); no total timeout (it would cut streams); `pool_max_idle_per_host(0)` for MCP. The MCP set is `clients(Purpose::Tools)`, the provider set `clients(Purpose::Providers)`.
 7. Response caps: `MCP_RESPONSE_MAX_BYTES` (4 MiB) passed to rmcp's `max_json_response_size` and `max_sse_event_size`; the same per-event cap on provider SSE through core's `cap_events` (bytes between blank lines, LF, CRLF, or CR line endings), and whole provider bodies through `read_capped` (a larger `Content-Length` fails before reading). A streamed answer as a whole is capped by the engine (see [Limits](#limits)), whatever the provider does with the token limit it was sent.
 8. Failed fetches never echo response bodies or resolved IPs to the client; they are logged as `provider.http.blocked`, `mcp.http.blocked` (when `Blocked::find` finds a refusal in the error's source chain), or `*.http.failed`.
+9. OAuth requests of a sign-in (P7.2: the probe, resource and authorization server metadata, registration, token, and refresh) use the MCP clients, each request picking its client for its own URL and the account's network scope, so URLs that a server hands back follow the same rules as its own URL. Each has `OAUTH_TIMEOUT_SECS` (15) and answers are capped at `OAUTH_RESPONSE_MAX_BYTES` (64 KiB); logs (`mcp.oauth.*`) carry step names, statuses, and failure kinds, never a URL, code, token, secret, or server text.
 
 ### Tools and Prompt Injection
 
@@ -1031,6 +1073,8 @@ Template variables stay (`ENVIRONMENT`, `HOST`, `PORT`, `LOG_LEVEL`, `CORS_ALLOW
 | `MAX_UPLOAD_MB` | `25` | Per-file upload limit, 1 to 1000 (a file is one Postgres value, at most 1 GB) |
 | `MAX_STORAGE_MB_PER_USER` | `1024` | Total file storage per user, 1 to 1048576 |
 | `WEB_DIR` | unset | Directory of the built web bundle to serve (must hold `index.html`); the image sets `/app/web` |
+| `PUBLIC_URL` | unset | The origin people reach the server at (`https`, or plain `http` on a loopback host only), for tool server sign-in: the callback and the page it returns to. Unset: sign-in is off (P7.2) |
+| `OAUTH_CLIENT_METADATA` | `true` | Whether an `https` `PUBLIC_URL` serves `<PUBLIC_URL>/api/oauth/client` as the client id to authorization servers that accept Client ID Metadata Documents; `false` when they cannot reach this server (P7.2) |
 
 Identity variables are rustauth's, read by `AuthConfig::parse` in the composition root. Copilot documents them in the same two files:
 
@@ -1060,6 +1104,8 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`, `MCP_LIST_MAX_PAGES`, `MCP_TOOLS_MAX` | 15 (one connection attempt), 30 (a whole listing), 5 (closing), 16, 512 (tools one server may list; more fails the listing with `TOOL_SERVER_TOO_LARGE`) |
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
+| `SIGN_IN_FLOW_SECS`, `TOKEN_EXPIRY_SKEW_SECS` | 600 (a sign-in in progress), 60 (an access token this close to expiry is refreshed first) |
+| `OAUTH_TIMEOUT_SECS`, `OAUTH_RESPONSE_MAX_BYTES`, `OAUTH_CLIENT_MAX_CHARS` | 15, 65536, 512 |
 | `MAX_TOOL_ROUNDS` | 8 |
 | `ANSWER_SLACK`, `ANSWER_MAX_BYTES`, `ANSWER_MAX_PARTS` | 4, 8 MiB, 256 |
 | `AUDIO_OUT_MAX_BYTES`, `AUDIO_OUT_SAMPLE_RATE` | 14400000 (five minutes of 24 kHz PCM16, checked in P2.B against OpenAI's `pcm16` output), 24000 (the rate the saved WAV file states) |

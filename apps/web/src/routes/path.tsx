@@ -35,6 +35,8 @@ const path = {
   welcome: "/welcome",
   /** Native builds: choose the server. */
   connect: "/connect",
+  /** Where a tool server's OAuth sign-in comes back to (P7.2); needs no session. */
+  oauthDone: "/oauth/done",
 
   notFound: "*",
 } as const;

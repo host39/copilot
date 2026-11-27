@@ -8,13 +8,17 @@ import { resetTransport, setTransport } from "@web/api/client";
 import { keys } from "@web/api/routes/keys";
 import { clearToken, setToken } from "@web/auth/token";
 import { fieldErrors } from "@web/forms";
+import SignInDonePage from "@web/routes/oauth-done/page";
 import path from "@web/routes/path";
 import {
   addServer,
+  clientProblem,
+  clientSchema,
   credentials,
   credentialsProblem,
   credentialsSchema,
   type HeaderRow,
+  NO_CREDENTIALS,
   serverSchema,
   settingsSchema,
 } from "@web/routes/settings/tool-server/forms";
@@ -26,6 +30,12 @@ import {
   testSummary,
 } from "@web/routes/settings/tool-server/modes";
 import ToolServerPage from "@web/routes/settings/tool-server/page";
+import {
+  doneMessage,
+  needsSignIn,
+  openSignIn,
+  signInBadge,
+} from "@web/routes/settings/tool-server/sign-in";
 import ToolServersPage from "@web/routes/settings/tool-servers/page";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -130,14 +140,24 @@ describe("credentials", () => {
   });
 });
 
+const oauthServer: ToolServerResponse = {
+  ...server,
+  credentials: "missing",
+  authMode: "oauth",
+  oauth: { state: "needs_sign_in", clientId: null, clientSecret: "missing", expiresAt: null },
+};
+
 describe("the server forms", () => {
   const input = {
     name: "Docs",
     slug: "",
     url: "https://mcp.example.com/mcp",
     approval: "ask",
+    auth: "none",
     bearer: "",
     rows: [],
+    clientId: "",
+    clientSecret: "",
   };
 
   test("adding needs a name and an http address; the slug is short", () => {
@@ -151,13 +171,20 @@ describe("the server forms", () => {
 
   test("adding sends the credentials, and a slug or token only when given", () => {
     expect(parse(serverSchema, input)).toEqual({
-      value: { name: "Docs", url: "https://mcp.example.com/mcp", approval: "ask", headers: {} },
+      value: {
+        name: "Docs",
+        url: "https://mcp.example.com/mcp",
+        approval: "ask",
+        authMode: "none",
+        headers: {},
+      },
     });
     expect(
       parse(serverSchema, {
         ...input,
         slug: "docs2",
         approval: "auto",
+        auth: "headers",
         bearer: "tok",
         rows: [row("X-Team", "a")],
       })
@@ -166,10 +193,74 @@ describe("the server forms", () => {
         name: "Docs",
         url: "https://mcp.example.com/mcp",
         approval: "auto",
+        authMode: "headers",
         headers: { "X-Team": "a" },
         slug: "docs2",
         bearer: "tok",
       },
+    });
+  });
+
+  test("only the chosen authentication's fields are sent, and headers mode needs some", () => {
+    expect(parse(serverSchema, { ...input, auth: "headers" })).toEqual({
+      errors: { bearer: NO_CREDENTIALS },
+    });
+    expect(parse(serverSchema, { ...input, bearer: "tok", clientId: "client" })).toEqual({
+      value: {
+        name: "Docs",
+        url: "https://mcp.example.com/mcp",
+        approval: "ask",
+        authMode: "none",
+        headers: {},
+      },
+    });
+    expect(
+      parse(serverSchema, {
+        ...input,
+        auth: "oauth",
+        bearer: "tok",
+        clientId: " client-1 ",
+        clientSecret: " s3cret ",
+      })
+    ).toEqual({
+      value: {
+        name: "Docs",
+        url: "https://mcp.example.com/mcp",
+        approval: "ask",
+        authMode: "oauth",
+        headers: {},
+        oauthClient: { clientId: "client-1", clientSecret: "s3cret" },
+      },
+    });
+    expect(parse(serverSchema, { ...input, auth: "oauth" })).toEqual({
+      value: {
+        name: "Docs",
+        url: "https://mcp.example.com/mcp",
+        approval: "ask",
+        authMode: "oauth",
+        headers: {},
+      },
+    });
+  });
+
+  test("a pre-registered client is one word, and a secret needs it", () => {
+    expect(clientProblem("", "")).toBeUndefined();
+    expect(clientProblem("", "secret")).toBe("Enter the client ID this secret belongs to.");
+    expect(clientProblem("two words", "")).toBe(
+      "The OAuth client ID must be one word of at most 512 characters."
+    );
+    expect(clientProblem("x".repeat(513), "")).toBe(
+      "The OAuth client ID must be one word of at most 512 characters."
+    );
+    expect(clientProblem("client", "a\nb")).toBe(
+      "The OAuth client secret must be one line of at most 512 characters."
+    );
+    expect(parse(clientSchema, { clientId: "client", clientSecret: "" })).toEqual({
+      value: { clientId: "client" },
+    });
+    expect(parse(clientSchema, { clientId: " ", clientSecret: "" })).toEqual({ value: null });
+    expect(parse(clientSchema, { clientId: "a b", clientSecret: "" })).toEqual({
+      errors: { clientId: "The OAuth client ID must be one word of at most 512 characters." },
     });
   });
 
@@ -257,6 +348,29 @@ describe("adding and testing a server", () => {
     expect(added.test?.changes.added).toEqual(["search"]);
   });
 
+  test("a server that signs in is not tested before its sign-in", async () => {
+    setTransport({
+      server: () => "",
+      token: () => "token",
+      fetch: async (url) => {
+        urls.push(url);
+        return new Response(JSON.stringify({ data: oauthServer }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    const added = await addServer({
+      name: "Docs",
+      url: server.url,
+      headers: {},
+      authMode: "oauth",
+    });
+    expect(urls).toEqual(["/api/tool-servers"]);
+    expect(added.test).toBeUndefined();
+    expect(added.problem).toBeUndefined();
+  });
+
   test("a failed test keeps the server and says why", async () => {
     serve(
       new Response(JSON.stringify({ error: "The tool server cannot be reached." }), {
@@ -319,14 +433,51 @@ describe("the tool server screens", () => {
     expect(html).toContain(`href="${path.toolServerNew}"`);
   });
 
-  test("the add screen asks for the address, credentials, and approval, Ask first", () => {
+  test("the add screen asks for the address, authentication, and approval, Ask first", () => {
     const html = render(path.toolServerNew, []);
     expect(html).toContain("Add Tool Server");
     expect(html).toContain('name="url"');
-    expect(html).toContain('name="bearer"');
-    expect(html).toContain("Add header");
+    expect(checked(html, "authMode", "none")).toBe(true);
+    expect(html).toContain("Token or headers");
+    expect(html).toContain("Sign in");
+    expect(html).not.toContain('name="bearer"');
     expect(checked(html, "approval", "ask")).toBe(true);
     expect(html).not.toContain("Auto lets the model run");
+  });
+
+  test("an OAuth server shows its sign-in state and the sign-in controls", () => {
+    const html = render(`/settings/tools/${ID}`, [[keys.toolServer(ID), oauthServer]]);
+    expect(checked(html, "authMode", "oauth")).toBe(true);
+    expect(html).toContain("Needs sign-in");
+    expect(html).toContain(">Sign in<");
+    expect(html).not.toContain("Sign out");
+    expect(html).toContain('name="clientId"');
+    expect(html).not.toContain('name="bearer"');
+
+    const signedIn = render(`/settings/tools/${ID}`, [
+      [
+        keys.toolServer(ID),
+        {
+          ...oauthServer,
+          oauth: {
+            state: "signed_in",
+            clientId: "copilot-client",
+            clientSecret: "set",
+            expiresAt: AT,
+          },
+        },
+      ],
+    ]);
+    expect(signedIn).toContain(">Signed in<");
+    expect(signedIn).toContain("Sign in again");
+    expect(signedIn).toContain("Sign out");
+    expect(signedIn).toContain('value="copilot-client"');
+    expect(signedIn).toContain("A secret is stored.");
+  });
+
+  test("the list names servers that need a sign-in", () => {
+    const html = render(path.toolServers, [[keys.toolServers, [oauthServer]]]);
+    expect(html).toContain("Needs sign-in");
   });
 
   test("a server shows its tools with their modes, settings, credentials, and delete", () => {
@@ -352,5 +503,54 @@ describe("the tool server screens", () => {
     expect(html).toContain("Accept changes");
     expect(html).toContain("The connection test failed: The tool server cannot be reached.");
     expect(html).toContain("No tools listed yet.");
+  });
+});
+
+describe("sign-in", () => {
+  test("states read as badges, and only a usable sign-in counts", () => {
+    expect(signInBadge("signed_in")).toEqual({ label: "Signed in", tone: "ok" });
+    expect(signInBadge("expired").label).toBe("Expired: sign in again");
+    expect(signInBadge("needs_sign_in").label).toBe("Needs sign-in");
+    expect(needsSignIn(oauthServer)).toBe(true);
+    expect(
+      needsSignIn({
+        ...oauthServer,
+        oauth: { state: "signed_in", clientId: null, clientSecret: "missing", expiresAt: null },
+      })
+    ).toBe(false);
+    expect(needsSignIn(server)).toBe(false);
+  });
+
+  test("opens the authorization page in place of the app", () => {
+    const opened: string[] = [];
+    openSignIn("https://auth.example.com/authorize?state=s", {
+      assign: (url: string | URL) => {
+        opened.push(String(url));
+      },
+    });
+    expect(opened).toEqual(["https://auth.example.com/authorize?state=s"]);
+  });
+
+  test("the done page says how the sign-in ended and links only a server id", () => {
+    expect(doneMessage("signed-in").title).toBe("Signed in");
+    expect(doneMessage("denied").title).toBe("Sign-in cancelled");
+    expect(doneMessage("expired").title).toBe("Sign-in expired");
+    expect(doneMessage("failed").title).toBe("Sign-in failed");
+    expect(doneMessage("<script>").title).toBe("Sign-in failed");
+    expect(doneMessage(null).title).toBe("Sign-in failed");
+
+    const page = (query: string) =>
+      renderToString(
+        <MemoryRouter initialEntries={[`${path.oauthDone}?${query}`]}>
+          <Routes>
+            <Route path={path.oauthDone} element={<SignInDonePage />} />
+          </Routes>
+        </MemoryRouter>
+      );
+    const done = page(`result=signed-in&server=${ID}`);
+    expect(done).toContain("Signed in");
+    expect(done).toContain("Open the tool server");
+    const forged = page("result=signed-in&server=javascript:alert(1)");
+    expect(forged).not.toContain("Open the tool server");
   });
 });

@@ -1,10 +1,13 @@
 // The tool server forms of Settings: credentials (a bearer token and custom headers, checked with
-// the server's rules before sending), the server's own settings, and adding a server.
+// the server's rules before sending), a pre-registered OAuth client, the server's own settings,
+// and adding a server.
 
 import type {
   ApprovalMode,
+  AuthMode,
   CreateToolServerRequest,
   Credentials,
+  OAuthClientInput,
   ToolServerResponse,
   ToolTestResponse,
   UpdateToolServerRequest,
@@ -38,6 +41,9 @@ const CONTROL = /(?!\t)\p{Cc}/u;
 
 /** Longest slug the server accepts. */
 export const SLUG_MAX_CHARS = 12;
+
+/** Longest OAuth client id or secret the server accepts. */
+export const OAUTH_CLIENT_MAX_CHARS = 512;
 
 /** Why one header is refused, with the server's message; `seen` holds the lowercase names before it. */
 function headerProblem(
@@ -85,6 +91,46 @@ export function credentialsProblem(
   return undefined;
 }
 
+/** The message when `Token or headers` has neither. */
+export const NO_CREDENTIALS = "Enter a bearer token or at least one header.";
+
+/**
+ * Why a pre-registered OAuth client is refused, with the server's messages, or `undefined`. A
+ * blank id means no client; a secret needs an id.
+ */
+export function clientProblem(clientId: string, clientSecret: string): string | undefined {
+  const id = clientId.trim();
+  const secret = clientSecret.trim();
+  if (id === "") return secret === "" ? undefined : "Enter the client ID this secret belongs to.";
+  if (Array.from(id).length > OAUTH_CLIENT_MAX_CHARS || /[\s\p{Cc}]/u.test(id)) {
+    return `The OAuth client ID must be one word of at most ${OAUTH_CLIENT_MAX_CHARS} characters.`;
+  }
+  if (Array.from(secret).length > OAUTH_CLIENT_MAX_CHARS || /\p{Cc}/u.test(secret)) {
+    return `The OAuth client secret must be one line of at most ${OAUTH_CLIENT_MAX_CHARS} characters.`;
+  }
+  return undefined;
+}
+
+/** The client the fields make, or `undefined` for a blank id. A blank secret is left out. */
+export function oauthClient(clientId: string, clientSecret: string): OAuthClientInput | undefined {
+  const id = clientId.trim();
+  if (id === "") return undefined;
+  const secret = clientSecret.trim();
+  return secret === "" ? { clientId: id } : { clientId: id, clientSecret: secret };
+}
+
+/**
+ * The OAuth client form of an OAuth server; parses to the `oauthClient` of a `PATCH` (`null`
+ * for a blank id, which removes the stored client).
+ */
+export const clientSchema = z
+  .object({ clientId: z.string(), clientSecret: z.string() })
+  .superRefine((input, context) => {
+    const problem = clientProblem(input.clientId, input.clientSecret);
+    if (problem) context.addIssue({ code: "custom", path: ["clientId"], message: problem });
+  })
+  .transform((input) => oauthClient(input.clientId, input.clientSecret) ?? null);
+
 /** The credentials the rows and token make: blank rows and a blank token are left out. */
 export function credentials(bearer: string, rows: readonly HeaderRow[]): Credentials {
   const headers: Record<string, string> = {};
@@ -116,7 +162,12 @@ const url = z.string().trim().refine(isHttp, "Enter a full http:// or https:// a
 
 const approval = z.enum(["ask", "auto"]);
 
-/** The add-server form; parses to the `POST /tool-servers` body. */
+const authMode = z.enum(["none", "headers", "oauth"]);
+
+/**
+ * The add-server form; parses to the `POST /tool-servers` body. Only the chosen authentication's
+ * fields are sent: a token or headers for `headers` (one of them needed), a client for `oauth`.
+ */
 export const serverSchema = z
   .object({
     name,
@@ -129,25 +180,47 @@ export const serverSchema = z
       ),
     url,
     approval,
+    auth: authMode,
     bearer: z.string(),
     rows: z.array(z.custom<HeaderRow>()),
+    clientId: z.string(),
+    clientSecret: z.string(),
   })
   .superRefine((input, context) => {
-    const problem = credentialsProblem(input.bearer, input.rows);
-    if (problem)
-      context.addIssue({ code: "custom", path: [problem.field], message: problem.message });
+    if (input.auth === "headers") {
+      const problem = credentialsProblem(input.bearer, input.rows);
+      if (problem) {
+        context.addIssue({ code: "custom", path: [problem.field], message: problem.message });
+      } else if (isEmpty(credentials(input.bearer, input.rows))) {
+        context.addIssue({ code: "custom", path: ["bearer"], message: NO_CREDENTIALS });
+      }
+    }
+    if (input.auth === "oauth") {
+      const problem = clientProblem(input.clientId, input.clientSecret);
+      if (problem) context.addIssue({ code: "custom", path: ["clientId"], message: problem });
+    }
   })
   .transform((input): CreateToolServerRequest => {
-    const { bearer, headers } = credentials(input.bearer, input.rows);
+    const { bearer, headers } =
+      input.auth === "headers" ? credentials(input.bearer, input.rows) : { headers: {} };
+    const client =
+      input.auth === "oauth" ? oauthClient(input.clientId, input.clientSecret) : undefined;
     return {
       name: input.name,
       url: input.url,
       approval: input.approval,
+      authMode: input.auth as AuthMode,
       headers,
       ...(input.slug ? { slug: input.slug } : {}),
       ...(bearer ? { bearer } : {}),
+      ...(client ? { oauthClient: client } : {}),
     };
   });
+
+/** Credentials without a token or a header. */
+export function isEmpty(value: Credentials): boolean {
+  return value.bearer === undefined && Object.keys(value.headers ?? {}).length === 0;
+}
 
 /** The Server form of an existing server; parses to a `PATCH` body with only what changed. */
 export function settingsSchema(server: ToolServerResponse) {
@@ -173,10 +246,12 @@ export type AddedState = Pick<Added, "test" | "problem">;
 
 /**
  * Registers a server, then tests it (connects and lists its tools). A failed test keeps the
- * server, so the user can fix the address or credentials.
+ * server, so the user can fix the address or credentials. A server that signs in with OAuth is
+ * not tested: it has no sign-in yet, and its page offers one.
  */
 export async function addServer(body: CreateToolServerRequest): Promise<Added> {
   const server = await createToolServer(body);
+  if (server.authMode === "oauth") return { server };
   try {
     return { server, test: await testToolServer(server.id) };
   } catch (error) {
