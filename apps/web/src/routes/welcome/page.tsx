@@ -1,56 +1,36 @@
-import type { Preset, ProviderKind } from "@copilot/contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { describeError } from "@web/api/errors";
+import { keys } from "@web/api/routes/keys";
+import { fetchProviderModels, refreshProvider } from "@web/api/routes/providers";
 import { useUser } from "@web/auth/session";
 import Button from "@web/components/Button/Button";
-import { TextField } from "@web/components/Form/TextField";
+import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
+import { ModelRow } from "@web/components/Settings/ModelRow";
+import { ProviderFields, providerValues } from "@web/components/Settings/ProviderFields";
+import { QueryState } from "@web/components/Settings/QueryState";
+import { useSubmit } from "@web/hooks/useSubmit";
 import path from "@web/routes/path";
-import { useState } from "react";
-import { LuCheck } from "react-icons/lu";
-import { Link } from "react-router-dom";
-
-type Choice = {
-  id: string;
-  label: string;
-  kind: ProviderKind;
-  preset: Preset;
-  /** What the user types: a key, an address, or both. */
-  asks: "key" | "url" | "both";
-  urlHint?: string;
-};
-
-/** The spec's presets: a key for hosted providers, an address for Ollama and custom servers. */
-const CHOICES: Choice[] = [
-  { id: "openai", label: "OpenAI", kind: "openai", preset: "openai", asks: "key" },
-  { id: "anthropic", label: "Anthropic", kind: "anthropic", preset: "anthropic", asks: "key" },
-  { id: "gemini", label: "Gemini", kind: "openai", preset: "gemini", asks: "key" },
-  { id: "openrouter", label: "OpenRouter", kind: "openai", preset: "openrouter", asks: "key" },
-  {
-    id: "ollama",
-    label: "Ollama",
-    kind: "openai",
-    preset: "ollama",
-    asks: "url",
-    urlHint: "http://localhost:11434/v1",
-  },
-  {
-    id: "custom-openai",
-    label: "OpenAI-compatible",
-    kind: "openai",
-    preset: "custom",
-    asks: "both",
-    urlHint: "https://llm.example.com/v1",
-  },
-  {
-    id: "custom-anthropic",
-    label: "Anthropic-compatible",
-    kind: "anthropic",
-    preset: "custom",
-    asks: "both",
-    urlHint: "https://gateway.example.com",
-  },
-];
+import { filterModels } from "@web/routes/settings/provider/models";
+import { providerSchema, refreshSummary } from "@web/routes/settings/providers/presets";
+import {
+  firstModel,
+  initialSetup,
+  keepsKey,
+  type SetupEvent,
+  type SetupState,
+  type StartState,
+  saveConnection,
+  setupReducer,
+} from "@web/routes/welcome/setup";
+import { type Dispatch, useEffect, useReducer, useRef, useState } from "react";
+import { LuCheck, LuLoaderCircle, LuSearch } from "react-icons/lu";
+import { Link, useNavigate } from "react-router-dom";
 
 const STEPS = ["Connect a provider", "Test", "Choose models"] as const;
+
+/** Models shown at a time in step 3. */
+const MODELS_PAGE = 50;
 
 function Steps({ current }: { current: number }) {
   return (
@@ -70,7 +50,10 @@ function Steps({ current }: { current: number }) {
             />
             <span className="flex items-center gap-1">
               {done ? <LuCheck aria-hidden className="text-accent" /> : null}
-              <span className={active ? "font-medium" : ""}>{label}</span>
+              <span className={active ? "font-medium" : ""}>
+                {label}
+                {done ? <span className="sr-only"> (done)</span> : null}
+              </span>
             </span>
           </li>
         );
@@ -79,15 +62,218 @@ function Steps({ current }: { current: number }) {
   );
 }
 
+type StepProps = { state: SetupState; dispatch: Dispatch<SetupEvent> };
+
+/** Tests the saved connection by listing its models. */
+function useTest(dispatch: StepProps["dispatch"]) {
+  const client = useQueryClient();
+  return async (providerId: string) => {
+    try {
+      const report = await refreshProvider(providerId);
+      void client.invalidateQueries({ queryKey: keys.providers });
+      void client.invalidateQueries({ queryKey: keys.models });
+      dispatch({ type: "tested", report });
+    } catch (error) {
+      dispatch({ type: "failed", problem: describeError(error).message });
+    }
+  };
+}
+
+function Connect({ state, dispatch }: StepProps) {
+  const client = useQueryClient();
+  const test = useTest(dispatch);
+  const keep = keepsKey(state);
+  const form = useSubmit(
+    providerSchema(state.pick, keep),
+    (body) => saveConnection(state.provider, body),
+    (provider) => {
+      void client.invalidateQueries({ queryKey: keys.providers });
+      dispatch({ type: "saved", provider });
+      void test(provider.id);
+    }
+  );
+
+  return (
+    <form
+      noValidate
+      className="space-y-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void form.submit(providerValues(new FormData(event.currentTarget)));
+      }}
+    >
+      <FormAlert>{form.alert}</FormAlert>
+      {keep ? (
+        <p className="text-sm text-muted">Leave the key empty to keep the one you entered.</p>
+      ) : null}
+      <ProviderFields
+        pick={state.pick}
+        onPick={(pick) => dispatch({ type: "pick", pick })}
+        errors={form.errors}
+        askName={false}
+        baseUrl={
+          state.provider?.kind === state.pick.kind && state.provider.preset === state.pick.preset
+            ? state.provider.baseUrl
+            : undefined
+        }
+      />
+      <div className="flex justify-end">
+        <Button type="submit" busy={form.busy} disabled={form.wait > 0}>
+          Continue
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function Test({ state, dispatch }: StepProps) {
+  const test = useTest(dispatch);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const status = state.test.status;
+
+  // Move focus to the outcome, so screen reader and keyboard users land on it.
+  useEffect(() => {
+    if (status === "passed" || status === "failed") heading.current?.focus();
+  }, [status]);
+
+  return (
+    <div className="space-y-4">
+      <h2 ref={heading} tabIndex={-1} className="text-base font-semibold outline-none">
+        {status === "passed"
+          ? "Connected"
+          : status === "failed"
+            ? "The test failed"
+            : `Testing ${state.pick.label}`}
+      </h2>
+      {status === "running" ? (
+        <p className="flex items-center gap-2 text-sm text-muted" role="status">
+          <LuLoaderCircle aria-hidden className="size-4 animate-spin" />
+          Asking the provider for its models.
+        </p>
+      ) : null}
+      {state.test.status === "passed" ? (
+        <p role="status" className="text-sm">
+          {refreshSummary(state.test.report)}
+        </p>
+      ) : null}
+      {state.test.status === "failed" ? (
+        <FormAlert>{`${state.test.problem} Go back to check the key or address, then test again.`}</FormAlert>
+      ) : null}
+      <div className="flex flex-wrap justify-between gap-2">
+        <Button
+          variant="secondary"
+          disabled={status === "running"}
+          onClick={() => dispatch({ type: "back" })}
+        >
+          Back
+        </Button>
+        {status === "failed" || status === "idle" ? (
+          <Button
+            onClick={() => {
+              if (!state.provider) return;
+              dispatch({ type: "retest" });
+              void test(state.provider.id);
+            }}
+          >
+            {status === "idle" ? "Test connection" : "Test again"}
+          </Button>
+        ) : (
+          <Button disabled={status !== "passed"} onClick={() => dispatch({ type: "next" })}>
+            Continue
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Models({ state, dispatch }: StepProps) {
+  const providerId = state.provider?.id ?? "";
+  const navigate = useNavigate();
+  const models = useQuery({
+    queryKey: keys.providerModels(providerId),
+    queryFn: ({ signal }) => fetchProviderModels(providerId, signal),
+    enabled: providerId !== "",
+  });
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(MODELS_PAGE);
+  const all = models.data ?? [];
+  const shown = filterModels(all, query, "all");
+  const first = firstModel(all);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold">Choose models</h2>
+      <p className="text-sm text-muted">
+        {all.length > 20
+          ? "This provider offers many models. Turn on the ones you want in the model picker."
+          : "Every model is turned on. Turn off the ones you do not want in the model picker."}
+      </p>
+      <QueryState query={models}>
+        {all.length > 20 ? (
+          <div className="relative">
+            <label htmlFor="setup-search" className="sr-only">
+              Search models
+            </label>
+            <LuSearch
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
+            />
+            <input
+              id="setup-search"
+              type="search"
+              value={query}
+              placeholder="Search models"
+              autoComplete="off"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setLimit(MODELS_PAGE);
+              }}
+              className="field-input mt-0 pl-9"
+            />
+          </div>
+        ) : null}
+        {all.length === 0 ? (
+          <p className="text-sm text-muted">The provider listed no models.</p>
+        ) : (
+          <ul className="max-h-[50dvh] divide-y divide-line overflow-y-auto">
+            {shown.slice(0, limit).map((model) => (
+              <ModelRow key={model.id} model={model} editable={false} />
+            ))}
+          </ul>
+        )}
+        {shown.length > limit ? (
+          <Button variant="secondary" onClick={() => setLimit(limit + MODELS_PAGE)}>
+            Show more ({shown.length - limit} left)
+          </Button>
+        ) : null}
+      </QueryState>
+      <div className="flex flex-wrap justify-between gap-2">
+        <Button variant="secondary" onClick={() => dispatch({ type: "back" })}>
+          Back
+        </Button>
+        <Button
+          disabled={first === undefined}
+          onClick={() => {
+            const start: StartState = { modelId: first?.id };
+            navigate(path.home, { replace: true, state: start });
+          }}
+        >
+          Start chatting
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /**
- * First-run setup: (1) pick a preset and paste a key, or enter an Ollama address; (2) test it;
- * (3) choose models. This is the shell of the three steps; the provider routes behind steps 2
- * and 3 come with the Providers settings.
+ * First-run setup: (1) pick a preset and paste a key, or enter an Ollama address; (2) test the
+ * connection by listing its models; (3) choose models (all turned on when the provider lists 20 or
+ * fewer). It ends in a new chat with the first model turned on.
  */
 export default function WelcomePage() {
   const user = useUser();
-  const [step, setStep] = useState(0);
-  const [choice, setChoice] = useState<Choice>(CHOICES[0] as Choice);
+  const [state, dispatch] = useReducer(setupReducer, initialSetup);
 
   return (
     <main className="min-h-dvh bg-surface px-4 py-8 sm:py-12">
@@ -98,99 +284,24 @@ export default function WelcomePage() {
             <img src="/icons/icon.svg" alt="" className="size-8" />
             <span className="font-semibold tracking-tight">Copilot</span>
           </div>
-          <Link to={path.home} className="text-link text-sm">
+          <Link to={path.home} className="text-link inline-flex min-h-10 items-center text-sm">
             Skip for now
           </Link>
         </div>
 
-        <h1 className="mt-8 text-2xl font-semibold tracking-tight">Welcome, {user.displayName}</h1>
+        <h1 className="mt-8 text-2xl font-semibold tracking-tight">{`Welcome, ${user.displayName}`}</h1>
         <p className="mt-2 text-sm text-muted">
           Copilot forwards your chats to a model provider. Connect one to start.
         </p>
 
         <div className="mt-6">
-          <Steps current={step} />
+          <Steps current={state.step} />
         </div>
 
         <div className="card-panel mt-6">
-          {step === 0 ? (
-            <form
-              noValidate
-              className="space-y-6"
-              onSubmit={(event) => {
-                event.preventDefault();
-                setStep(1);
-              }}
-            >
-              <fieldset>
-                <legend className="field-label">Provider</legend>
-                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {CHOICES.map((option) => (
-                    <label key={option.id} className="choice-card min-h-12 items-center">
-                      <input
-                        type="radio"
-                        name="preset"
-                        value={option.id}
-                        checked={choice.id === option.id}
-                        onChange={() => setChoice(option)}
-                        className="sr-only"
-                      />
-                      {option.label}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-
-              {choice.asks !== "key" ? (
-                <TextField
-                  key={`${choice.id}-url`}
-                  label="Server address"
-                  name="baseUrl"
-                  type="url"
-                  inputMode="url"
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  placeholder={choice.urlHint}
-                />
-              ) : null}
-              {choice.asks !== "url" ? (
-                <TextField
-                  key={`${choice.id}-key`}
-                  label={choice.asks === "both" ? "API key (optional)" : "API key"}
-                  name="apiKey"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  hint="Stored encrypted on your server. It is never shown again."
-                />
-              ) : null}
-
-              <div className="flex justify-end">
-                <Button type="submit">Continue</Button>
-              </div>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <h2 className="text-base font-semibold">{STEPS[step]}</h2>
-              <p className="text-sm text-muted">
-                Testing {choice.label} and choosing its models are not available in this build yet.
-                You can add the provider later in Settings.
-              </p>
-              <div className="flex flex-wrap justify-between gap-2">
-                <Button variant="secondary" onClick={() => setStep(step - 1)}>
-                  Back
-                </Button>
-                {step < STEPS.length - 1 ? (
-                  <Button onClick={() => setStep(step + 1)}>Continue</Button>
-                ) : (
-                  <Link to={path.home} className="text-link inline-flex min-h-10 items-center">
-                    Go to Copilot
-                  </Link>
-                )}
-              </div>
-            </div>
-          )}
+          {state.step === 0 ? <Connect state={state} dispatch={dispatch} /> : null}
+          {state.step === 1 ? <Test state={state} dispatch={dispatch} /> : null}
+          {state.step === 2 ? <Models state={state} dispatch={dispatch} /> : null}
         </div>
       </div>
     </main>

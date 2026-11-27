@@ -326,9 +326,11 @@ describe("the chat screens", () => {
     expect(html).toContain("Mock / Other");
   });
 
-  test("without models it points to the provider settings", () => {
+  test("without models it points to the first-run setup and the provider settings", () => {
     const html = render(path.home, [[["models"], []]]);
     expect(html).toContain("No models yet");
+    expect(html).toContain(`href="${path.welcome}"`);
+    expect(html).toContain("Add a provider");
     expect(html).toContain(`href="${path.providers}"`);
   });
 

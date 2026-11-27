@@ -9,6 +9,7 @@ import { TextField } from "@web/components/Form/TextField";
 import { text } from "@web/forms";
 import { useSubmit } from "@web/hooks/useSubmit";
 import path from "@web/routes/path";
+import { landing } from "@web/routes/welcome/setup";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { z } from "zod";
 
@@ -26,7 +27,8 @@ export default function LoginPage() {
   const from = (useLocation().state as FromState | null)?.from;
   const form = useSubmit(schema, login, (response) => {
     signIn(response);
-    navigate(from ?? path.home, { replace: true });
+    // A user without a provider connection gets the first-run setup.
+    void landing(from ?? path.home).then((target) => navigate(target, { replace: true }));
   });
 
   if (setup.data?.needsSetup && !signedIn) return <Navigate to={path.setup} replace />;

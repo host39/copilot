@@ -8,6 +8,8 @@ type ProviderFieldsProps = {
   errors: Record<string, string>;
   /** The first-run setup names the connection after its preset without asking. */
   askName?: boolean;
+  /** The address of a connection being fixed (the first-run setup's Back). */
+  baseUrl?: string;
 };
 
 function addressHint(pick: Choice): string {
@@ -24,7 +26,13 @@ function addressHint(pick: Choice): string {
  * what that preset needs (a key, an address, or both). Each field is keyed by the preset, so
  * switching presets never carries a key over to another provider.
  */
-export function ProviderFields({ pick, onPick, errors, askName = true }: ProviderFieldsProps) {
+export function ProviderFields({
+  pick,
+  onPick,
+  errors,
+  askName = true,
+  baseUrl,
+}: ProviderFieldsProps) {
   return (
     <>
       <fieldset>
@@ -68,6 +76,7 @@ export function ProviderFields({ pick, onPick, errors, askName = true }: Provide
           autoCapitalize="none"
           spellCheck={false}
           placeholder={pick.urlHint}
+          defaultValue={baseUrl}
           hint={addressHint(pick)}
           error={errors.baseUrl}
         />

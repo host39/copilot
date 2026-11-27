@@ -156,7 +156,14 @@ function Traits({ model }: { model: ModelResponse }) {
  * One model of a connection: the enable switch, its name, id, and capabilities, and an editor for
  * its name, token limits, and capability overrides.
  */
-export function ModelRow({ model }: { model: ModelResponse }) {
+export function ModelRow({
+  model,
+  editable = true,
+}: {
+  model: ModelResponse;
+  /** The first-run setup only turns models on and off. */
+  editable?: boolean;
+}) {
   const saved = useSaved(model);
   const [open, setOpen] = useState(false);
   const editor = useId();
@@ -187,17 +194,19 @@ export function ModelRow({ model }: { model: ModelResponse }) {
           )}
           <Traits model={model} />
         </div>
-        <Button
-          variant="ghost"
-          aria-expanded={open}
-          aria-controls={open ? editor : undefined}
-          aria-label={`Edit ${model.displayName}`}
-          onClick={() => setOpen((value) => !value)}
-          className="px-3"
-        >
-          <span className="hidden sm:inline">Edit</span>
-          {open ? <LuChevronUp aria-hidden /> : <LuChevronDown aria-hidden />}
-        </Button>
+        {editable ? (
+          <Button
+            variant="ghost"
+            aria-expanded={open}
+            aria-controls={open ? editor : undefined}
+            aria-label={`Edit ${model.displayName}`}
+            onClick={() => setOpen((value) => !value)}
+            className="px-3"
+          >
+            <span className="hidden sm:inline">Edit</span>
+            {open ? <LuChevronUp aria-hidden /> : <LuChevronDown aria-hidden />}
+          </Button>
+        ) : null}
       </div>
       <FormAlert>{toggle.error ? describeError(toggle.error).message : null}</FormAlert>
       {open ? (

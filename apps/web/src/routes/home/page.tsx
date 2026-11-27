@@ -7,8 +7,9 @@ import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import type { ChatState } from "@web/routes/chat/page";
 import path, { link } from "@web/routes/path";
+import type { StartState } from "@web/routes/welcome/setup";
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 /** New chat: the default screen. Pick a model and send the first message. */
 export default function HomePage() {
@@ -16,7 +17,9 @@ export default function HomePage() {
     queryKey: ["models"],
     queryFn: ({ signal }) => fetchModels(signal),
   });
-  const [chosen, setChosen] = useState("");
+  // The first-run setup opens this screen with the model it turned on.
+  const setup = useLocation().state as StartState | null;
+  const [chosen, setChosen] = useState(setup?.modelId ?? "");
   const [alert, setAlert] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
@@ -48,7 +51,11 @@ export default function HomePage() {
       </FormAlert>
       {models.isSuccess && list.length === 0 ? (
         <p className="text-sm text-muted">
-          No models yet. Add a provider connection in{" "}
+          No models yet.{" "}
+          <Link to={path.welcome} className="text-link">
+            Add a provider
+          </Link>{" "}
+          or turn on models in{" "}
           <Link to={path.providers} className="text-link">
             Settings
           </Link>{" "}

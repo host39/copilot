@@ -88,9 +88,10 @@ const optional = z
 /**
  * The add-provider form for `pick`: a name (the preset's label when blank), the address (required
  * for compatible servers, optional for Ollama, not asked for hosted providers), and the key
- * (required for hosted providers). It parses to the `POST /providers` body.
+ * (required for hosted providers unless `keyStored`: the first-run setup edits a saved connection
+ * whose key a blank field keeps). It parses to the `POST /providers` body.
  */
-export function providerSchema(pick: Choice) {
+export function providerSchema(pick: Choice, keyStored = false) {
   return z
     .object({
       name: z
@@ -111,7 +112,7 @@ export function providerSchema(pick: Choice) {
           message: "Enter the server address.",
         });
       }
-      if (pick.asks === "key" && input.apiKey === undefined) {
+      if (pick.asks === "key" && input.apiKey === undefined && !keyStored) {
         context.addIssue({
           code: "custom",
           path: ["apiKey"],
