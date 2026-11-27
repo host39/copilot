@@ -117,9 +117,9 @@ impl Graph {
             .bind(user),
             sqlx::query(
                 "INSERT INTO providers \
-                 (created_at, updated_at, id, user_id, kind, preset, name, base_url, api_key_sealed) \
-                 VALUES (now(), now(), $1, $2, 'openai', 'openai', 'OpenAI', \
-                 'https://api.openai.com/v1', '\\x01')",
+                 (created_at, updated_at, id, user_id, kind, preset, name, base_url, api_key_sealed, \
+                 api) VALUES (now(), now(), $1, $2, 'openai', 'openai', 'OpenAI', \
+                 'https://api.openai.com/v1', '\\x01', 'responses')",
             )
             .bind(graph.provider)
             .bind(user),
