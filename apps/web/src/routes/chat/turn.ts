@@ -12,6 +12,7 @@ import { backoff } from "@web/api/retry";
 import { attach, decide, regenerate, retry, sendMessage, stop } from "@web/api/routes/chats";
 import { keys } from "@web/api/routes/keys";
 import { useUserEvent } from "@web/hooks/useEvents";
+import type { Speaker } from "@web/hooks/useSpeaker";
 import { log } from "@web/logging";
 import {
   DRAFT_ID,
@@ -69,7 +70,15 @@ function failure(
   return { kind: "failed", error, events: stream.events };
 }
 
-/** The user's new message as the screen shows it until it is saved. */
+/** The `format` of an audio file's part, as the server names it (`input_audio` formats). */
+export function audioFormat(mediaType: string): string {
+  return mediaType === "audio/mpeg" ? "mp3" : "wav";
+}
+
+/**
+ * The user's new message as the screen shows it until it is saved: its text, then its files, an
+ * audio file (a recording) as an audio part, the way the server saves it.
+ */
 export function draftMessage(text: string, files: Attached[]): ViewMessage {
   return {
     id: DRAFT_ID,
@@ -80,9 +89,28 @@ export function draftMessage(text: string, files: Attached[]): ViewMessage {
     error: null,
     parts: [
       ...(text ? [{ type: "text" as const, text }] : []),
-      ...files.map((file) => ({ type: "file" as const, ...file })),
+      ...files.map((file) =>
+        file.mediaType.startsWith("audio/")
+          ? {
+              type: "audio" as const,
+              fileId: file.fileId,
+              format: audioFormat(file.mediaType),
+              transcript: null,
+              durationMs: null,
+            }
+          : { type: "file" as const, ...file }
+      ),
     ],
   };
+}
+
+/**
+ * Whether a stream event is spoken audio to play now: an `audio.delta` of a turn this page
+ * started (`speaking`; a run attached to on opening the chat stays quiet) past the last one
+ * played, so a replay after a dropped connection never plays twice.
+ */
+export function speaks(event: ChatStreamEvent, speaking: boolean, played: number): boolean {
+  return event.type === "audio.delta" && speaking && event.seq > played;
 }
 
 /** The first message regenerating replaces: the one after the last user message. */
@@ -120,8 +148,14 @@ export function eventAction(
  * The chat's run as the page follows it: the run's messages, the user's new message until it is
  * saved, the context window's start, and the actions that start or stop a turn. `saved` is the
  * chat's saved messages; `attachOnOpen` is `false` when the page sends a message as it opens.
+ * `speaker` plays the spoken audio of the turns this page starts.
  */
-export function useTurn(chatId: string, saved: MessageResponse[] | undefined, attachOnOpen = true) {
+export function useTurn(
+  chatId: string,
+  saved: MessageResponse[] | undefined,
+  attachOnOpen = true,
+  speaker?: Speaker
+) {
   const client = useQueryClient();
   const [run, setRun] = useState<Run | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -134,6 +168,11 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
   const mounted = useRef(true);
   const savedRef = useRef(saved);
   savedRef.current = saved;
+  const voice = useRef(speaker);
+  voice.current = speaker;
+  // A turn this page started speaks; the last `seq` of its audio played.
+  const speaking = useRef(false);
+  const played = useRef(0);
 
   const show = useCallback((next: Run | null) => {
     current.current = next;
@@ -162,6 +201,10 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
         }
         events += 1;
         if (event.type === "message.started") setWindowStart(event.windowStartId);
+        if (event.type === "audio.delta" && speaks(event, speaking.current, played.current)) {
+          played.current = event.seq;
+          voice.current?.play(event.data, event.format);
+        }
         ended ||= event.type === "done";
         show(next);
       };
@@ -180,6 +223,8 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
 
   /** The run is over: read the saved messages, which replace the run's, then let it go. */
   const settle = useCallback(async () => {
+    // Audio already queued plays to its end.
+    speaking.current = false;
     await client.invalidateQueries({ queryKey: keys.chat(chatId) });
     const ended = current.current;
     // A failure without a failed answer (nothing was saved) stays on screen.
@@ -263,6 +308,10 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
   /** Starts a turn and follows it. `false` when the server refused it (the text stays for another try). */
   const start = useCallback(
     async (open: Open, next: Draft | null): Promise<boolean> => {
+      // Still in the click that started the turn, so audio may start.
+      voice.current?.begin();
+      speaking.current = true;
+      played.current = 0;
       setAlert(null);
       setDraft(next);
       show(null);
@@ -346,6 +395,7 @@ export function useTurn(chatId: string, saved: MessageResponse[] | undefined, at
   );
 
   const halt = useCallback(async () => {
+    voice.current?.stop();
     try {
       await stop(chatId);
       // The stopped answer is saved now; without a stream to end the run, read it.

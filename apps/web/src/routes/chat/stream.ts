@@ -140,7 +140,8 @@ export function apply(run: Run, event: ChatStreamEvent): Run {
         windowStartId: event.windowStartId,
       };
     case "part.started": {
-      // Tool calls arrive whole with `tool.requested`; spoken audio plays with voice (P4.1).
+      // Tool calls arrive whole with `tool.requested`; spoken audio is played by the page's
+      // speaker as it arrives (`useTurn`), and the saved message holds it as an audio part.
       const kind = event.kind;
       return update(next, event.messageId, "assistant", (message) =>
         kind === "text" || kind === "reasoning" ? slot(message, event.index, kind) : message

@@ -12,6 +12,8 @@ import {
   unreadable,
   uploaded,
 } from "@web/components/Chat/composer";
+import { AudioPreview, MicButton, RecordingBar, SpeakToggle } from "@web/components/Chat/Voice";
+import { type MicNote, useRecorder } from "@web/hooks/useRecorder";
 import { size } from "@web/routes/project/files";
 import { type ReactNode, useEffect, useId, useReducer, useRef, useState } from "react";
 import { LuPaperclip, LuSendHorizontal, LuSquare, LuX } from "react-icons/lu";
@@ -44,6 +46,8 @@ type ComposerProps = {
   discard?: (fileId: string) => void;
   /** The tools button, before attach. */
   tools?: ReactNode;
+  /** "Speak replies", shown for models with `audioOut`. */
+  speak?: { on: boolean; onChange: (on: boolean) => void };
 };
 
 /** Whether the browser sizes the text area to its text itself (`field-sizing: content`). */
@@ -51,19 +55,24 @@ function sizesItself(): boolean {
   return typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
 }
 
-/** A file on the message: name, upload progress or failure, and a warning when the model cannot read it. */
+/**
+ * A file on the message: name, upload progress or failure, a warning when the model cannot read
+ * it, and for a recording or audio file a player to hear it before it is sent.
+ */
 function Chip({
   item,
+  file,
   warning,
   onRemove,
 }: {
   item: Attachment;
+  file: File | undefined;
   warning: string | null;
   onRemove: () => void;
 }) {
   const percent = item.size > 0 ? Math.round((item.loaded / item.size) * 100) : 0;
-  return (
-    <li className="inline-flex max-w-full items-center gap-2 rounded-lg border border-line bg-canvas py-1 pr-1 pl-2 text-xs">
+  const row = (
+    <>
       <LuPaperclip aria-hidden className="shrink-0 text-muted" />
       <span className="max-w-40 truncate" title={item.name}>
         {item.name}
@@ -82,7 +91,56 @@ function Chip({
       >
         <LuX aria-hidden />
       </button>
-    </li>
+    </>
+  );
+  const chip = "max-w-full rounded-lg border border-line bg-canvas py-1 pr-1 pl-2 text-xs";
+  if (file && item.mediaType.startsWith("audio/")) {
+    return (
+      <li className={`flex flex-col items-start gap-1 ${chip}`}>
+        <span className="inline-flex max-w-full items-center gap-2">{row}</span>
+        <AudioPreview file={file} label={`Preview of ${item.name}`} />
+      </li>
+    );
+  }
+  return <li className={`inline-flex items-center gap-2 ${chip}`}>{row}</li>;
+}
+
+/** What the microphone said last: a problem (it did not start) or a note on how a clip ended. */
+function NoteLine({ note }: { note: MicNote | null }) {
+  if (!note) return null;
+  return (
+    <p
+      role={note.problem ? "alert" : "status"}
+      className={`text-sm ${note.problem ? "text-danger" : "text-muted"}`}
+    >
+      {note.text}
+    </p>
+  );
+}
+
+/** Send, or Stop while an answer is written. */
+function SendButton({
+  running,
+  busy,
+  disabled,
+  onStop,
+}: {
+  running: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onStop?: () => void;
+}) {
+  if (running) {
+    return (
+      <Button onClick={onStop} aria-label="Stop" title="Stop">
+        <LuSquare aria-hidden />
+      </Button>
+    );
+  }
+  return (
+    <Button type="submit" busy={busy} disabled={disabled} aria-label="Send" title="Send">
+      <LuSendHorizontal aria-hidden />
+    </Button>
   );
 }
 
@@ -90,6 +148,9 @@ function Chip({
  * The message field: an auto-growing text area, attach (always shown; a file the model cannot
  * read gets a warning chip), and Send, which becomes Stop while an answer is written. With a
  * mouse or trackpad Enter sends and Shift+Enter adds a line; on touch screens Enter adds a line.
+ * Models with `audioIn` get the microphone: a recording replaces the field with its timer, Cancel,
+ * and Stop, and its clip becomes an attached WAV file with a player to hear it before sending.
+ * Models with `audioOut` get the Speak replies toggle (`speak`).
  */
 export function Composer({
   onSend,
@@ -102,6 +163,7 @@ export function Composer({
   upload,
   discard,
   tools,
+  speak,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [list, dispatch] = useReducer(attachments, []);
@@ -110,17 +172,20 @@ export function Composer({
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const id = useId();
-  const ready = canSend(text, list);
+  const recorder = useRecorder((clip) => pick([clip]));
+  const idle = recorder.state.kind === "idle";
+  const ready = canSend(text, list) && idle;
   const blocked = busy || disabled || running;
 
-  // Browsers without `field-sizing` grow the field from its scroll height (capped by max-height).
+  // Browsers without `field-sizing` grow the field from its scroll height (capped by max-height),
+  // also when it comes back after a recording.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the height follows the text
   useEffect(() => {
     const element = field.current;
     if (!element || sizesItself()) return;
     element.style.height = "auto";
     element.style.height = `${element.scrollHeight}px`;
-  }, [text]);
+  }, [text, idle]);
 
   function pick(picked: FileList | File[] | null) {
     for (const file of Array.from(picked ?? [])) {
@@ -168,6 +233,7 @@ export function Composer({
       setText("");
       files.current.clear();
       dispatch({ type: "clear" });
+      recorder.dismiss();
     }
   }
 
@@ -193,12 +259,14 @@ export function Composer({
             <Chip
               key={item.key}
               item={item}
+              file={files.current.get(item.key)}
               warning={unreadable(item.mediaType, capabilities)}
               onRemove={() => remove(item)}
             />
           ))}
         </ul>
       ) : null}
+      <NoteLine note={recorder.note} />
       <div className="flex items-end gap-2">
         <input
           ref={picker}
@@ -212,60 +280,62 @@ export function Composer({
             event.target.value = "";
           }}
         />
-        {tools}
-        <button
-          type="button"
-          onClick={() => picker.current?.click()}
-          disabled={disabled}
-          aria-label="Attach files"
-          title="Attach files"
-          className="icon-button"
-        >
-          <LuPaperclip aria-hidden />
-        </button>
-        <label className="sr-only" htmlFor={id}>
-          Message
-        </label>
-        <textarea
-          ref={field}
-          id={id}
-          name="text"
-          rows={1}
-          value={text}
-          placeholder={placeholder ?? "Message"}
-          disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
-          onPaste={(event) => {
-            const pasted = event.clipboardData.files;
-            if (pasted.length > 0 && !disabled) {
-              event.preventDefault();
-              pick(pasted);
-            }
-          }}
-          onKeyDown={(event) => {
-            const fine = finePointer();
-            if (event.key !== "Enter" || event.shiftKey || !fine) return;
-            // Enter never adds a line where it sends, even while an answer is written.
-            event.preventDefault();
-            if (enterSends(event.nativeEvent, fine)) void submit();
-          }}
-          className="field-input mt-0 max-h-60 min-h-11 resize-none [field-sizing:content]"
-        />
-        {running ? (
-          <Button onClick={onStop} aria-label="Stop" title="Stop">
-            <LuSquare aria-hidden />
-          </Button>
+        {recorder.state.kind !== "idle" ? (
+          <RecordingBar
+            state={recorder.state}
+            onStop={() => void recorder.stop()}
+            onCancel={recorder.cancel}
+          />
         ) : (
-          <Button
-            type="submit"
-            busy={busy}
-            disabled={disabled || !ready}
-            aria-label="Send"
-            title="Send"
-          >
-            <LuSendHorizontal aria-hidden />
-          </Button>
+          <>
+            {tools}
+            <button
+              type="button"
+              onClick={() => picker.current?.click()}
+              disabled={disabled}
+              aria-label="Attach files"
+              title="Attach files"
+              className="icon-button"
+            >
+              <LuPaperclip aria-hidden />
+            </button>
+            {speak && capabilities?.audioOut ? (
+              <SpeakToggle on={speak.on} onChange={speak.onChange} disabled={disabled} />
+            ) : null}
+            <label className="sr-only" htmlFor={id}>
+              Message
+            </label>
+            <textarea
+              ref={field}
+              id={id}
+              name="text"
+              rows={1}
+              value={text}
+              placeholder={placeholder ?? "Message"}
+              disabled={disabled}
+              onChange={(event) => setText(event.target.value)}
+              onPaste={(event) => {
+                const pasted = event.clipboardData.files;
+                if (pasted.length > 0 && !disabled) {
+                  event.preventDefault();
+                  pick(pasted);
+                }
+              }}
+              onKeyDown={(event) => {
+                const fine = finePointer();
+                if (event.key !== "Enter" || event.shiftKey || !fine) return;
+                // Enter never adds a line where it sends, even while an answer is written.
+                event.preventDefault();
+                if (enterSends(event.nativeEvent, fine)) void submit();
+              }}
+              className="field-input mt-0 max-h-60 min-h-11 resize-none [field-sizing:content]"
+            />
+            {capabilities?.audioIn ? (
+              <MicButton onClick={() => void recorder.start()} disabled={disabled} />
+            ) : null}
+          </>
         )}
+        <SendButton running={running} busy={busy} disabled={disabled || !ready} onStop={onStop} />
       </div>
     </form>
   );

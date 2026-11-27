@@ -4,6 +4,9 @@
 import type { CallDecision, MessagePartDto } from "@copilot/contracts";
 import type { ToolCall, ViewMessage } from "@web/routes/chat/stream";
 
+/** What a recording in a user message is called. */
+export const VOICE_MESSAGE = "Voice message";
+
 /** The text of a message's text parts. */
 export function messageText(parts: MessagePartDto[]): string {
   return parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n\n");

@@ -10,8 +10,10 @@ import {
   lastAnswer,
   laterCount,
   messageText,
+  VOICE_MESSAGE,
 } from "@web/components/Chat/messages";
 import { ApprovalPanel, ToolCard, type ToolNames } from "@web/components/Chat/ToolCard";
+import { AudioPart } from "@web/components/Chat/Voice";
 import { ConfirmDialog } from "@web/components/Dialog/ConfirmDialog";
 import { toolResults } from "@web/routes/chat/settings";
 import { DRAFT_ID, pendingCalls, type ToolResult, type ViewMessage } from "@web/routes/chat/stream";
@@ -128,6 +130,7 @@ function Assistant({
   names: ToolNames;
 }) {
   const visible = message.parts.some((part) => part.type !== "text" || part.text);
+  const hasText = message.parts.some((part) => part.type === "text" && part.text.trim() !== "");
   return (
     // Screen readers hear an answer once it is written, not every piece of it.
     <div className="space-y-2" aria-live="polite" aria-busy={writing || undefined}>
@@ -159,8 +162,9 @@ function Assistant({
           case "audio":
             return (
               <div key={key} className="space-y-1">
-                <FileChip fileId={part.fileId} name="Audio reply" />
-                {part.transcript ? <p className="text-sm">{part.transcript}</p> : null}
+                <AudioPart fileId={part.fileId} label="Spoken reply" durationMs={part.durationMs} />
+                {/* The transcript is the answer's text; it shows here only when there is none. */}
+                {part.transcript && !hasText ? <Text text={part.transcript} /> : null}
               </div>
             );
           default:
@@ -176,6 +180,7 @@ function Assistant({
   );
 }
 
+/** A user message's attachments, and its recordings with the provider's transcript under each. */
 function UserFiles({ message }: { message: ViewMessage }) {
   const files = message.parts.flatMap((part) =>
     part.type === "file" || part.type === "audio" ? [part] : []
@@ -183,13 +188,18 @@ function UserFiles({ message }: { message: ViewMessage }) {
   if (files.length === 0) return null;
   return (
     <div className="flex flex-wrap justify-end gap-2">
-      {files.map((part) => (
-        <FileChip
-          key={part.fileId}
-          fileId={part.fileId}
-          name={part.type === "file" ? part.name : "Voice message"}
-        />
-      ))}
+      {files.map((part) =>
+        part.type === "file" ? (
+          <FileChip key={part.fileId} fileId={part.fileId} name={part.name} />
+        ) : (
+          <div key={part.fileId} className="flex max-w-[85%] flex-col items-end gap-1">
+            <AudioPart fileId={part.fileId} label={VOICE_MESSAGE} durationMs={part.durationMs} />
+            {part.transcript ? (
+              <p className="text-right text-sm text-muted whitespace-pre-wrap">{part.transcript}</p>
+            ) : null}
+          </div>
+        )
+      )}
     </div>
   );
 }
