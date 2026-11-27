@@ -3,16 +3,23 @@ import { Badge, type BadgeTone } from "@web/components/Badge/Badge";
 import Button from "@web/components/Button/Button";
 import { FileChip } from "@web/components/Chat/FileChip";
 import { choose, readyDecisions } from "@web/components/Chat/messages";
+import { ScheduleProposal } from "@web/components/Schedule/Proposal";
 import type { ToolCall, ToolResult } from "@web/routes/chat/stream";
+import { readProposal, type ScheduleContext } from "@web/routes/schedule/rules";
 import { useId, useState } from "react";
 import { LuCheck, LuCheckCheck, LuX } from "react-icons/lu";
 
-/** How the cards name tools: titles from the stream, server names from the settings. */
+/**
+ * How the cards name tools: titles from the stream, server names from the settings, and what a
+ * schedule the assistant asks to create would run with.
+ */
 export type ToolNames = {
   /** Display titles by call id. */
   titles?: Record<string, string>;
   /** Tool server names by id. */
   servers?: ReadonlyMap<string, string>;
+  /** The chat's model, project, and `auto` tools, for the `schedule_prompt` card. */
+  schedule?: ScheduleContext;
 };
 
 const STATUS_MAP: Record<ToolStatus, { label: string; tone: BadgeTone }> = {
@@ -133,14 +140,21 @@ function ApprovalCard({
   const [reason, setReason] = useState("");
   const id = useId();
   const { title, source } = toolLabel(call, names);
+  const proposal = readProposal(call);
   return (
     <li className="space-y-2 rounded-xl border border-warn/40 bg-surface px-3 py-3 text-sm">
       <p>
         <span className="font-medium">{title}</span>
         <span className="ml-2 text-xs text-muted">{source}</span>
       </p>
-      <p className="text-muted">The model wants to run this tool.</p>
-      <Arguments call={call} />
+      {proposal ? (
+        <ScheduleProposal proposal={proposal} context={names.schedule} />
+      ) : (
+        <>
+          <p className="text-muted">The model wants to run this tool.</p>
+          <Arguments call={call} />
+        </>
+      )}
       {choice ? (
         <p className="flex items-center gap-2">
           <Badge tone={choice === "deny" ? "warn" : "ok"}>{CHOICE_LABEL[choice]}</Badge>

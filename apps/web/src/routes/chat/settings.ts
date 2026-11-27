@@ -58,13 +58,15 @@ export type MenuAction =
   | "instructions"
   | "move"
   | "pin"
+  | "schedule"
   | "save-as-project"
   | "save-instructions"
   | "delete";
 
 /**
  * The overflow menu's actions: a project chat offers its project and Save instructions to
- * project (while it has instructions); a standalone chat offers Save as project.
+ * project (while it has instructions); a standalone chat offers Save as project. Every chat offers
+ * Schedule this prompt.
  */
 export function menuActions(chat: Pick<ChatResponse, "projectId" | "instructions">): MenuAction[] {
   const inProject = chat.projectId !== null;
@@ -73,6 +75,7 @@ export function menuActions(chat: Pick<ChatResponse, "projectId" | "instructions
     "instructions",
     "move",
     "pin",
+    "schedule",
     ...(inProject
       ? chat.instructions.trim()
         ? (["save-instructions"] as const)

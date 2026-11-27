@@ -456,10 +456,11 @@ export function MessageList({
   actions,
   titles,
   servers,
+  schedule,
 }: MessageListProps) {
   const results = toolResults(messages);
   const last = lastAnswer(messages);
-  const names: ToolNames = { titles, servers };
+  const names: ToolNames = { titles, servers, schedule };
   const shown = messages.filter((message) => message.role !== "tool");
   return (
     <ol className="space-y-4">

@@ -2,7 +2,7 @@
 // stale: invalidating `providers` also refreshes every connection's details and model list, and
 // invalidating `chats` refreshes the sidebar's lists together with every open chat.
 
-import type { ChatListQuery, ProjectListQuery } from "@copilot/contracts";
+import type { ChatListQuery, ProjectListQuery, ScheduleListQuery } from "@copilot/contracts";
 
 /** The filters of a chat list (`GET /chats` without its cursor). */
 export type ChatFilter = Omit<ChatListQuery, "cursor">;
@@ -40,4 +40,11 @@ export const keys = {
   chatMessages: (chatId: string) => ["chats", chatId, "messages"] as const,
 
   search: (text: string) => ["search", text] as const,
+
+  schedules: ["schedules"] as const,
+  /** Schedule ids are UUIDs, never `list` or `preview`. */
+  scheduleList: (query: ScheduleListQuery) => ["schedules", "list", query] as const,
+  schedule: (scheduleId: string) => ["schedules", scheduleId] as const,
+  schedulePreview: (cron: string, timezone: string) =>
+    ["schedules", "preview", cron, timezone] as const,
 } as const;

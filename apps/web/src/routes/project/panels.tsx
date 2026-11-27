@@ -1,5 +1,5 @@
-// The project page's side panel: instructions, default model and reasoning, and tools. Each saves
-// only what changed. Files are `components/Project/FilePanel`.
+// The project page's side panel: instructions, default model and reasoning, tools, and schedules.
+// Each saves only what changed. Files are `components/Project/FilePanel`.
 
 import type {
   BuiltinTool,
@@ -12,16 +12,21 @@ import { describeError } from "@web/api/errors";
 import { keys } from "@web/api/routes/keys";
 import { fetchModels } from "@web/api/routes/models";
 import { updateProject } from "@web/api/routes/projects";
+import { fetchSchedules } from "@web/api/routes/schedules";
 import { fetchToolServers } from "@web/api/routes/tool-servers";
 import { Badge } from "@web/components/Badge/Badge";
 import Button from "@web/components/Button/Button";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { FormNotice } from "@web/components/Form/FormNotice";
+import { Select } from "@web/components/Form/Select";
 import { TextArea } from "@web/components/Form/TextArea";
 import { groupModels, levelLabel, reasoningLevels } from "@web/components/ModelPicker/models";
-import path from "@web/routes/path";
+import { AssistantBadge, ScheduleState } from "@web/components/Schedule/controls";
+import path, { link } from "@web/routes/path";
 import { instructionsBody, modelBody, toolsBody } from "@web/routes/project/forms";
-import { type ReactNode, type SelectHTMLAttributes, useId, useState } from "react";
+import { newScheduleLink } from "@web/routes/schedule/draft";
+import { useState } from "react";
+import { LuPlus } from "react-icons/lu";
 import { Link } from "react-router-dom";
 
 /** Saves a project change and refreshes the project's queries (the capacity bar follows the model). */
@@ -85,39 +90,6 @@ export function InstructionsPanel({ project }: { project: ProjectResponse }) {
       />
       <Footer busy={save.isPending} error={save.error} saved={save.saved} />
     </form>
-  );
-}
-
-function Select({
-  label,
-  hint,
-  children,
-  ...rest
-}: {
-  label: string;
-  hint?: ReactNode;
-  children: ReactNode;
-} & SelectHTMLAttributes<HTMLSelectElement>) {
-  const id = useId();
-  return (
-    <div>
-      <label htmlFor={id} className="field-label">
-        {label}
-      </label>
-      <select
-        id={id}
-        aria-describedby={hint ? `${id}-hint` : undefined}
-        className="field-input"
-        {...rest}
-      >
-        {children}
-      </select>
-      {hint ? (
-        <p id={`${id}-hint`} className="field-hint">
-          {hint}
-        </p>
-      ) : null}
-    </div>
   );
 }
 
@@ -259,5 +231,44 @@ export function ToolsPanel({ project }: { project: ProjectResponse }) {
       <p className="text-sm text-muted">A chat can add or remove servers for itself.</p>
       <Footer busy={save.isPending} error={save.error} saved={save.saved} />
     </form>
+  );
+}
+
+/** The project's schedules, each with its next run and status, and New schedule. */
+export function SchedulesPanel({ project }: { project: ProjectResponse }) {
+  const schedules = useQuery({
+    queryKey: keys.scheduleList({ projectId: project.id }),
+    queryFn: ({ signal }) => fetchSchedules({ projectId: project.id }, signal),
+  });
+  const list = schedules.data ?? [];
+  return (
+    <div className="space-y-3">
+      {schedules.isError ? <FormAlert>{describeError(schedules.error).message}</FormAlert> : null}
+      {schedules.isSuccess && list.length === 0 ? (
+        <p className="text-sm text-muted">
+          No schedules. A schedule runs a prompt in this project at set times.
+        </p>
+      ) : null}
+      {list.length > 0 ? (
+        <ul className="space-y-3">
+          {list.map((schedule) => (
+            <li key={schedule.id} className="space-y-1">
+              <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                <Link to={link.schedule(schedule.id)} className="text-link">
+                  {schedule.name}
+                </Link>
+                <AssistantBadge schedule={schedule} />
+              </p>
+              <p className="text-xs text-muted">{schedule.description}</p>
+              <ScheduleState schedule={schedule} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <Link to={newScheduleLink({ projectId: project.id })} className="button-link">
+        <LuPlus aria-hidden />
+        New schedule
+      </Link>
+    </div>
   );
 }
