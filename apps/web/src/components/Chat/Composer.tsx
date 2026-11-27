@@ -12,7 +12,7 @@ import {
   unreadable,
 } from "@web/components/Chat/composer";
 import { size } from "@web/routes/project/files";
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useReducer, useRef, useState } from "react";
 import { LuPaperclip, LuSendHorizontal, LuSquare, LuX } from "react-icons/lu";
 
 /** An attached file with its bytes, as the composer hands it to `onSend`. */
@@ -41,6 +41,8 @@ type ComposerProps = {
   upload?: Upload;
   /** Deletes an uploaded file the user took off the message. */
   discard?: (fileId: string) => void;
+  /** The tools button, before attach. */
+  tools?: ReactNode;
 };
 
 /** Whether the browser sizes the text area to its text itself (`field-sizing: content`). */
@@ -98,6 +100,7 @@ export function Composer({
   capabilities,
   upload,
   discard,
+  tools,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [list, dispatch] = useReducer(attachments, []);
@@ -205,6 +208,7 @@ export function Composer({
             event.target.value = "";
           }}
         />
+        {tools}
         <button
           type="button"
           onClick={() => picker.current?.click()}

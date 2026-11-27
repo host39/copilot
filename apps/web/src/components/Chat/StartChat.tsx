@@ -1,15 +1,19 @@
-import type { ProjectResponse, ReasoningLevel } from "@copilot/contracts";
+import type { CreateChatRequest, ProjectResponse, ReasoningLevel } from "@copilot/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
 import { createChat, fetchChats } from "@web/api/routes/chats";
 import { uploadFile } from "@web/api/routes/files";
 import { keys } from "@web/api/routes/keys";
 import { fetchModels } from "@web/api/routes/models";
+import { fetchToolServers } from "@web/api/routes/tool-servers";
 import { Composer, type Picked } from "@web/components/Chat/Composer";
+import { type ToolChoice, ToolsMenu } from "@web/components/Chat/ToolsMenu";
+import { TOOLS_OFF_NOTE, toolsWarning } from "@web/components/Chat/tools";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { ModelPicker } from "@web/components/ModelPicker/ModelPicker";
 import { fitLevel, startModel } from "@web/components/ModelPicker/models";
 import type { ChatState } from "@web/routes/chat/page";
+import { toolsOn } from "@web/routes/chat/settings";
 import type { Attached } from "@web/routes/chat/turn";
 import path, { link } from "@web/routes/path";
 import { type ReactNode, useRef, useState } from "react";
@@ -48,8 +52,28 @@ async function uploadAll(
 }
 
 /**
+ * The `POST /chats` body of the draft: only what differs from the defaults, so a chat in a project
+ * keeps following the project's tools unless the draft changed them.
+ */
+export function draftBody(
+  modelId: string,
+  project: Pick<ProjectResponse, "id"> | null | undefined,
+  reasoning: ReasoningLevel | null,
+  tools: ToolChoice
+): CreateChatRequest {
+  return {
+    modelId,
+    ...(project ? { projectId: project.id } : {}),
+    ...(reasoning !== null ? { reasoning } : {}),
+    ...(tools.toolOverrides.length > 0 ? { toolOverrides: tools.toolOverrides } : {}),
+    ...(tools.builtinTools !== null ? { builtinTools: tools.builtinTools } : {}),
+  };
+}
+
+/**
  * The new chat draft: a model (the project's default, else the model of the most recently updated
- * chat, else the first enabled one) and its reasoning level. The first send creates the chat with
+ * chat, else the first enabled one), its reasoning level, and the tools (the project's, with the
+ * draft's changes on top). The first send creates the chat with
  * the draft, uploads the attached files to it, and opens it, which sends the message, so empty
  * chats never exist. When an upload fails, sending again reuses the chat and the files already
  * uploaded.
@@ -60,7 +84,12 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
     queryKey: keys.latestChat,
     queryFn: ({ signal }) => fetchChats({ limit: 1 }, signal),
   });
+  const servers = useQuery({
+    queryKey: keys.toolServers,
+    queryFn: ({ signal }) => fetchToolServers(signal),
+  });
   const [choice, setChoice] = useState<{ modelId: string; reasoning: ReasoningLevel | null }>();
+  const [tools, setTools] = useState<ToolChoice>({ toolOverrides: [], builtinTools: null });
   const [alert, setAlert] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
@@ -77,6 +106,7 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
     latest.data?.items[0]?.modelId
   );
   const reasoning = fitLevel(model, choice?.reasoning ?? null);
+  const toolsOff = toolsWarning(toolsOn(tools, project), model?.capabilities);
 
   async function start(text: string, picked: Picked[]): Promise<boolean> {
     if (!model) return false;
@@ -84,11 +114,7 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
     setAlert(null);
     try {
       if (!created.current) {
-        const chat = await createChat({
-          modelId: model.id,
-          ...(project ? { projectId: project.id } : {}),
-          ...(reasoning !== null ? { reasoning } : {}),
-        });
+        const chat = await createChat(draftBody(model.id, project, reasoning, tools));
         created.current = { chatId: chat.id, files: new Map() };
         void client.invalidateQueries({ queryKey: keys.chats });
       }
@@ -135,12 +161,22 @@ export function StartChat({ project, preferred, placeholder, extra }: StartChatP
         />
         {extra}
       </div>
+      {toolsOff ? <p className="text-sm text-warn">{TOOLS_OFF_NOTE}</p> : null}
       <Composer
         onSend={start}
         busy={busy}
         disabled={!model}
         placeholder={placeholder}
         capabilities={model?.capabilities}
+        tools={
+          <ToolsMenu
+            servers={servers.data}
+            project={project}
+            choice={tools}
+            onChange={setTools}
+            warning={toolsOff}
+          />
+        }
       />
     </div>
   );

@@ -1,7 +1,13 @@
-import type { MessageResponse, ModelResponse } from "@copilot/contracts";
+import type {
+  ChatResponse,
+  MessageResponse,
+  ModelResponse,
+  ProjectResponse,
+  ToolServerResponse,
+} from "@copilot/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
-import { fetchChat, fetchMessages, markRead } from "@web/api/routes/chats";
+import { fetchChat, fetchMessages, markRead, updateChat } from "@web/api/routes/chats";
 import { deleteFile, uploadFile } from "@web/api/routes/files";
 import { keys } from "@web/api/routes/keys";
 import { fetchModels } from "@web/api/routes/models";
@@ -9,10 +15,13 @@ import { fetchProject } from "@web/api/routes/projects";
 import { fetchToolServers } from "@web/api/routes/tool-servers";
 import { Composer, type Picked, type Upload } from "@web/components/Chat/Composer";
 import { type ListActions, MessageList } from "@web/components/Chat/MessageList";
+import { ToolsMenu } from "@web/components/Chat/ToolsMenu";
+import { TOOLS_OFF_NOTE, toolsWarning } from "@web/components/Chat/tools";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import { MenuButton, useOwnHeader } from "@web/components/Layout/Shell";
 import { QueryState } from "@web/components/Settings/QueryState";
+import { useChatSaved } from "@web/routes/chat/dialogs";
 import { ChatHeader } from "@web/routes/chat/header";
 import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
 import { type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
@@ -20,7 +29,7 @@ import { type Attached, type Phase, useTurn } from "@web/routes/chat/turn";
 import path from "@web/routes/path";
 import { scheduleContext } from "@web/routes/schedule/rules";
 import { shortTokens } from "@web/routes/settings/provider/models";
-import { type RefObject, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 /** What the new chat screen hands over: the first message, sent once on arrival. */
@@ -144,6 +153,46 @@ export function phaseNote(phase: Phase): string | null {
   return phase === "reconnecting" ? "Connection lost. The answer goes on; reconnecting..." : null;
 }
 
+/**
+ * The chat's tools menu: each change is stored on the chat at once (the menu shows it before the
+ * server answers, and the saved chat replaces it), and applies from the next message.
+ */
+function ChatTools({
+  chat,
+  project,
+  servers,
+  model,
+  onError,
+}: {
+  chat: ChatResponse;
+  project: ProjectResponse | undefined;
+  servers: ToolServerResponse[] | undefined;
+  model: ModelResponse | undefined;
+  /** The server's message when it refused a change, `null` when one starts. */
+  onError: (message: string | null) => void;
+}) {
+  const client = useQueryClient();
+  const saved = useChatSaved();
+  return (
+    <ToolsMenu
+      servers={servers}
+      project={project}
+      choice={{ toolOverrides: chat.toolOverrides, builtinTools: chat.builtinTools }}
+      warning={toolsWarning(toolsOn(chat, project), model?.capabilities)}
+      onChange={(choice) => {
+        onError(null);
+        client.setQueryData(keys.chat(chat.id), { ...chat, ...choice });
+        updateChat(chat.id, choice)
+          .then((result) => saved(result))
+          .catch((failure: unknown) => {
+            onError(describeError(failure).message);
+            void client.invalidateQueries({ queryKey: keys.chat(chat.id), exact: true });
+          });
+      }}
+    />
+  );
+}
+
 /** The message field, with the turn's failure and what keeps the chat from answering. */
 function Footer({
   alert,
@@ -154,6 +203,9 @@ function Footer({
   chatId,
   send,
   stop,
+  tools,
+  toolsOff,
+  toolsError,
 }: {
   alert: string | null;
   notice: string | null;
@@ -163,6 +215,11 @@ function Footer({
   chatId: string;
   send: (text: string, files: Picked[]) => Promise<boolean>;
   stop: () => void;
+  tools: ReactNode;
+  /** Tools are on but the model cannot call them. */
+  toolsOff: boolean;
+  /** Why the server refused the last tools change. */
+  toolsError: string | null;
 }) {
   const upload: Upload = (file, name, onProgress) =>
     uploadFile({ chatId }, file, name, {
@@ -171,8 +228,9 @@ function Footer({
   const note = phaseNote(phase);
   return (
     <div className="mx-auto w-full max-w-3xl space-y-2 px-4 pb-4 sm:px-8">
-      <FormAlert>{alert}</FormAlert>
+      <FormAlert>{alert ?? toolsError}</FormAlert>
       {notice ? <p className="text-sm text-warn">{notice}</p> : null}
+      {toolsOff ? <p className="text-sm text-warn">{TOOLS_OFF_NOTE}</p> : null}
       {note ? (
         <p role="status" className="text-sm text-muted">
           {note}
@@ -191,6 +249,7 @@ function Footer({
         capabilities={model?.capabilities}
         upload={upload}
         discard={(fileId) => void deleteFile(fileId).catch(() => undefined)}
+        tools={tools}
       />
     </div>
   );
@@ -224,6 +283,7 @@ function ChatView({ chatId }: { chatId: string }) {
     enabled: projectId !== null,
   });
   const turn = useTurn(chatId, messages.data, first === null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
   useFirstMessage(first, turn.send);
@@ -295,6 +355,17 @@ function ChatView({ chatId }: { chatId: string }) {
             )
           }
           stop={() => void turn.stop()}
+          tools={
+            <ChatTools
+              chat={data}
+              project={project.data}
+              servers={servers.data}
+              model={model}
+              onError={setToolsError}
+            />
+          }
+          toolsOff={toolsWarning(toolsOn(data, project.data), model?.capabilities)}
+          toolsError={toolsError}
         />
       ) : null}
     </section>

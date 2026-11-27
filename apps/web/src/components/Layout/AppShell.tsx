@@ -1,7 +1,9 @@
 import { type Shell, ShellContext } from "@web/components/Layout/Shell";
+import { ShortcutsDialog } from "@web/components/Layout/ShortcutsDialog";
 import { Sidebar } from "@web/components/Sidebar/Sidebar";
 import { PageLoading } from "@web/components/Suspense/PageLoading";
 import { useEventStream } from "@web/hooks/useEvents";
+import { useBackButton, useHomeBeneath, useShortcuts } from "@web/hooks/usePlatform";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { LuMenu, LuX } from "react-icons/lu";
 import { Outlet, useLocation } from "react-router-dom";
@@ -10,10 +12,16 @@ import { Outlet, useLocation } from "react-router-dom";
  * The signed-in layout: a sidebar beside the screen on wide windows, and a drawer behind a menu
  * button on phones (a modal `<dialog>`, so Escape, focus, and the inert page come from the
  * browser). A page with its own top bar (`useOwnHeader`) replaces the phone header's row. The
- * shell reads the user's live events (`useEventStream`), so lists and dots stay current.
+ * shell reads the user's live events (`useEventStream`), so lists and dots stay current, and owns
+ * the platform behavior: desktop shortcuts (Ctrl+/ lists them), the Android back button, and the
+ * chat list beneath a deep link on phones.
  */
 export function AppShell() {
   useEventStream();
+  const [shortcuts, setShortcuts] = useState(false);
+  useShortcuts(() => setShortcuts(true));
+  useBackButton();
+  useHomeBeneath();
   const drawer = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const [ownHeader, setOwnHeader] = useState(false);
@@ -88,6 +96,7 @@ export function AppShell() {
               <Outlet />
             </Suspense>
           </main>
+          <ShortcutsDialog open={shortcuts} onClose={() => setShortcuts(false)} />
         </div>
       </div>
     </ShellContext>
