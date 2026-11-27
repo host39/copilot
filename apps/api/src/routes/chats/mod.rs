@@ -1,14 +1,18 @@
 //! `/api/chats`: chats, messages, turns (server-sent `ChatStreamEvent`s), approvals, and read
 //! state (`ChatService`, `ChatEngine`, `RunRegistry`). The walking skeleton (P1.9) wrote
 //! `create`, `get`, `messages`, and `send`, roadmap step P2.A the other non-streaming handlers,
-//! and P3.1 regenerate, retry, reattaching (`stream`), and stop; the decisions route follows in
-//! P3.1's second part. Attachments are in `routes::files`. Deleting a chat stops its live run
-//! first, so no run writes into a chat that is gone.
+//! and P3.1 regenerate, retry, decisions, reattaching (`stream`), and stop. Attachments are in
+//! `routes::files`. Deleting a chat stops its live run first, so no run writes into a chat that
+//! is gone.
 //!
 //! Every turn route loads the caller's chat first (another user's chat is a `404`, never
 //! `CHAT_BUSY`), reserves the chat, prepares the turn (a failure answers `4xx` and frees the
 //! chat), and only then switches to server-sent events. The run goes on when the client
 //! disconnects; it reattaches with `GET /chats/{id}/stream?after=<seq>`.
+//!
+//! The caller's `GET /api/events` streams hear of it: `chat.updated` when a chat is created,
+//! changed, read, or deleted here, and the run's sink sends `run.started`, `approval.pending`
+//! (a run that paused for an approval), and `run.finished` for every run.
 
 pub mod cursor;
 #[cfg(test)]
@@ -16,6 +20,8 @@ mod flows;
 pub mod serializer;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -28,14 +34,15 @@ use axum::response::{IntoResponse, Response};
 use copilot_contracts::{
     ChatListQuery, ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest,
     DecisionsRequest, DetailsResponse, ErrorResponse, ListResponse, MessageResponse, PageResponse,
-    ProjectResponse, SendMessageRequest, StreamQuery, ToolOverride, UpdateChatRequest,
+    ProjectResponse, SendMessageRequest, StreamQuery, ToolOverride, UpdateChatRequest, UserEvent,
 };
 use copilot_core::shared::constants::{
     DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
 };
 use copilot_core::{
-    Actor, ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId, NewChat, PreparedTurn,
-    ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnEvent, TurnInput, TurnSink,
+    Actor, CallDecision, CallId, ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId,
+    NewChat, PreparedTurn, ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnEvent,
+    TurnInput, TurnSink, UserId,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
@@ -46,8 +53,8 @@ use crate::config::AppState;
 use crate::helpers::auth::Caller;
 use crate::helpers::runs::{Reservation, Subscription};
 use crate::routes::convert::ToCore;
-use crate::routes::path::{Id, Params};
-use crate::routes::{pending, projects};
+use crate::routes::path::{Id, MessageIds, Params};
+use crate::routes::projects;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -114,6 +121,16 @@ fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Respon
         drop(reservation);
     });
     stream_response(state, events)
+}
+
+/// Tells the owner's event streams that `chat` changed.
+fn changed(state: &AppState, owner: UserId, chat: ChatId) {
+    state.runs.publish(
+        owner,
+        UserEvent::ChatUpdated {
+            chat_id: chat.into(),
+        },
+    );
 }
 
 /// A run's events as server-sent events, each with its `seq` as the event id. The body ends
@@ -215,6 +232,7 @@ pub async fn create(
         voice_replies: body.voice_replies.unwrap_or(false),
     };
     let chat = state.chats.create(&caller, input).await?;
+    changed(&state, caller.user_id, chat.id());
     let data = serializer::chat(&chat);
     Ok((StatusCode::CREATED, axum::Json(DetailsResponse { data })))
 }
@@ -279,6 +297,7 @@ pub async fn update(
         .chats
         .update(&caller, ChatId::new(id), changes)
         .await?;
+    changed(&state, caller.user_id, chat.id());
     Ok(axum::Json(DetailsResponse {
         data: serializer::chat(&chat),
     }))
@@ -312,6 +331,7 @@ pub async fn delete(
         tracing::warn!(chat_id = %chat, "api.chats.delete.run-live");
     }
     state.chats.delete(&caller, chat).await?;
+    changed(&state, caller.user_id, chat);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -332,7 +352,10 @@ pub async fn read(
     Caller(caller): Caller,
     Id(id): Id,
 ) -> Result<StatusCode, HttpError> {
-    state.chats.mark_read(&caller, ChatId::new(id)).await?;
+    let chat = ChatId::new(id);
+    state.chats.mark_read(&caller, chat).await?;
+    // The caller's other devices clear the unread mark.
+    changed(&state, caller.user_id, chat);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -445,12 +468,33 @@ pub async fn retry(
     ),
     request_body = DecisionsRequest,
     responses(
-        (status = OK, description = "The continued turn as server-sent events", content_type = "text/event-stream", body = ChatStreamEvent),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = OK, description = "The continued turn as server-sent events: the decided calls run (or get their denial) from the paused turn's snapshot, then the model answers", content_type = "text/event-stream", body = ChatStreamEvent),
+        (status = BAD_REQUEST, description = "The decisions do not cover exactly the pending calls, a reason is too long, or the turn is not valid (for example no model)", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat or message", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The message does not await a decision (`NOT_AWAITING_APPROVAL`, also when another decision came first), the chat is already answering (`CHAT_BUSY`), too many chats are (`TOO_MANY_RUNS`), the model cannot answer (`MODEL_UNAVAILABLE`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
     )
 )]
-pub async fn decide(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn decide(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    ids: MessageIds,
+    JsonBody(body): JsonBody<DecisionsRequest>,
+) -> Result<Response, HttpError> {
+    let decisions = body
+        .decisions
+        .into_iter()
+        .map(|decision| CallDecision {
+            call_id: CallId::new(decision.call_id),
+            decision: decision.decision.to_core(),
+            scope: decision.scope.unwrap_or_default().to_core(),
+            reason: decision.reason,
+        })
+        .collect();
+    let input = TurnInput::Decide {
+        message_id: MessageId::new(ids.message),
+        decisions,
+    };
+    start(&state, &caller, ChatId::new(ids.chat), input).await
 }
 
 #[utoipa::path(
@@ -531,10 +575,9 @@ pub async fn save_as_project(
     Caller(caller): Caller,
     Id(id): Id,
 ) -> Result<axum::Json<DetailsResponse<ProjectResponse>>, HttpError> {
-    let project = state
-        .chats
-        .save_as_project(&caller, ChatId::new(id))
-        .await?;
+    let chat = ChatId::new(id);
+    let project = state.chats.save_as_project(&caller, chat).await?;
+    changed(&state, caller.user_id, chat);
     Ok(axum::Json(DetailsResponse {
         data: projects::response(&project),
     }))

@@ -1,0 +1,33 @@
+meta {
+  name: 11-12 Decide Invalid Message Id
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/messages/not-a-uuid/decisions
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "decisions": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq messageId
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/messages/{messageId}/decisions`
+
+  **This test verifies:** a `messageId` that is not a UUID is a `400` naming the field.
+}

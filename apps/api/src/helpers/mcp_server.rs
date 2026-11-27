@@ -25,6 +25,7 @@ pub struct McpServer {
     pub url: String,
     tools: Arc<Mutex<Vec<Tool>>>,
     requests: Arc<AtomicUsize>,
+    calls: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
 impl McpServer {
@@ -38,6 +39,7 @@ impl McpServer {
     ) -> Self {
         let handler = Handler {
             tools: Arc::new(Mutex::new(Vec::new())),
+            calls: Arc::new(Mutex::new(Vec::new())),
             legacy,
         };
         let config = StreamableHttpServerConfig::default()
@@ -67,6 +69,7 @@ impl McpServer {
             url: format!("http://{address}/mcp"),
             tools: handler.tools,
             requests,
+            calls: handler.calls,
         };
         server.set_tools(tools);
         server
@@ -90,6 +93,11 @@ impl McpServer {
     /// HTTP requests that reached the server.
     pub fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
+    }
+
+    /// The tool calls the server answered, in order: each tool's name and arguments.
+    pub fn calls(&self) -> Vec<(String, Value)> {
+        self.calls.lock().expect("calls").clone()
     }
 }
 
@@ -115,6 +123,7 @@ async fn guard(State(gate): State<Arc<Gate>>, request: Request, next: Next) -> R
 #[derive(Clone)]
 struct Handler {
     tools: Arc<Mutex<Vec<Tool>>>,
+    calls: Arc<Mutex<Vec<(String, Value)>>>,
     legacy: bool,
 }
 
@@ -159,6 +168,10 @@ impl ServerHandler for Handler {
         }
         let arguments = Value::Object(request.arguments.unwrap_or_default());
         let text = format!("{} {arguments}", request.name);
+        self.calls
+            .lock()
+            .expect("calls")
+            .push((request.name.to_string(), arguments));
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
     }
 }

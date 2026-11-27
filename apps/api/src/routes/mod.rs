@@ -1,10 +1,10 @@
 //! Route modules. Each exposes `router()` with its OpenAPI-documented handlers; mount it here.
 //!
 //! [`router`] puts `/health` at the root and everything else under `/api`: lib-rustauth's routes
-//! and Copilot's, which [`Identity::api`] puts behind the guard. Handlers that later steps write
-//! (P2.A the domains, P3.1 the other streaming routes) answer [`pending`] (`501`) until then;
-//! the walking skeleton (P1.9) wrote the path of a first answer. [`convert`] maps core values to
-//! their wire forms, and [`path::Id`] reads `{id}`.
+//! and Copilot's, which [`Identity::api`] puts behind the guard. A handler that a later step
+//! writes (P3.2 the schedule's Run now) answers [`pending`] (`501`) until then. [`convert`] maps
+//! core values to their wire forms, [`path::Id`] reads `{id}`, and [`path::MessageIds`] reads
+//! `{id}` and `{messageId}`.
 
 pub mod chats;
 pub mod convert;
@@ -71,11 +71,11 @@ pub fn pending() -> HttpError {
 mod tests {
     use axum::Router;
     use axum::http::header::WWW_AUTHENTICATE;
-    use axum::http::{Method, StatusCode};
+    use axum::http::{HeaderMap, Method, StatusCode};
     use copilot_middleware::REQUEST_ID_HEADER;
     use serde_json::Value;
 
-    use crate::helpers::testing::{app, get, register, request, send};
+    use crate::helpers::testing::{TestResponse, app, get, open, register, request, send};
 
     const ID: &str = "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192";
 
@@ -155,6 +155,7 @@ mod tests {
         ("POST", "/api/chats/{id}/messages"),
         ("POST", "/api/chats/{id}/regenerate"),
         ("POST", "/api/chats/{id}/retry"),
+        ("POST", "/api/chats/{id}/messages/{messageId}/decisions"),
         ("GET", "/api/chats/{id}/stream"),
         ("POST", "/api/chats/{id}/stop"),
         ("POST", "/api/chats/{id}/save-as-project"),
@@ -173,10 +174,11 @@ mod tests {
         ("PATCH", "/api/schedules/{id}"),
         ("DELETE", "/api/schedules/{id}"),
         ("POST", "/api/schedules/preview"),
+        ("GET", "/api/events"),
     ];
 
     fn written(method: &Method, uri: &str) -> bool {
-        let path = uri.replace(ID, "{id}");
+        let path = uri.replacen(ID, "{id}", 1).replacen(ID, "{messageId}", 1);
         WRITTEN
             .iter()
             .any(|(written, template)| method.as_str() == *written && path == *template)
@@ -188,11 +190,20 @@ mod tests {
         let token = register(&app, "alice").await;
         let mut reached = 0;
         for (method, uri) in operations(&app).await {
-            let response = send(
+            // An event stream that opens is written; it is not read to its end.
+            let response = match open(
                 app.clone(),
                 request(method.clone(), &uri, Some(&token), None),
             )
-            .await;
+            .await
+            {
+                Ok(_) => Box::new(TestResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: Value::Null,
+                }),
+                Err(response) => response,
+            };
             assert_ne!(response.status, StatusCode::UNAUTHORIZED, "{method} {uri}");
             if written(&method, &uri) {
                 reached += 1;
