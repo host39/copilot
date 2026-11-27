@@ -37,7 +37,7 @@ docker compose -f deploy/compose.yml logs copilot | grep rustauth.setup.token-is
 
 ## Reverse Proxy
 
-For any access beyond the machine itself, terminate TLS at a reverse proxy in front of `127.0.0.1:3000` that appends the client's address to `X-Forwarded-For`. The server never sees the proxy's own address: Docker's port proxy connects to it from the compose network's gateway, so that gateway is what `AUTH_TRUSTED_PROXIES` must list, and the compose file pins the network (`COPILOT_SUBNET`, `COPILOT_GATEWAY`) and trusts its gateway by default. Trusting it is safe because the port is published on the host's loopback only, so only processes on this host connect through it. If the subnet overlaps one of the host's networks, choose another and set all three variables to match. With a proxy that runs as a container on the compose network instead, list that container's address. Without a trusted address, every client shares one bucket in the per-IP sign-in limits, so one client's failed sign-ins lock everyone out for 15 minutes. CI checks that the limits key on the forwarded address. Streaming responses send `Cache-Control: no-cache` and `X-Accel-Buffering: no`; with nginx, also turn off buffering for the API:
+For any access beyond the machine itself, terminate TLS at a reverse proxy in front of `127.0.0.1:3000` that appends the client's address to `X-Forwarded-For`. The server never sees the proxy's own address: Docker's port proxy connects to it from the compose network's gateway, so that gateway is what `AUTH_TRUSTED_PROXIES` must list, and the compose file pins the network (`COPILOT_SUBNET`, `COPILOT_GATEWAY`) and trusts its gateway by default. Trusting it is safe because the port is published on the host's loopback only, so only processes on this host connect through it. If the subnet overlaps one of the host's networks, choose another and set all three variables to match. With a proxy that runs as a container on the compose network instead, list that container's address. Without a trusted address, every client shares one bucket in the per-IP sign-in limits, so one client's failed sign-ins lock everyone out for 15 minutes. CI checks that the limits key on the forwarded address. Streaming responses send `Cache-Control: no-cache` and `X-Accel-Buffering: no`; with nginx, also turn off response buffering for the API. Allow request bodies up to `MAX_UPLOAD_MB` plus a little (nginx refuses bodies over 1 MB by default), and keep nginx's request buffering on, so a slow client uploads to nginx and holds no Copilot upload slot meanwhile:
 
 ```nginx
 location / {
@@ -45,8 +45,14 @@ location / {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_buffering off;
+    client_max_body_size 26m;
+    proxy_request_buffering on;
+    client_header_timeout 30s;
+    client_body_timeout 30s;
 }
 ```
+
+Caddy streams request bodies to the server unbuffered; Copilot itself refuses an upload that falls behind its pace (`UPLOAD_GRACE_SECS`, then 16 KiB per second) and drops a connection whose headers take longer than 30 seconds, so a slow client cannot hold a slot for long. Limit body sizes there with `request_body { max_size 26MB }`.
 
 ## Routes and Probes
 

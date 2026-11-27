@@ -44,6 +44,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 getrandom = "0.4.3"
 http = "1.5.0"
 http-body-util = "0.1.3"
+# The server's HTTP/1 connections, with a header read timeout (`apps/api` `helpers::serve`).
+hyper = { version = "1.13.0", default-features = false }
 # The outbound clients check the peer address of each new connection (`connect::HttpInfo`).
 hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "tokio"] }
 jiff = { version = "1.0.3", default-features = false, features = ["std", "tzdb-zoneinfo", "tzdb-bundle-always"] }

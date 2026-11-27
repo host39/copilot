@@ -10,7 +10,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
 use crate::helpers::runs::RunRegistry;
-use crate::helpers::uploads::UploadSlots;
+use crate::helpers::slots::Slots;
 
 /// Shared state handed to every handler via `State<AppState>`. The composition root
 /// (`helpers::bootstrap::wire`) builds every service once; handlers never build repositories or
@@ -34,7 +34,9 @@ pub struct AppState {
     /// The chats that are answering now: one run per chat, a few per user.
     pub runs: Arc<RunRegistry>,
     /// The uploads being read now: a few per user and in all.
-    pub uploads: Arc<UploadSlots>,
+    pub uploads: Arc<Slots>,
+    /// File downloads being sent, a few per user and in all.
+    pub downloads: Arc<Slots>,
     /// Scheduled runs waiting to record how they ended; shutdown waits for them before the pool
     /// closes (`helpers::scheduler::settle`).
     pub tasks: TaskTracker,

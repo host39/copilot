@@ -74,6 +74,20 @@ pub const MAX_ACTIVE_RUNS_PER_USER: usize = 3;
 /// more wait their turn.
 pub const UPLOADS_PER_USER: usize = 2;
 pub const UPLOADS_AT_ONCE: usize = 4;
+/// An upload body may take `UPLOAD_GRACE_SECS` plus one second per `UPLOAD_MIN_BYTES_PER_SEC`
+/// it has sent so far: a client slower than that (or one that stops sending) is refused, so it
+/// cannot hold an upload slot for long.
+pub const UPLOAD_GRACE_SECS: u64 = 30;
+pub const UPLOAD_MIN_BYTES_PER_SEC: u64 = 16 * 1_024;
+/// File downloads sent at once, per user and in all; more wait their turn.
+pub const DOWNLOADS_PER_USER: usize = 4;
+pub const DOWNLOADS_AT_ONCE: usize = 32;
+/// A download reads its file in pieces of this size, one query each.
+pub const DOWNLOAD_CHUNK_BYTES: u64 = 512 * 1_024;
+/// A download whose client takes no piece for this long ends, freeing its slot.
+pub const DOWNLOAD_STALL_SECS: u64 = 60;
+/// Longest wait for a request's headers once a connection is open.
+pub const HEADER_READ_TIMEOUT_SECS: u64 = 30;
 /// Scheduled runs that execute at once.
 pub const MAX_SCHEDULED_RUNS: usize = 2;
 /// Longest scheduled run (a fire or a Run now): past it the run is stopped and recorded as

@@ -178,6 +178,37 @@ impl FileRepository for PgStore {
         Ok(bytes.map(Bytes::from))
     }
 
+    async fn piece(
+        &self,
+        user: UserId,
+        id: FileId,
+        offset: u64,
+        len: u64,
+    ) -> DomainResult<Option<Bytes>> {
+        let invalid = || DomainError::validation("The range is out of bounds.");
+        // Files are at most 1,000 MB, within `integer` (the type `substring` takes).
+        let start = i32::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(1));
+        let (Some(start), Ok(len)) = (start, i32::try_from(len)) else {
+            return Err(invalid());
+        };
+        // `file_contents.bytes` is stored uncompressed (`STORAGE EXTERNAL`), so Postgres reads
+        // only the TOAST chunks of the piece.
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT substring(c.bytes FROM $3 FOR $4) FROM file_contents c \
+             JOIN files f ON f.id = c.file_id WHERE c.file_id = $1 AND f.user_id = $2",
+        )
+        .bind(id.uuid())
+        .bind(user.uuid())
+        .bind(start)
+        .bind(len)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(failed("database.files.piece.failed"))?;
+        Ok(bytes.map(Bytes::from))
+    }
+
     async fn update(&self, file: &StoredFile) -> DomainResult<()> {
         sqlx::query("UPDATE files SET name = $3, included = $4 WHERE id = $1 AND user_id = $2")
             .bind(file.id().uuid())

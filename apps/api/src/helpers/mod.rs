@@ -2,8 +2,9 @@ pub mod auth;
 pub mod bootstrap;
 pub mod runs;
 pub mod scheduler;
+pub mod serve;
+pub mod slots;
 pub mod streams;
-pub mod uploads;
 pub mod worker;
 
 #[cfg(test)]

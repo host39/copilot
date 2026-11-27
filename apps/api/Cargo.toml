@@ -29,6 +29,9 @@ copilot-middleware = { workspace = true }
 copilot-providers = { workspace = true }
 copilot-security = { workspace = true }
 futures-util = { workspace = true }
+# Serves HTTP/1 with a timer, so a header read timeout applies (`helpers::serve`).
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["http1", "server", "server-graceful", "service", "tokio"] }
 # Identity: the router, guard, and Postgres storage. Only `helpers/auth.rs` names it.
 rustauth = { workspace = true, features = ["axum", "postgres"] }
 # Query strings (`routes::path::Params`).
@@ -39,6 +42,8 @@ tokio = { workspace = true, features = ["sync"] }
 # `sync::CancellationToken`: the root token that shutdown cancels; `rt`: the task tracker that
 # shutdown waits on for scheduled runs to record how they ended.
 tokio-util = { workspace = true, features = ["rt"] }
+# `ServiceExt::map_request`: the peer address on each request (`helpers::serve`).
+tower = { workspace = true, features = ["util"] }
 # Serves the web bundle (`WEB_DIR`).
 tower-http = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
@@ -47,6 +52,8 @@ utoipa-axum = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# `start_paused`: upload pace tests on a paused clock.
+tokio = { workspace = true, features = ["sync", "test-util"] }
 http-body-util = { workspace = true }
 # An in-process MCP server for the tool server test route (`make test-db`).
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
@@ -56,7 +63,6 @@ sha2 = { workspace = true }
 rustauth = { workspace = true, features = ["axum", "postgres", "testing"] }
 # `#[sqlx::test]` database tests (`make test-db`).
 sqlx = { workspace = true, features = ["macros", "migrate", "postgres", "runtime-tokio"] }
-tower = { workspace = true, features = ["util"] }
 # A model provider for the end-to-end turn test.
 wiremock = { workspace = true }
 
