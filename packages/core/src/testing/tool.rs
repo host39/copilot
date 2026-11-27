@@ -101,6 +101,18 @@ impl ToolServerRepository for MemoryStore {
         *stored = stored.clone().with_listing(listing, review_required, at);
         Ok(true)
     }
+
+    async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
+        let mut tables = self.tables();
+        if let Some(stored) = tables
+            .tool_servers
+            .get_mut(&id)
+            .filter(|stored| stored.user_id() == user)
+        {
+            *stored = stored.clone().stale();
+        }
+        Ok(())
+    }
 }
 
 impl Tables {

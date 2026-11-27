@@ -50,6 +50,7 @@ fn request(messages: Vec<LlmMessage>) -> LlmRequest {
         tools: Vec::new(),
         max_output_tokens: 1_024,
         reasoning: None,
+        can_reason: false,
         audio_out: None,
         cache_breakpoints: false,
     }
@@ -124,7 +125,12 @@ fn other_presets_use_system_and_max_tokens() {
         assert_eq!(body["messages"][0]["role"], "system", "{preset:?}");
         assert_eq!(body["max_tokens"], 1_024, "{preset:?}");
         assert!(body.get("max_completion_tokens").is_none());
-        assert!(body.get("stream_options").is_none());
+        let usage = (preset == Preset::Ollama).then(|| json!({ "include_usage": true }));
+        assert_eq!(
+            body.get("stream_options"),
+            usage.as_ref(),
+            "only Ollama asks for usage: {preset:?}"
+        );
     }
 }
 

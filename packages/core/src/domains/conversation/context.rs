@@ -28,8 +28,8 @@ use crate::domains::tool::{EffectiveTools, ToolSpec};
 use crate::ports::llm_gateway::AudioOut;
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::{
-    AUDIO_OUT_FORMAT, AUDIO_OUT_VOICE, DEFAULT_MAX_OUTPUT_TOKENS, GEMINI_REQUEST_MAX_BYTES,
-    REQUEST_MAX_BYTES, REQUEST_MAX_PDF_PAGES,
+    AUDIO_OUT_FORMAT, AUDIO_OUT_VOICE, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REASONING_OUTPUT_TOKENS,
+    GEMINI_REQUEST_MAX_BYTES, REQUEST_MAX_BYTES, REQUEST_MAX_PDF_PAGES,
 };
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::FileId;
@@ -185,10 +185,11 @@ pub fn request(inputs: &ContextInputs<'_>, context: &TurnContext) -> DomainResul
         system: context.system.clone(),
         messages,
         tools,
-        max_output_tokens: output_limit(inputs.model),
+        max_output_tokens: output_limit(inputs.model, inputs.capabilities),
         // The snapshot's level, checked against the current model: a decision continues on the
         // chat's model, which may have changed since the pause.
         reasoning: reasoning(inputs, sends_tools, context.reasoning),
+        can_reason: inputs.capabilities.reasoning,
         audio_out,
         cache_breakpoints: dialect == Dialect::Anthropic,
     })
@@ -218,13 +219,19 @@ pub fn references(history: &[Message]) -> Vec<FileId> {
     ids
 }
 
-/// The output token limit: the model's own, else `DEFAULT_MAX_OUTPUT_TOKENS` or a quarter of a
-/// known context window, whichever is smaller.
-pub fn output_limit(model: &Model) -> u32 {
+/// The output token limit: the model's own, else the default (`DEFAULT_MAX_OUTPUT_TOKENS`, or
+/// `DEFAULT_REASONING_OUTPUT_TOKENS` for a model with `reasoning`, whose reasoning tokens count
+/// against the limit) or a quarter of a known context window, whichever is smaller.
+pub fn output_limit(model: &Model, capabilities: &Capabilities) -> u32 {
+    let default = if capabilities.reasoning {
+        DEFAULT_REASONING_OUTPUT_TOKENS
+    } else {
+        DEFAULT_MAX_OUTPUT_TOKENS
+    };
     match (model.max_output_tokens(), model.context_window()) {
         (Some(limit), _) => limit,
-        (None, Some(window)) => DEFAULT_MAX_OUTPUT_TOKENS.min(window / 4).max(1),
-        (None, None) => DEFAULT_MAX_OUTPUT_TOKENS,
+        (None, Some(window)) => default.min(window / 4).max(1),
+        (None, None) => default,
     }
 }
 
@@ -348,7 +355,8 @@ fn window(
     let Some(context_window) = inputs.model.context_window() else {
         return Ok(0);
     };
-    let budget = u64::from(context_window.saturating_sub(output_limit(inputs.model)));
+    let budget =
+        u64::from(context_window.saturating_sub(output_limit(inputs.model, inputs.capabilities)));
     let messages = lower(
         inputs,
         &Plan {

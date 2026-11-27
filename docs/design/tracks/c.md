@@ -18,7 +18,7 @@ None.
 
 ## Interface-Change Requests
 
-None blocking. For a later serial step:
+None blocking. For a later serial step (the unknown-tool hook and the time limits were done in P3.1a, see [`p3-1.md`](./p3-1.md)):
 
 - **Unknown tools in the stored cache.** The spec refreshes the stored tool list "when a call reports an unknown tool". The adapter refreshes rmcp's list on the connection and fails a removed tool with `copilot_mcp::TOOL_UNKNOWN`, but the engine treats it as any call error, so the stored list stays until its `ttlMs` (or an hour) passes or the user tests the server. A `TOOL_UNKNOWN` constant next to `TOOL_TIMEOUT` in `core/src/ports/tool_host.rs`, and a hook that marks the server's cache stale when a call fails with it (for example `ToolService::stale(actor, server)` clearing `tools_fetched_at`), would close the gap.
 - **rmcp's own logs.** `copilot-logger` applies one level to every target. rmcp logs free-form messages at `info` (for example "Service initialized as client", and each server notification with its contents), and at `trace` every message it receives, tool results included. Capping the `rmcp` target at `warn` in `copilot-logger` (a frozen crate) would keep untrusted server text and results out of the logs at every level; copilot-mcp's own `mcp.*` events cover what operators need. Done in `p2-review`: `warn` was not enough (rmcp logs a failed connection's URL at `error`), so `copilot-logger` silences the `rmcp` target at every level.

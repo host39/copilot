@@ -227,10 +227,10 @@ The pure address policy (`net::is_allowed(ip, scope)`, std only) lives in core, 
 
 ### Shutdown and Recovery
 
-- `ApiContext` owns a root `CancellationToken`; the shutdown future cancels it.
-- Every run uses a child token, so the engine saves partial output as `cancelled` and emits `done`. SSE bodies end when the root token fires (`take_until(root.cancelled_owned())`), so `with_graceful_shutdown` does not hang on open streams. The scheduler loop exits.
-- `ApiContext::close` waits for the registry to drain (at most `SHUTDOWN_DRAIN_SECS`, 10) before closing the pool.
-- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)).
+- `ApiContext` owns a root `CancellationToken` and the `RunRegistry`.
+- On SIGINT or SIGTERM the server stops accepting connections and the registry drains (`RunRegistry::drain`): new runs fail with `SERVER_STOPPING` (422) at once, live runs get `SHUTDOWN_GRACE_SECS` (5) to finish on their own (their streams end with `done`), then the root token fires. Every run uses a child token, so the engine saves partial output as `cancelled` and emits `done`; runs get up to `SHUTDOWN_DRAIN_SECS` (10) more to save. SSE bodies end when the root token fires (`take_until(root.cancelled_owned())`), so `with_graceful_shutdown` does not hang on open streams. The scheduler loop exits.
+- `ApiContext::close` finishes the same drain (its times count from the signal) before closing the pool. The compose file gives the container `stop_grace_period: 20s`, above the 15 seconds the two waits may take.
+- Before serving, `ApiContext::create` calls `ChatService::recover()`, which marks `streaming` messages as `error` ("Interrupted by a server restart."), without moving their chats (nothing turns unread). Messages in `awaiting_approval` stay valid. Every `tool_call` without a result gets a synthesized result before the chat's next model request (see [Ending a Turn](#ending-a-turn)), and Retry answers an interrupted answer again.
 
 ## Identity (lib-rustauth)
 
@@ -319,6 +319,7 @@ struct RemoteModel { remote_id, display_name, context_window: Option<u32>, max_o
 struct LlmRequest {
     model: String, system: String, messages: Vec<LlmMessage>, tools: Vec<ToolSpec>, // tools sorted by alias
     max_output_tokens: u32, reasoning: Option<ReasoningLevel>, audio_out: Option<AudioOut>, cache_breakpoints: bool,
+    can_reason: bool,                                                            // the model has `reasoning`, whatever the level
 }
 struct LlmMessage { role: Role, parts: Vec<LlmPart>, replay: Option<serde_json::Value> } // replay = provider_state content
 enum LlmPart {
@@ -348,6 +349,7 @@ struct ToolListing { tools: Vec<RemoteTool>, protocol_version: String, ttl: Opti
 struct ToolOutput { content: Vec<ToolContent>, is_error: bool }               // core truncates to MCP_RESULT_MAX_BYTES
 enum ToolContent { Text(String), Image { media_type, data: Bytes }, Audio { media_type, data: Bytes }, Link { uri, name: Option<String> }, Binary { media_type: Option<String> } }
 const TOOL_TIMEOUT: &str = "TOOL_TIMEOUT";                                      // the error code of a call past its timeout
+const TOOL_UNKNOWN: &str = "TOOL_UNKNOWN";                                      // a tool the server no longer lists: core expires the stored list
 ```
 
 `provider_call_id` is always set by core: the provider's own id when the message is replayed, otherwise `call_<copilot uuid without dashes>` (see [Replay Rules](#replay-rules)); a result uses the id of its call. In a `Tool` message, text parts (results lowered to text) follow the `ToolResult` parts; adapters send them as user text and merge adjacent same-role messages where the provider requires alternation.
@@ -396,6 +398,7 @@ trait ChatRepository {
     async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>>;
     async fn insert(&self, chat: &Chat) -> DomainResult<()>;        // with chat_tool_servers and chat_tool_approvals rows, one tx
     async fn update(&self, chat: &Chat) -> DomainResult<()>;        // replaces chat_tool_servers rows; chat_tool_approvals only grow (a stale read never drops one)
+    async fn approve(&self, user: UserId, chat: ChatId, tools: &[ApprovedTool]) -> DomainResult<()>; // "Approve for this chat": approval rows only, so a rename saved meanwhile stays
     async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool>;
     async fn mark_read(&self, user: UserId, id: ChatId, at: DateTime<Utc>) -> DomainResult<()>;
 }
@@ -420,6 +423,7 @@ trait ToolServerRepository {
     async fn update(&self, server: &ToolServer) -> DomainResult<()>;
     async fn delete(&self, user: UserId, id: ToolServerId) -> DomainResult<bool>;
     async fn save_listing(&self, user: UserId, id: ToolServerId, url: &BaseUrl, listing: &ToolListing, review_required: bool, at: DateTime<Utc>) -> DomainResult<bool>; // only while the server's URL is still `url`
+    async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()>; // the stored list expires now (ttl 0); tools and fetch time stay
 }
 trait ScheduleRepository {
     async fn list(&self, user: UserId, query: ScheduleQuery) -> DomainResult<Vec<Schedule>>;
@@ -449,7 +453,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
 | `FileService` | `upload` (allowlist, magic bytes, quota, `sha256`, token estimate, page count), `content` (metadata and bytes), `bytes` (one read, for the engine, which already has the metadata), `update`, `move_to_project`, `delete` |
 | `ChatService` | `list`, `create`, `update`, `delete`, `messages`, `prepare` (validates and builds a `PreparedTurn`), `prepare_scheduled(firing) -> PreparedTurn` (a schedule run's new chat and prompt), `save_as_project`, `save_instructions`, `search`, `mark_read`, `recover` |
 | `ChatEngine` | `run(turn, sink: Arc<dyn TurnSink>, cancel: CancellationToken) -> DomainResult<TurnOutcome>`; `TurnOutcome { message_id, status, finish_reason, error }` converts into the schedule's `RunOutcome`. `Err` means a message could not be saved (the assistant message stays `streaming` until `recover()`); provider, tool, and file read failures end with a saved `error` answer and an `error` outcome. Internal errors become the generic text, and the engine logs their dotted key and source (`core.engine.failed`) where it converts them |
-| `ToolService` | CRUD; `test` (list tools, store cache, detect changed tools); `review` (clear `tools_review_required`); `effective_tools(chat)`; tool cache refresh on expiry or unknown tool |
+| `ToolService` | CRUD; `test` (list tools, store cache, detect changed tools); `review` (clear `tools_review_required`); `effective_tools(chat)`; tool cache refresh on expiry or unknown tool (`stale`: a call that fails with `TOOL_UNKNOWN` expires the stored list, so the next turn lists the server again and keeps the old list only if that fails) |
 | `ScheduleService` | CRUD with limits; `preview(cron, tz) -> {description, next_runs}`; `fire_due(now, limit) -> Vec<Firing>` (compare-and-set claims); `run_now(id) -> Firing`; `record(id, outcome, started_at)`; the built-in tool handlers. `ChatService::prepare_scheduled` turns a `Firing` into a `PreparedTurn`, so the schedule domain never depends on the chat service |
 
 ### Aggregates and Atomic Writes
@@ -496,7 +500,7 @@ Two pure functions, unit-tested without fakes, read file metadata only: `convers
 6. **Request size.** Compute the encoded size (base64 adds about 33%) and PDF page count against the target's limits (core constants per preset, **verify** in P2.B). Over the limit, replace the oldest binary parts in history (audio first) with the omitted notice. If the current turn alone is over, fail with a human-readable error naming the limit.
 7. **Hash.** `context_hash = sha256(canonical JSON of { system, tools: [(alias, server_id, name, description, input_schema)] sorted by alias, files: [(file_id, sha256, rendering)] for the preamble and every file part in the window (attachments and tool result images), render_profile: target capability flags and reasoning level, window_start_id })`. Canonical JSON means sorted object keys at every level and no insignificant whitespace. The server id and original name are hashed so a server deleted and added again under the same slug gets a new snapshot, never the old row with the old server id (snapshots are saved insert-or-ignore by hash). `rendering` is `inline`, `native`, `placeholder` (the model cannot read it), `in_project`, `deleted` (sha256 all zero), or `too_large`.
 8. **Snapshot.** `TurnContext { hash, system, tools: [(alias, server_id, name, description, input_schema)], files, window_start_id, reasoning }` is saved in `turn_contexts`; `files` is the preamble (oldest first, with its renderings) and `reasoning` the turn's level, so a continuation never turns thinking on or off inside a tool loop. Every request in a turn, including the continuation after an approval, is built from that snapshot (a model that has since lost `tools` gets none, and step 9 applies the snapshot's reasoning level to the current model, so a model without `reasoning` gets none). Settings changes apply from the next user message. Tool result text is stored exactly as sent (after truncation) and always replayed from storage, never re-truncated.
-9. **Request settings.** `max_output_tokens` is the model's, else `DEFAULT_MAX_OUTPUT_TOKENS` or a quarter of a known context window, whichever is smaller. `reasoning` is `None` without the `reasoning` capability, `off` where the preset needs it whenever tools are sent, else the chat's, then the project's level; a level the model does not list in its `reasoning_levels` becomes `None` (the model default), so a project's `off` never reaches a Claude model that cannot turn thinking off. `audio_out` is set for `audio_out` models with Speak replies on. `cache_breakpoints` is set for the Anthropic dialect.
+9. **Request settings.** `max_output_tokens` is the model's, else the default (`DEFAULT_MAX_OUTPUT_TOKENS`, or `DEFAULT_REASONING_OUTPUT_TOKENS` for a model with `reasoning`, whose reasoning tokens count against the limit) or a quarter of a known context window, whichever is smaller. `reasoning` is `None` without the `reasoning` capability, `off` where the preset needs it whenever tools are sent, else the chat's, then the project's level; a level the model does not list in its `reasoning_levels` becomes `None` (the model default), so a project's `off` never reaches a Claude model that cannot turn thinking off. `can_reason` is the `reasoning` capability, so an adapter can show a reasoning model's default thinking without choosing a level. `audio_out` is set for `audio_out` models with Speak replies on. `cache_breakpoints` is set for the Anthropic dialect.
 
 ### Replay Rules
 
@@ -529,7 +533,7 @@ Switching between Claude models on the same connection still replays, because th
 
 - If any call is Ask: mark those `tool_call` parts `approval: pending`, set the assistant message to `awaiting_approval`, emit `tool.requested` (with `needsApproval`) for every call and `message.finished` (`awaiting_approval`), publish `approval.pending`, and end the run. Nothing waits in memory.
 - Otherwise: run the calls in call order through one `ToolSession` per run (`MCP_CALL_TIMEOUT_SECS`, 60, per call; status `timeout` on expiry), give denied calls a `denied` result with the reason, write **one** `tool` message with all results in call order, emit `tool.finished` for each, and continue.
-- **Decisions:** `POST /api/chats/{id}/messages/{messageId}/decisions` must cover exactly the pending calls of the chat's latest assistant message while it is `awaiting_approval`; each decision is applied once (`MessageRepository::decide` moves `pending` to `approved` or `denied` in one guarded update). "Approve for this chat" also adds the call's server id and original tool name to `chat_tool_approvals` (only for a server the snapshot still reaches; deleting the server deletes its rows). The response is the SSE stream of the continuation, which executes the stored arguments exactly, from the stored snapshot. A continuation started by a decision runs as interactive, because the user is present, but keeps the snapshot's tool list.
+- **Decisions:** `POST /api/chats/{id}/messages/{messageId}/decisions` must cover exactly the pending calls of the chat's latest assistant message while it is `awaiting_approval`; each decision is applied once (`MessageRepository::decide` moves `pending` to `approved` or `denied` in one guarded update). "Approve for this chat" also adds the call's server id and original tool name to `chat_tool_approvals` through `ChatRepository::approve`, which writes approval rows only (only for a server the snapshot still reaches; deleting the server deletes its rows). The response is the SSE stream of the continuation, which executes the stored arguments exactly, from the stored snapshot. A continuation started by a decision runs as interactive, because the user is present, but keeps the snapshot's tool list.
 - **Results:** text is truncated to `MCP_RESULT_MAX_BYTES` (64 KiB) in total with a visible `[truncated N bytes]` note; images (PNG, JPEG, WebP, GIF) are saved as chat files through `FileService::upload`, so the size, magic-byte, and storage quota rules apply, and are sent only when the model has `vision` (any other image, or a failed save, becomes a one-line notice); audio and binary blobs become a one-line notice; `resource_link` becomes `<name>: <uri>`. A call past `MCP_CALL_TIMEOUT_SECS` fails in the adapter with the code `TOOL_TIMEOUT` and gets the status `timeout`; other call failures get `error` with the human message. The built-in schedule tools answer with JSON (`{"created": ...}`, `{"schedules": [...]}`, `{"deleted": ...}`).
 - **Continuing a decided round:** approved calls run unless the policy now fails them (the server was removed or turned off) or denies them because the tool was set to `off` (an approval answers an ask, never a turned-off tool); denied calls get their reason, or "Denied by the user."; `auto` calls of the round run unless the policy now fails, denies, or asks for them (an ask becomes the denial "This tool needs approval now. Ask again to run it.").
 - **Changes during a turn:** the engine reads the snapshot's servers again before it decides each round's calls, so the policy sees the current settings. A call to a server turned off or removed during the turn fails ("This tool server is turned off or was removed."), and a tool set to `off` during the turn is denied ("This tool is turned off."). Calls of a round already decided are not checked again.
@@ -553,9 +557,9 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 
 `RunRegistry` (in `apps/api/src/helpers/runs.rs`, an `AppState` field) maps `chat_id` to a run: owner, run id, a `tokio::sync::broadcast` sender, a replay buffer of the current run's events, and a child `CancellationToken` of the root shutdown token.
 
-- `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`). User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
-- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas. `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
-- Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. Handlers load the chat with the caller's `UserId` before touching the registry.
+- `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`); once shutdown has begun it fails with `SERVER_STOPPING`. User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
+- Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event, and goes out with it as the SSE `id`. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas; each merged delta also keeps where each of its deltas ended (4 bytes per delta). `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. With `?after=<seq>` (a client that lost its connection) the stream starts after that `seq`, cutting a merged delta to the text after it, so nothing is repeated or skipped; a `seq` the running turn never sent (one from an earlier run) replays the turn from the start. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
+- Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. It answers `204` once the run has saved its partial answer as `cancelled` (at most `SHUTDOWN_DRAIN_SECS`), and also for an idle chat. Handlers load the chat with the caller's `UserId` before touching the registry, so another user's chat is a `404`, never `CHAT_BUSY`, and its run is never attached or stopped.
 - The registry also fans out the per-user `GET /api/events` stream.
 
 ### Adapter Rules
@@ -567,7 +571,7 @@ Dialects come from the preset (no stored JSON):
 | `anthropic` (kind `anthropic`) | `max_tokens` (required) | `system` | `anthropic-version: 2026-10-21`; never `temperature`, `top_p`, `top_k`, `tool_choice`, or `budget_tokens`; a request ending with an answer (prefill) is refused before sending |
 | `openai` | `max_completion_tokens` | `developer` role | `stream_options: {include_usage: true}`; tool and reasoning rules from [Providers and Models](#providers-and-models) |
 | `openrouter` | `max_tokens` | `system` | Reasoning level as `reasoning: {effort}`; replays `reasoning_details` unchanged |
-| `ollama` | `max_tokens` | `system` | Never sends `tool_choice`; images as base64 data only |
+| `ollama` | `max_tokens` | `system` | `stream_options: {include_usage: true}` (Ollama sends no usage without it); never sends `tool_choice`; images as base64 data only |
 | `gemini` | `max_tokens` | `system` | Through the OpenAI-compatible endpoint; per-tool-call extra fields (thought signatures) kept as provider state and replayed; an answer rebuilt without them (after a model switch) gets Google's stand-in signature `skip_thought_signature_validator` on the first call of each step |
 | `custom` | `max_tokens` | `system` | Accepts reasoning under `reasoning` or `reasoning_content` |
 
@@ -579,7 +583,7 @@ Dialects come from the preset (no stored JSON):
 | Images | Base64 data URL | Base64 `image` block (jpeg, png, gif, webp only) |
 | PDF | `file` part with `file_data` as a `data:application/pdf;base64,` URL, on every preset that core sends one to (core sends PDFs only to models with `pdf`, on by default for the `openai` and `openrouter` presets) | `document` block titled with the file name, in user messages only |
 | Audio | `input_audio` (wav, mp3; other formats `PROVIDER_UNSUPPORTED`) | Not supported (locked) |
-| Reasoning level | `reasoning_effort` (`none` for `off`; OpenRouter's `reasoning: {effort}`) | No level sends no `thinking` (the model default); `off` sends `{type: "disabled"}`; `low`, `medium`, `high` send `{type: "adaptive", display: "summarized"}` with `output_config.effort` |
+| Reasoning level | `reasoning_effort` (`none` for `off`; OpenRouter's `reasoning: {effort}`) | No level sends no `thinking` to a model without `reasoning`, and `{type: "adaptive", display: "summarized"}` without an effort to one with it (`can_reason`: the model's default effort, with its thinking shown); `off` sends `{type: "disabled"}`; `low`, `medium`, `high` send `{type: "adaptive", display: "summarized"}` with `output_config.effort` |
 | Usage | Final usage chunk (may be missing) | `message_start` plus cumulative `message_delta`; `input_tokens` counts cache reads and writes, no `reasoning_tokens` |
 | Caching | Implicit | `cache_control` on the system block, the last block of the first user message (it starts with the file preamble), and the last block of the request; thinking blocks are never marked |
 
@@ -637,7 +641,7 @@ All routes below are under `/api`. rustauth's guard requires `Authorization: Bea
 | Models | `GET /models` (enabled and available, for the picker), `PATCH /models/{id}` (`enabled`, `displayName`, `capabilityOverrides`, `contextWindow`, `maxOutputTokens`) |
 | Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Files | `POST /projects/{id}/files` (multipart), `GET /projects/{id}/files`, `POST /chats/{id}/files` (multipart), `PATCH /files/{id}` (`name`, `included`), `POST /files/{id}/move` (`projectId`), `GET /files/{id}/content`, `DELETE /files/{id}` |
-| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
+| Chats | `GET /chats` (`projectId`, `scheduleId`, `pinned`, `cursor`), `POST /chats`, `GET/PATCH/DELETE /chats/{id}`, `POST /chats/{id}/read`, `GET /chats/{id}/messages`, `POST /chats/{id}/messages` (SSE; `text`, `fileIds`, `editFrom`), `POST /chats/{id}/regenerate` (SSE), `POST /chats/{id}/retry` (SSE), `POST /chats/{id}/messages/{messageId}/decisions` (SSE; `decisions: [{callId, decision: approve or deny, scope: once or chat, reason}]`), `GET /chats/{id}/stream` (SSE or 204; `after`), `POST /chats/{id}/stop`, `POST /chats/{id}/save-as-project`, `POST /chats/{id}/save-instructions` |
 | Search | `GET /search?q=` (titles and message text; returns `chatId`, `chatTitle`, `messageId`, `snippet`) |
 | Tool servers | `GET/POST /tool-servers`, `GET/PATCH/DELETE /tool-servers/{id}` (`toolModes` included), `POST /tool-servers/{id}/test` (connect, list tools, refresh the cache), `POST /tool-servers/{id}/review` (accept a changed tool list) |
 | Schedules | `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run` (returns the new `chatId`; the client attaches with `GET /chats/{id}/stream`), `POST /schedules/preview` (`cron`, `timezone`; returns `description`, `nextRuns`); a schedule's runs are `GET /chats?scheduleId=` |
@@ -1033,12 +1037,13 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `MCP_CALL_TIMEOUT_SECS` | 60 |
 | `MCP_RESULT_MAX_BYTES` | 65536 |
 | `MCP_RESPONSE_MAX_BYTES` | 4194304 |
+| `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`, `MCP_LIST_MAX_PAGES` | 15 (one connection attempt), 30 (a whole listing), 5 (closing), 16 |
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
 | `MAX_TOOL_ROUNDS` | 8 |
 | `ANSWER_SLACK`, `ANSWER_MAX_BYTES`, `ANSWER_MAX_PARTS` | 4, 8 MiB, 256 |
 | `AUDIO_OUT_MAX_BYTES` | 14400000 (five minutes of 24 kHz PCM16; **verify** in P2.B) |
-| `DEFAULT_MAX_OUTPUT_TOKENS` | 8192 (or a quarter of a known context window, when smaller) |
+| `DEFAULT_MAX_OUTPUT_TOKENS`, `DEFAULT_REASONING_OUTPUT_TOKENS` | 8192, 32768 for models with `reasoning` (or a quarter of a known context window, when smaller) |
 | `REQUEST_MAX_BYTES`, `GEMINI_REQUEST_MAX_BYTES`, `REQUEST_MAX_PDF_PAGES` | 32 MiB, 20 MiB, 100 (**verify** per provider in P2.B) |
 | `AUDIO_OUT_VOICE`, `AUDIO_OUT_FORMAT` | `alloy`, `pcm16` |
 | `MAX_PARALLEL_READS` | 4 |
@@ -1051,7 +1056,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `CONTEXT_WARN_RATIO` | 0.8 |
 | `TOKENS_PER_PDF_PAGE`, `TOKENS_PER_IMAGE`, `BYTES_PER_TOKEN` | 3000, 1600, 4 |
 | `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300, 16000 |
-| `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 10 |
+| `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_GRACE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 5, 10 |
 
 ## Native Apps
 

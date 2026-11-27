@@ -2,8 +2,9 @@
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use copilot_api::helpers::bootstrap::ApiContext;
+use copilot_api::helpers::bootstrap::{ApiContext, drain};
 use copilot_core::BoxError;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -54,18 +55,30 @@ async fn serve(context: ApiContext) -> Result<(), BoxError> {
         .app
         .clone()
         .into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown(context.shutdown.clone()))
-        .await?;
-
+    // On a signal the server stops accepting connections and the runs drain: live runs get a
+    // moment to finish (their streams with them), then the root token cancels the rest and ends
+    // every open stream, so the graceful shutdown does not wait on them.
+    let runs = Arc::clone(&context.runs);
+    let signalled = CancellationToken::new();
+    let draining = tokio::spawn({
+        let signalled = signalled.clone();
+        async move {
+            signalled.cancelled().await;
+            drain(&runs).await;
+        }
+    });
+    let served = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown(signalled))
+        .await;
     context.close().await;
+    draining.abort();
+    served?;
     tracing::info!("api.server.stopped");
     Ok(())
 }
 
-/// Resolves on Ctrl+C or SIGTERM so in-flight requests can finish, after cancelling `root` so
-/// open streams end and runs stop instead of holding the shutdown open.
-async fn shutdown(root: CancellationToken) {
+/// Resolves on Ctrl+C or SIGTERM, after cancelling `signalled`.
+async fn shutdown(signalled: CancellationToken) {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -89,5 +102,5 @@ async fn shutdown(root: CancellationToken) {
         () = interrupt => tracing::info!(signal = "SIGINT", "api.server.shutdown"),
         () = terminate => tracing::info!(signal = "SIGTERM", "api.server.shutdown"),
     }
-    root.cancel();
+    signalled.cancel();
 }

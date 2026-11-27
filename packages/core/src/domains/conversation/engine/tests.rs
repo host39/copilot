@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::domains::chat::{
-    CallDecision, Chat, ChatRepositories, ChatService, ChatUpdate, Decision, DecisionScope,
-    NewChat, ResultContent, TurnInput,
+    ApprovedTool, CallDecision, Chat, ChatQuery, ChatRepositories, ChatRepository, ChatService,
+    ChatSummary, ChatUpdate, Decision, DecisionScope, NewChat, Page, ResultContent, TurnInput,
 };
 use crate::domains::conversation::approval::{
     CANNOT_ASK, INVALID_ARGUMENTS, SERVER_GONE, UNKNOWN_TOOL,
@@ -31,12 +31,12 @@ use crate::domains::tool::{
     ToolServerUpdate,
 };
 use crate::ports::llm_gateway::{LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities};
-use crate::ports::tool_host::{ToolContent, ToolListing, ToolOutput};
+use crate::ports::tool_host::{TOOL_UNKNOWN, ToolContent, ToolListing, ToolOutput};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::builtin_tool::BuiltinTool;
 use crate::shared::constants::MCP_RESULT_MAX_BYTES;
-use crate::shared::ids::{ModelId, ProjectId, ToolServerId, UserId};
+use crate::shared::ids::{ChatId, ModelId, ProjectId, ToolServerId, UserId};
 use crate::shared::net::PrivateNetwork;
 use crate::shared::reasoning::ReasoningLevel;
 use crate::testing::{
@@ -1048,6 +1048,43 @@ async fn tool_failures_become_error_results() {
 }
 
 #[tokio::test]
+async fn a_tool_the_server_no_longer_lists_expires_the_stored_list() {
+    let f = fixture();
+    let (chat, server) = f.tool_chat(ApprovalMode::Auto).await;
+    assert!(!server.needs_refresh(f.clock.now()));
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.host.push_call_error(DomainError::business_rule(
+        "The tool server no longer offers this tool.",
+        TOOL_UNKNOWN,
+    ));
+    f.gateway.push_events(text_reply("Sorry"));
+    let (outcome, _) = f.send(&chat, "Go").await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+
+    let history = f.history(&chat).await;
+    assert_eq!(results(&history[2])[0].status, ToolStatus::Error);
+    let stored = f.tools.get(&f.caller, server.id()).await.unwrap().server;
+    assert!(
+        stored.needs_refresh(f.clock.now()),
+        "the next turn lists the server again"
+    );
+    assert!(stored.listed(), "the old list stays as the fallback");
+    assert_eq!(
+        stored.cache().map(|cache| cache.fetched_at),
+        server.cache().map(|cache| cache.fetched_at),
+        "the list keeps the time it was fetched"
+    );
+
+    f.host
+        .push_tools(vec![remote_tool("search"), remote_tool("delete")]);
+    f.gateway.push_events(text_reply("Listed again"));
+    f.send(&chat, "Again").await;
+    let listed = f.tools.get(&f.caller, server.id()).await.unwrap().server;
+    assert!(!listed.needs_refresh(f.clock.now()), "a fresh list");
+}
+
+#[tokio::test]
 async fn tool_images_are_saved_and_long_text_is_truncated() {
     let f = fixture();
     let server = f.server(ApprovalMode::Auto).await;
@@ -1602,6 +1639,10 @@ impl ToolServerRepository for Gauge {
         )
         .await
     }
+
+    async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
+        ToolServerRepository::stale(self.store.as_ref(), user, id).await
+    }
 }
 
 #[tokio::test]
@@ -1831,6 +1872,96 @@ fn approve_for_chat(message: &Message) -> TurnInput {
             })
             .collect(),
     }
+}
+
+/// The store's chats, with a rename saved by another request just before each approval.
+struct Renaming {
+    store: Arc<MemoryStore>,
+}
+
+#[async_trait]
+impl ChatRepository for Renaming {
+    async fn list(&self, user: UserId, query: ChatQuery) -> DomainResult<Page<ChatSummary>> {
+        ChatRepository::list(self.store.as_ref(), user, query).await
+    }
+
+    async fn get(&self, user: UserId, id: ChatId) -> DomainResult<Option<Chat>> {
+        ChatRepository::get(self.store.as_ref(), user, id).await
+    }
+
+    async fn insert(&self, chat: &Chat) -> DomainResult<()> {
+        ChatRepository::insert(self.store.as_ref(), chat).await
+    }
+
+    async fn update(&self, chat: &Chat) -> DomainResult<()> {
+        ChatRepository::update(self.store.as_ref(), chat).await
+    }
+
+    async fn approve(
+        &self,
+        user: UserId,
+        chat: ChatId,
+        tools: &[ApprovedTool],
+    ) -> DomainResult<()> {
+        let stored = ChatRepository::get(self.store.as_ref(), user, chat)
+            .await?
+            .expect("the chat exists");
+        ChatRepository::update(
+            self.store.as_ref(),
+            &stored.with_title("Renamed meanwhile")?,
+        )
+        .await?;
+        ChatRepository::approve(self.store.as_ref(), user, chat, tools).await
+    }
+
+    async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool> {
+        ChatRepository::delete(self.store.as_ref(), user, id).await
+    }
+
+    async fn mark_read(&self, user: UserId, id: ChatId, at: DateTime<Utc>) -> DomainResult<()> {
+        ChatRepository::mark_read(self.store.as_ref(), user, id, at).await
+    }
+}
+
+#[tokio::test]
+async fn approving_for_the_chat_keeps_a_rename_saved_meanwhile() {
+    let f = fixture();
+    let (chat, server) = f.tool_chat(ApprovalMode::Ask).await;
+    f.gateway
+        .push_events(call_reply(&[("github__search", "{}")]));
+    f.send(&chat, "Search").await;
+    let paused = f.history(&chat).await[1].clone();
+    let chats = ChatService::new(
+        ChatRepositories {
+            chats: Arc::new(Renaming {
+                store: f.store.clone(),
+            }),
+            ..ChatRepositories::shared(f.store.clone())
+        },
+        f.tools.clone(),
+        f.cipher.clone(),
+        f.clock.clone(),
+        PrivateNetwork::Admins,
+    );
+    let turn = chats
+        .prepare(&f.caller, chat.id(), approve_for_chat(&paused))
+        .await
+        .unwrap();
+    assert_eq!(turn.chat.approved_tools().len(), 1, "the turn sees it");
+
+    let stored = f.chats.get(&f.caller, chat.id()).await.unwrap();
+    assert_eq!(
+        stored.title(),
+        "Renamed meanwhile",
+        "only approval rows written"
+    );
+    assert_eq!(
+        stored.approved_tools(),
+        [ApprovedTool {
+            server_id: server.id(),
+            name: "search".to_owned(),
+        }]
+    );
 }
 
 #[tokio::test]

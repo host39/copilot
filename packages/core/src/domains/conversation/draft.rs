@@ -28,6 +28,7 @@ pub struct Draft {
     pub(crate) tools: Vec<ToolSpec>,
     pub(crate) max_output_tokens: u32,
     pub(crate) reasoning: Option<ReasoningLevel>,
+    pub(crate) can_reason: bool,
     pub(crate) audio_out: Option<AudioOut>,
     pub(crate) cache_breakpoints: bool,
 }
@@ -68,6 +69,7 @@ impl Draft {
             tools: self.tools.clone(),
             max_output_tokens: self.max_output_tokens,
             reasoning: self.reasoning,
+            can_reason: self.can_reason,
             audio_out: self.audio_out.clone(),
             cache_breakpoints: self.cache_breakpoints,
         }

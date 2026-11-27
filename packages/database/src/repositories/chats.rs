@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use copilot_core::{
     ApprovedTool, BuiltinTool, CallDecision, Chat, ChatCursor, ChatId, ChatParts, ChatQuery,
-    ChatRepository, ChatSummary, ContextHash, DomainError, DomainResult, Message, MessageId,
-    MessageParts, MessageRepository, ModelId, Page, Part, ProjectId, ProviderId, ReasoningLevel,
-    ScheduleId, SearchHit, ServerOverride, SnapshotFile, SnapshotTool, ToolServerId, TurnContext,
-    TurnContextRepository, Usage, UserId,
+    ChatRepository, ChatSummary, ContextHash, DomainError, DomainResult, INTERRUPTED, Message,
+    MessageId, MessageParts, MessageRepository, ModelId, Page, Part, ProjectId, ProviderId,
+    ReasoningLevel, ScheduleId, SearchHit, ServerOverride, SnapshotFile, SnapshotTool,
+    ToolServerId, TurnContext, TurnContextRepository, Usage, UserId,
 };
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
@@ -155,26 +155,41 @@ async fn join_rows(tx: &mut Transaction<'_, Postgres>, chat: &Chat) -> DomainRes
         .await
         .map_err(failed("database.chats.tool-servers.failed"))?;
     }
-    let approvals = chat.approved_tools();
-    if !approvals.is_empty() {
-        let servers: Vec<Uuid> = approvals.iter().map(|tool| tool.server_id.uuid()).collect();
-        let names: Vec<&str> = approvals.iter().map(|tool| tool.name.as_str()).collect();
-        sqlx::query(
-            "INSERT INTO chat_tool_approvals (chat_id, tool_server_id, user_id, tool_name) \
-             SELECT $1, rows.server, $2, rows.name \
-             FROM UNNEST($3::uuid[], $4::text[]) AS rows (server, name) \
-             WHERE EXISTS (SELECT 1 FROM tool_servers t \
-               WHERE t.id = rows.server AND t.user_id = $2) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(chat.id().uuid())
-        .bind(chat.user_id().uuid())
-        .bind(&servers)
-        .bind(&names)
-        .execute(&mut **tx)
-        .await
-        .map_err(failed("database.chats.tool-approvals.failed"))?;
+    approvals(&mut **tx, chat.user_id(), chat.id(), chat.approved_tools()).await
+}
+
+/// Adds `chat_tool_approvals` rows, skipping existing ones, servers the user no longer has, and
+/// a chat that is not the user's (or is gone).
+async fn approvals<'c, E>(
+    executor: E,
+    user: UserId,
+    chat: ChatId,
+    tools: &[ApprovedTool],
+) -> DomainResult<()>
+where
+    E: sqlx::Executor<'c, Database = Postgres>,
+{
+    if tools.is_empty() {
+        return Ok(());
     }
+    let servers: Vec<Uuid> = tools.iter().map(|tool| tool.server_id.uuid()).collect();
+    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    sqlx::query(
+        "INSERT INTO chat_tool_approvals (chat_id, tool_server_id, user_id, tool_name) \
+         SELECT $1, rows.server, $2, rows.name \
+         FROM UNNEST($3::uuid[], $4::text[]) AS rows (server, name) \
+         WHERE EXISTS (SELECT 1 FROM tool_servers t \
+           WHERE t.id = rows.server AND t.user_id = $2) \
+         AND EXISTS (SELECT 1 FROM chats c WHERE c.id = $1 AND c.user_id = $2) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(chat.uuid())
+    .bind(user.uuid())
+    .bind(&servers)
+    .bind(&names)
+    .execute(executor)
+    .await
+    .map_err(failed("database.chats.tool-approvals.failed"))?;
     Ok(())
 }
 
@@ -313,6 +328,15 @@ impl ChatRepository for PgStore {
         tx.commit()
             .await
             .map_err(failed("database.chats.update.failed"))
+    }
+
+    async fn approve(
+        &self,
+        user: UserId,
+        chat: ChatId,
+        tools: &[ApprovedTool],
+    ) -> DomainResult<()> {
+        approvals(self.pool(), user, chat, tools).await
     }
 
     async fn delete(&self, user: UserId, id: ChatId) -> DomainResult<bool> {
@@ -696,8 +720,19 @@ impl MessageRepository for PgStore {
             .collect())
     }
 
-    async fn recover(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
-        pending("MessageRepository::recover")
+    async fn recover(&self, now: DateTime<Utc>) -> DomainResult<u64> {
+        // A system write at startup: chats keep their `updated_at`, so nothing turns unread.
+        let recovered = sqlx::query(
+            "UPDATE messages SET status = 'error', error = $1, updated_at = $2 \
+             WHERE status = 'streaming'",
+        )
+        .bind(INTERRUPTED)
+        .bind(now)
+        .execute(self.pool())
+        .await
+        .map_err(failed("database.messages.recover.failed"))?
+        .rows_affected();
+        Ok(recovered)
     }
 }
 

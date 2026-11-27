@@ -35,8 +35,8 @@ pub const TOOL_SERVER_HEADERS: &str = "TOOL_SERVER_HEADERS";
 pub const TOOL_SERVER_REFUSED: &str = "TOOL_SERVER_REFUSED";
 /// Any other failure.
 pub const TOOL_SERVER_FAILED: &str = "TOOL_SERVER_FAILED";
-/// The server no longer lists the called tool, even after listing again.
-pub const TOOL_UNKNOWN: &str = "TOOL_UNKNOWN";
+/// The server no longer lists the called tool, even after listing again (core's port constant).
+pub use copilot_core::TOOL_UNKNOWN;
 
 /// The longest part of a server's JSON-RPC error message that a call result keeps.
 const REFUSAL_MAX_CHARS: usize = 300;

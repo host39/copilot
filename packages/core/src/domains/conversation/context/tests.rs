@@ -834,16 +834,49 @@ fn request_settings_follow_the_model_and_chat() {
     assert_eq!(request.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
     assert!(request.audio_out.is_none());
     assert!(!request.cache_breakpoints);
+    assert!(!request.can_reason);
 
     setup.limits(Some(16_000), None);
-    assert_eq!(output_limit(&setup.model), 4_000);
+    assert_eq!(output_limit(&setup.model, &setup.capabilities), 4_000);
     setup.limits(Some(16_000), Some(1_000));
-    assert_eq!(output_limit(&setup.model), 1_000);
+    assert_eq!(output_limit(&setup.model, &setup.capabilities), 1_000);
 
     setup.capabilities.audio_out = true;
     setup.chat = setup.chat.clone().with_voice_replies(true);
     let audio = setup.request().audio_out.unwrap();
     assert_eq!(audio.format, "pcm16");
+}
+
+#[test]
+fn a_reasoning_model_gets_a_larger_default_output_and_says_it_reasons() {
+    let mut setup = Setup::new();
+    setup.user("Hi");
+    setup.capabilities.reasoning = true;
+    let request = setup.request();
+    assert!(request.can_reason);
+    assert_eq!(
+        request.reasoning, None,
+        "no level chosen: the model default"
+    );
+    assert_eq!(request.max_output_tokens, DEFAULT_REASONING_OUTPUT_TOKENS);
+
+    setup.limits(Some(64_000), None);
+    assert_eq!(
+        output_limit(&setup.model, &setup.capabilities),
+        16_000,
+        "a quarter of a smaller window"
+    );
+    setup.limits(Some(1_000_000), None);
+    assert_eq!(
+        output_limit(&setup.model, &setup.capabilities),
+        DEFAULT_REASONING_OUTPUT_TOKENS
+    );
+    setup.limits(None, Some(2_000));
+    assert_eq!(
+        output_limit(&setup.model, &setup.capabilities),
+        2_000,
+        "the model's own limit wins"
+    );
 }
 
 #[test]

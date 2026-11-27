@@ -30,13 +30,16 @@ pub trait ToolHost: Send + Sync {
 
 /// The error code of a call that ran out of time; core gives the call the status `timeout`.
 pub const TOOL_TIMEOUT: &str = "TOOL_TIMEOUT";
+/// The error code of a call to a tool the server no longer lists, even after listing again;
+/// core marks the server's stored tool list stale, so the next turn lists it again.
+pub const TOOL_UNKNOWN: &str = "TOOL_UNKNOWN";
 
 /// The tool calls of one run.
 #[async_trait]
 pub trait ToolSession: Send + Sync {
     /// Calls tool `name` (the original name, never the alias) on the server. A call that does
-    /// not answer within `timeout` fails with the code [`TOOL_TIMEOUT`]; other failures are
-    /// human-readable `DomainError`s. A tool that ran and reported an error is `Ok` with
+    /// not answer within `timeout` fails with the code [`TOOL_TIMEOUT`], a tool the server no
+    /// longer lists with [`TOOL_UNKNOWN`]; other failures are human-readable `DomainError`s. A tool that ran and reported an error is `Ok` with
     /// `is_error`.
     async fn call(
         &self,

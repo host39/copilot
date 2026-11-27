@@ -273,6 +273,12 @@ impl ToolService {
         Ok(ToolTest { server, changes })
     }
 
+    /// A call named a tool the server no longer lists (`TOOL_UNKNOWN`): the stored list expires
+    /// now, so the next turn lists the server again.
+    pub async fn stale(&self, actor: &Actor, id: ToolServerId) -> DomainResult<()> {
+        self.servers.stale(actor.user_id, id).await
+    }
+
     /// Accepts a changed tool list: the tools follow their modes again.
     pub async fn review(&self, actor: &Actor, id: ToolServerId) -> DomainResult<ToolServer> {
         let server = self

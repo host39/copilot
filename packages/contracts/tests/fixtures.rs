@@ -30,10 +30,10 @@ use copilot_contracts::{
     ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse, ReasoningLevel, RefreshResponse,
     Refusal, ResultContent, Role, RunStatus, ScheduleListQuery, SchedulePreviewRequest,
     SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse, SearchHitResponse, SearchQuery,
-    SendMessageRequest, ServerTool, SettingsResponse, ToolChanges, ToolMode, ToolOverride,
-    ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest, UpdateFileRequest,
-    UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest, UpdateScheduleRequest,
-    UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
+    SendMessageRequest, ServerTool, SettingsResponse, StreamQuery, ToolChanges, ToolMode,
+    ToolOverride, ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest,
+    UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest,
+    UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1135,6 +1135,10 @@ fn chats(fixtures: &mut Fixtures) {
             },
             ChatListQuery::default(),
         ],
+    );
+    fixtures.types(
+        "StreamQuery",
+        &[StreamQuery { after: Some(42) }, StreamQuery::default()],
     );
     fixtures.types(
         "SearchQuery",

@@ -39,7 +39,7 @@ pub mod tool;
 pub use crate::chat::{
     ApprovedTool, CallDecision, ChatListQuery, ChatResponse, ChatSummaryResponse,
     CreateChatRequest, Decision, DecisionScope, DecisionsRequest, SearchHitResponse, SearchQuery,
-    SendMessageRequest, ToolOverride, UpdateChatRequest,
+    SendMessageRequest, StreamQuery, ToolOverride, UpdateChatRequest,
 };
 pub use crate::envelopes::{DetailsResponse, ListResponse, PageResponse};
 pub use crate::error::ErrorResponse;

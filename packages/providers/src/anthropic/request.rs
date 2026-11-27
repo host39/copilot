@@ -7,10 +7,11 @@
 //! - Tools are `{name, description, input_schema}` with an object schema.
 //! - No assistant prefill: a request whose last message is an answer is refused (core never
 //!   builds one; current models reject it).
-//! - **Reasoning.** No level: no `thinking`, so the model's default applies. `off`:
+//! - **Reasoning.** No level: no `thinking` for a model without `reasoning` (`can_reason`);
+//!   a reasoning model gets `thinking: {type: "adaptive", display: "summarized"}` without an
+//!   effort, so its default effort applies and its thinking shows. `off`:
 //!   `thinking: {type: "disabled"}`. `low`, `medium`, `high`: adaptive thinking with summarized
-//!   display (`thinking: {type: "adaptive", display: "summarized"}`) and that
-//!   `output_config.effort`. Never `budget_tokens`.
+//!   display and that `output_config.effort`. Never `budget_tokens`.
 //! - User parts: text blocks, images as base64 `image` blocks (JPEG, PNG, GIF, WebP), PDFs as
 //!   base64 `document` blocks titled with the file name. Audio is never sent (Claude models take
 //!   none; core locks the flags).
@@ -95,6 +96,14 @@ pub(crate) fn body(request: &LlmRequest) -> DomainResult<Value> {
         );
     }
     match request.reasoning {
+        // A reasoning model without a level thinks at its default effort; ask to see a summary
+        // (current models omit their thinking text unless asked).
+        None if request.can_reason => {
+            body.insert(
+                "thinking".to_owned(),
+                json!({ "type": "adaptive", "display": "summarized" }),
+            );
+        }
         None => {}
         Some(ReasoningLevel::Off) => {
             body.insert("thinking".to_owned(), json!({ "type": "disabled" }));

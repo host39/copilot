@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use copilot_core::shared::constants::MCP_LIST_MAX_PAGES;
 use copilot_core::{
     DomainError, DomainResult, RemoteTool, ToolEndpoint, ToolHeaders, ToolOutput, ToolServerId,
 };
@@ -21,9 +22,6 @@ use serde_json::{Map, Value};
 use crate::convert;
 use crate::errors::{self, Failure, TOOL_SERVER_HEADERS};
 use crate::host::Shared;
-
-/// The most `tools/list` pages one listing reads.
-const LIST_MAX_PAGES: usize = 16;
 
 /// The modern revision: stateless, no `initialize`, `server/discover` up front.
 const MODERN: ProtocolVersion = ProtocolVersion::V_2026_07_28;
@@ -216,7 +214,7 @@ impl Connection {
         &self.version
     }
 
-    /// Every page of `tools/list`, at most [`LIST_MAX_PAGES`] pages and `MCP_RESPONSE_MAX_BYTES`
+    /// Every page of `tools/list`, at most `MCP_LIST_MAX_PAGES` pages and `MCP_RESPONSE_MAX_BYTES`
     /// of tool definitions in all. The cache hint is the smallest `ttlMs` of the pages, or
     /// `None` when a page has none.
     pub(crate) async fn tools(&self) -> DomainResult<Listing> {
@@ -224,7 +222,7 @@ impl Connection {
         let mut bytes = 0;
         let mut ttl_ms = Some(u64::MAX);
         let mut cursor = None;
-        for _ in 0..LIST_MAX_PAGES {
+        for _ in 0..MCP_LIST_MAX_PAGES {
             let params = PaginatedRequestParams::default().with_cursor(cursor);
             let page = self
                 .client

@@ -39,7 +39,7 @@ use crate::domains::schedule::{RunOutcome, ScheduleService};
 use crate::domains::tool::{ToolServer, ToolService};
 use crate::ports::clock::Clock;
 use crate::ports::llm_gateway::{LlmEvent, LlmGateway, LlmRequest, Refusal};
-use crate::ports::tool_host::{TOOL_TIMEOUT, ToolHost, ToolSession};
+use crate::ports::tool_host::{TOOL_TIMEOUT, TOOL_UNKNOWN, ToolHost, ToolSession};
 use crate::ports::turn_sink::TurnSink;
 use crate::shared::constants::{MAX_PARALLEL_READS, MAX_TOOL_ROUNDS, MCP_CALL_TIMEOUT_SECS};
 use crate::shared::errors::{DomainError, DomainResult};
@@ -228,7 +228,10 @@ impl Run<'_> {
             });
         }
         let started = self.start().await?;
-        let ceiling = Ceiling::new(context::output_limit(&self.turn.model));
+        let ceiling = Ceiling::new(context::output_limit(
+            &self.turn.model,
+            &self.turn.capabilities,
+        ));
         self.stopped(&started, Answer::new(started.id(), ceiling))
             .await
     }
@@ -304,7 +307,7 @@ impl Run<'_> {
     async fn round(&mut self, round: u32) -> DomainResult<Next> {
         let turn = self.turn;
         let started = self.start().await?;
-        let ceiling = Ceiling::new(context::output_limit(&turn.model));
+        let ceiling = Ceiling::new(context::output_limit(&turn.model, &turn.capabilities));
         let mut answer = Answer::new(started.id(), ceiling);
         let request = match self.request().await {
             Ok(request) => request,
@@ -581,7 +584,20 @@ impl Run<'_> {
                 status: ToolStatus::Timeout,
                 ..failed(call, TIMED_OUT)
             },
-            Err(error) => failed(call, &human(&error)),
+            Err(error) => {
+                if error.code() == TOOL_UNKNOWN {
+                    // The stored list still offers the tool: list the server again next turn.
+                    // The call's result is the same either way, so a failure here only logs.
+                    if let Err(stale) = self.engine.tools.stale(&turn.actor, server).await {
+                        tracing::warn!(
+                            server_id = %server,
+                            error = %stale,
+                            "core.engine.tools.stale-failed"
+                        );
+                    }
+                }
+                failed(call, &human(&error))
+            }
         })
     }
 

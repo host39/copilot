@@ -205,6 +205,52 @@ async fn updates_write_settings_and_listings_write_the_cache(pool: DbPool) {
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
+async fn a_stale_list_expires_and_keeps_its_tools_and_fetch_time(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let server = server(&store, owner, "docs").await;
+    // A server that was never listed has nothing to expire.
+    store.stale(owner, server.id()).await.unwrap();
+    let unlisted = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unlisted.cache(), None);
+
+    let mut listed = listing("search", "v1");
+    listed.ttl = Some(Duration::from_secs(600));
+    assert!(
+        store
+            .save_listing(owner, server.id(), server.url(), &listed, false, at(1))
+            .await
+            .unwrap()
+    );
+    store.stale(other, server.id()).await.unwrap();
+    let fresh = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !fresh.needs_refresh(at(2)),
+        "another user cannot expire the list"
+    );
+
+    store.stale(owner, server.id()).await.unwrap();
+    let stale = ToolServerRepository::get(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stale.needs_refresh(at(2)), "the next turn lists it again");
+    assert!(stale.listed(), "the old list stays as the fallback");
+    let cache = stale.cache().unwrap();
+    assert_eq!(cache.tools, fresh.cache().unwrap().tools);
+    assert_eq!(cache.fetched_at, at(1), "the fetch time stays true");
+    assert_eq!(cache.ttl, Some(Duration::ZERO));
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
 async fn a_listing_of_a_url_changed_meanwhile_is_not_stored(pool: DbPool) {
     let store = store(pool).await;
     let owner = user(&store).await;

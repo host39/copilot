@@ -23,6 +23,14 @@ pub const MCP_IDLE_TIMEOUT_SECS: u64 = MCP_CALL_TIMEOUT_SECS;
 pub const MCP_RESULT_MAX_BYTES: usize = 65_536;
 /// Largest MCP response (JSON body or SSE event) the client accepts.
 pub const MCP_RESPONSE_MAX_BYTES: usize = 4_194_304;
+/// One MCP connection attempt, lifecycle included (`server/discover`, `initialize`, or both).
+pub const MCP_CONNECT_TIMEOUT_SECS: u64 = 15;
+/// A whole MCP tool listing: connecting, every page, and closing.
+pub const MCP_LIST_TIMEOUT_SECS: u64 = 30;
+/// Closing an MCP connection (a legacy session's `DELETE`).
+pub const MCP_CLOSE_TIMEOUT_SECS: u64 = 5;
+/// `tools/list` pages read in one listing.
+pub const MCP_LIST_MAX_PAGES: usize = 16;
 /// Tool list cache lifetime when the server sends no `ttlMs`.
 pub const TOOL_CACHE_DEFAULT_TTL_SECS: u64 = 3_600;
 /// Longest tool list cache lifetime, whatever `ttlMs` the server sends.
@@ -42,6 +50,9 @@ pub const AUDIO_OUT_MAX_BYTES: u64 = 300 * 24_000 * 2;
 /// Output token limit of a model without one: this, or a quarter of its context window when
 /// that is smaller.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+/// The same for a model with `reasoning`: its reasoning tokens count against the limit (OpenAI
+/// `max_completion_tokens`), so a high-effort answer needs more room.
+pub const DEFAULT_REASONING_OUTPUT_TOKENS: u32 = 32_768;
 /// Request size limits, as encoded bytes (base64 adds about 33%) and PDF pages. Rough values
 /// until P2.B verifies each provider; Gemini's OpenAI-compatible endpoint takes less.
 pub const REQUEST_MAX_BYTES: u64 = 32 * 1_024 * 1_024;
@@ -84,6 +95,10 @@ pub const BYTES_PER_TOKEN: u64 = 4;
 pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
 pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
 pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
+/// On shutdown, live runs get this long to finish on their own; then they are cancelled and get
+/// up to `SHUTDOWN_DRAIN_SECS` more to save their partial answers. Stopping a run (or deleting
+/// its chat or project) waits up to `SHUTDOWN_DRAIN_SECS` for it to save too.
+pub const SHUTDOWN_GRACE_SECS: u64 = 5;
 pub const SHUTDOWN_DRAIN_SECS: u64 = 10;
 
 /// Defaults of `MAX_UPLOAD_MB` and `MAX_STORAGE_MB_PER_USER` (read by `AppConfig::parse`).

@@ -33,9 +33,21 @@ pub struct AppDependencies {
     pub shutdown: CancellationToken,
 }
 
+/// The app and the state its handlers share (the composition root recovers interrupted answers
+/// and drains the run registry through it).
+pub struct App {
+    pub router: Router,
+    pub state: AppState,
+}
+
 /// Builds the app: every service wired once, rustauth's routes and guard, Copilot's routes, the
 /// OpenAPI document, and the web bundle.
 pub fn create_app(dependencies: AppDependencies) -> Router {
+    assemble(dependencies).router
+}
+
+/// [`create_app`], keeping the shared state.
+pub fn assemble(dependencies: AppDependencies) -> App {
     let AppDependencies {
         config,
         db,
@@ -50,6 +62,7 @@ pub fn create_app(dependencies: AppDependencies) -> Router {
     };
     let web_dir = config.web_dir.clone();
     let state = wire(Arc::new(config), db, adapters, shutdown);
+    let shared = state.clone();
 
     let (router, openapi) = routes::router(&identity).split_for_parts();
     let router = router.merge(routes::docs::router(openapi));
@@ -63,9 +76,13 @@ pub fn create_app(dependencies: AppDependencies) -> Router {
 
     // `layer` wraps everything added before it, so the last layer is the outermost. The request
     // id runs outside rustauth's router and guard, so their error bodies echo it too.
-    router
+    let router = router
         .layer(from_fn(request_logger))
         .layer(from_fn(request_id))
         .layer(cors(cors_options))
-        .with_state(state)
+        .with_state(state);
+    App {
+        router,
+        state: shared,
+    }
 }

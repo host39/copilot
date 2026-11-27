@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use copilot_core::shared::constants::MCP_RESPONSE_MAX_BYTES;
+use copilot_core::shared::constants::{
+    MCP_CLOSE_TIMEOUT_SECS, MCP_CONNECT_TIMEOUT_SECS, MCP_LIST_TIMEOUT_SECS, MCP_RESPONSE_MAX_BYTES,
+};
 use copilot_core::{
     DomainResult, Outbound, ToolEndpoint, ToolHost, ToolListing, ToolServerId, ToolSession,
 };
@@ -16,17 +18,12 @@ use crate::connection::Connection;
 use crate::errors::Failure;
 use crate::session::McpSession;
 
-/// One connection attempt, lifecycle included (`server/discover`, `initialize`, or both).
-const CONNECT_TIMEOUT_SECS: u64 = 15;
-/// A whole tool listing: connecting, every page, and closing.
-const LIST_TIMEOUT_SECS: u64 = 30;
-/// Closing a connection (a legacy session's `DELETE`).
-const CLOSE_TIMEOUT_SECS: u64 = 5;
 /// Servers whose revision this process remembers; past this the memory starts over.
 const ERAS_MAX: usize = 4096;
 
-/// The adapter's time and size limits. [`Limits::default`] holds the production values; tests
-/// shorten the times.
+/// The adapter's time and size limits. [`Limits::default`] holds the production values (core's
+/// `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`, and
+/// `MCP_RESPONSE_MAX_BYTES`); tests shorten the times.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     /// One connection attempt, lifecycle included.
@@ -43,9 +40,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            connect: Duration::from_secs(CONNECT_TIMEOUT_SECS),
-            list: Duration::from_secs(LIST_TIMEOUT_SECS),
-            close: Duration::from_secs(CLOSE_TIMEOUT_SECS),
+            connect: Duration::from_secs(MCP_CONNECT_TIMEOUT_SECS),
+            list: Duration::from_secs(MCP_LIST_TIMEOUT_SECS),
+            close: Duration::from_secs(MCP_CLOSE_TIMEOUT_SECS),
             response_max_bytes: MCP_RESPONSE_MAX_BYTES,
         }
     }

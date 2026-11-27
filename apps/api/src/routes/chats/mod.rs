@@ -1,9 +1,14 @@
 //! `/api/chats`: chats, messages, turns (server-sent `ChatStreamEvent`s), approvals, and read
 //! state (`ChatService`, `ChatEngine`, `RunRegistry`). The walking skeleton (P1.9) wrote
-//! `create`, `get`, `messages`, and `send`, and roadmap step P2.A the other non-streaming
-//! handlers; P3.1 writes the other streaming routes, stop, and reattaching. Attachments are in
-//! `routes::files`. Deleting a chat stops its live run first, so no run writes into a chat that
-//! is gone.
+//! `create`, `get`, `messages`, and `send`, roadmap step P2.A the other non-streaming handlers,
+//! and P3.1 regenerate, retry, reattaching (`stream`), and stop; the decisions route follows in
+//! P3.1's second part. Attachments are in `routes::files`. Deleting a chat stops its live run
+//! first, so no run writes into a chat that is gone.
+//!
+//! Every turn route loads the caller's chat first (another user's chat is a `404`, never
+//! `CHAT_BUSY`), reserves the chat, prepares the turn (a failure answers `4xx` and frees the
+//! chat), and only then switches to server-sent events. The run goes on when the client
+//! disconnects; it reattaches with `GET /chats/{id}/stream?after=<seq>`.
 
 pub mod cursor;
 pub mod serializer;
@@ -21,14 +26,14 @@ use axum::response::{IntoResponse, Response};
 use copilot_contracts::{
     ChatListQuery, ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest,
     DecisionsRequest, DetailsResponse, ErrorResponse, ListResponse, MessageResponse, PageResponse,
-    ProjectResponse, SendMessageRequest, ToolOverride, UpdateChatRequest,
+    ProjectResponse, SendMessageRequest, StreamQuery, ToolOverride, UpdateChatRequest,
 };
 use copilot_core::shared::constants::{
     DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
 };
 use copilot_core::{
-    ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId, NewChat, PreparedTurn, ProjectId,
-    ScheduleId, ServerOverride, ToolServerId, TurnEvent, TurnInput, TurnSink,
+    Actor, ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId, NewChat, PreparedTurn,
+    ProjectId, ScheduleId, ServerOverride, ToolServerId, TurnEvent, TurnInput, TurnSink,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
@@ -37,7 +42,7 @@ use utoipa_axum::routes;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
-use crate::helpers::runs::Reservation;
+use crate::helpers::runs::{Reservation, Subscription};
 use crate::routes::convert::ToCore;
 use crate::routes::path::{Id, Params};
 use crate::routes::{pending, projects};
@@ -57,10 +62,25 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(save_instructions))
 }
 
+/// Loads the caller's chat, reserves it, prepares the turn `input` asks for, and starts it: the
+/// response is the turn's event stream. Another user's chat is a `404`, never `CHAT_BUSY`; a
+/// failed `prepare` frees the chat.
+async fn start(
+    state: &AppState,
+    caller: &Actor,
+    chat: ChatId,
+    input: TurnInput,
+) -> Result<Response, HttpError> {
+    state.chats.get(caller, chat).await?;
+    let reservation = state.runs.reserve(caller.user_id, chat)?;
+    let turn = state.chats.prepare(caller, chat, input).await?;
+    Ok(run(state, reservation, turn))
+}
+
 /// Starts the prepared turn in its reserved slot and answers with its events. The run goes on
 /// when the client disconnects; it stops on shutdown. The slot is released when the run ends.
 fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Response {
-    let events = reservation.subscribe().into_stream();
+    let events = reservation.subscribe();
     let engine = Arc::clone(&state.engine);
     let chat = turn.chat.id();
     tokio::spawn(async move {
@@ -91,7 +111,14 @@ fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Respon
         }
         drop(reservation);
     });
+    stream_response(state, events)
+}
+
+/// A run's events as server-sent events, each with its `seq` as the event id. The body ends
+/// after `done`, or when the server shuts down.
+fn stream_response(state: &AppState, events: Subscription) -> Response {
     let events = events
+        .into_stream()
         .map(|event| Ok::<_, Infallible>(sse(&event)))
         .take_until(state.shutdown.clone().cancelled_owned());
     Sse::new(events)
@@ -109,9 +136,10 @@ fn overrides(rows: Vec<ToolOverride>) -> Vec<ServerOverride> {
         .collect()
 }
 
-/// One event as `data: <json>`.
+/// One event as `id: <seq>` and `data: <json>`.
 fn sse(event: &ChatStreamEvent) -> Event {
     Event::default()
+        .id(event.seq().to_string())
         .json_data(event)
         .unwrap_or_else(|_| Event::default().comment("event.unserializable"))
 }
@@ -351,17 +379,12 @@ pub async fn send(
     Id(id): Id,
     JsonBody(body): JsonBody<SendMessageRequest>,
 ) -> Result<Response, HttpError> {
-    let chat = ChatId::new(id);
-    // The caller's chat first, so another user's chat is a 404 and never `CHAT_BUSY`.
-    state.chats.get(&caller, chat).await?;
-    let reservation = state.runs.reserve(caller.user_id, chat)?;
     let input = TurnInput::Send {
         text: body.text,
         file_ids: body.file_ids.into_iter().map(FileId::new).collect(),
         edit_from: body.edit_from.map(MessageId::new),
     };
-    let turn = state.chats.prepare(&caller, chat, input).await?;
-    Ok(run(&state, reservation, turn))
+    start(&state, &caller, ChatId::new(id), input).await
 }
 
 #[utoipa::path(
@@ -372,12 +395,18 @@ pub async fn send(
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
-        (status = OK, description = "The new answer as server-sent events", content_type = "text/event-stream", body = ChatStreamEvent),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = OK, description = "The new answer as server-sent events: every message after the last user message is replaced", content_type = "text/event-stream", body = ChatStreamEvent),
+        (status = BAD_REQUEST, description = "The chat has no user message, or the turn is not valid (for example no model)", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The chat is already answering (`CHAT_BUSY`), too many chats are (`TOO_MANY_RUNS`), the model cannot answer (`MODEL_UNAVAILABLE`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
     )
 )]
-pub async fn regenerate(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn regenerate(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<Response, HttpError> {
+    start(&state, &caller, ChatId::new(id), TurnInput::Regenerate).await
 }
 
 #[utoipa::path(
@@ -388,12 +417,18 @@ pub async fn regenerate(Caller(_caller): Caller) -> HttpError {
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
-        (status = OK, description = "The retried turn as server-sent events", content_type = "text/event-stream", body = ChatStreamEvent),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = OK, description = "The retried turn as server-sent events: the failed answer and the results of its calls are replaced; earlier rounds of the turn stay", content_type = "text/event-stream", body = ChatStreamEvent),
+        (status = BAD_REQUEST, description = "The turn is not valid (for example no model)", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The turn's last answer did not fail (`NOTHING_TO_RETRY`), the chat is already answering (`CHAT_BUSY`), too many chats are (`TOO_MANY_RUNS`), the model cannot answer (`MODEL_UNAVAILABLE`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
     )
 )]
-pub async fn retry(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn retry(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<Response, HttpError> {
+    start(&state, &caller, ChatId::new(id), TurnInput::Retry).await
 }
 
 #[utoipa::path(
@@ -422,15 +457,27 @@ pub async fn decide(Caller(_caller): Caller) -> HttpError {
     operation_id = "chats_stream",
     tag = "chats",
     security(("bearerAuth" = [])),
-    params(("id" = Uuid, Path, description = "The chat's id")),
+    params(("id" = Uuid, Path, description = "The chat's id"), StreamQuery),
     responses(
-        (status = OK, description = "The running turn's events from the start, then live ones", content_type = "text/event-stream", body = ChatStreamEvent),
-        (status = NO_CONTENT, description = "No turn is running"),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = OK, description = "The running turn's events after `after` (from the start without it), then live ones, ending with `done`", content_type = "text/event-stream", body = ChatStreamEvent),
+        (status = NO_CONTENT, description = "No turn is running: read the messages"),
+        (status = BAD_REQUEST, description = "`after` is not a number", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse)
     )
 )]
-pub async fn stream(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn stream(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+    Params(query): Params<StreamQuery>,
+) -> Result<Response, HttpError> {
+    let chat = ChatId::new(id);
+    // The caller's chat first: another user's chat is a 404 and its run is never attached.
+    state.chats.get(&caller, chat).await?;
+    Ok(match state.runs.attach(chat, query.after.unwrap_or(0)) {
+        Some(events) => stream_response(&state, events),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
 }
 
 #[utoipa::path(
@@ -441,12 +488,27 @@ pub async fn stream(Caller(_caller): Caller) -> HttpError {
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
-        (status = NO_CONTENT, description = "The running turn stops and keeps its partial answer"),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = NO_CONTENT, description = "The running turn stopped and saved its partial answer as `cancelled` (also when no turn was running)"),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse)
     )
 )]
-pub async fn stop(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn stop(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<StatusCode, HttpError> {
+    let chat = ChatId::new(id);
+    // The caller's chat first: another user's chat is a 404 and its run is never touched.
+    state.chats.get(&caller, chat).await?;
+    // Answers once the cancelled answer is saved, so the client reads it right after.
+    if !state
+        .runs
+        .stop(chat, Duration::from_secs(SHUTDOWN_DRAIN_SECS))
+        .await
+    {
+        tracing::warn!(chat_id = %chat, "api.chats.stop.run-live");
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
