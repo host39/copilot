@@ -12,7 +12,7 @@ Run these yourself from the repo root to verify work:
 | `make type-check` | `cargo check` (all targets, all features) + `tsc` |
 | `make test` | `cargo test --workspace` + TypeScript tests |
 | `make boundaries` | Crate dependency rules in `boundaries.config.mjs` |
-| `make contracts` | Regenerates `packages/contracts/ts/generated/` after contract changes |
+| `make contracts` | Regenerates `packages/contracts/ts/generated/` and the conformance fixtures in `packages/contracts/test/fixtures/` after contract changes |
 | `make check` | format + lint + type-check + test + boundaries |
 | `make test-db` | Tests marked `#[ignore]` that need Postgres (`#[sqlx::test]`, one throwaway database per test) |
 | `make test-bruno` | Bruno API tests (needs a migrated database; starts this checkout's API on its `PORT` and refuses to reuse a running server unless `BASE_URL` is set). Registers a run-unique account, which becomes the administrator of a database without accounts |
@@ -57,7 +57,7 @@ Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency)
 - `copilot-core` must not depend on `axum`, `sqlx`, `utoipa`, `tokio`, `reqwest`, `rmcp`, contracts, database, middleware, logger, the adapter crates (providers, mcp, security), rustauth crates, or apps (`make boundaries`). Only `apps/api` and `copilot-database` may depend on lib-rustauth, through its `rustauth` facade; `copilot-database` only with the `migrate` feature, for the `auth` migrations.
 - Services fail with `DomainError` variants carrying human-readable messages; HTTP mapping lives in `copilot-middleware` (`HttpError`). Infrastructure failures use `DomainError::internal("<dotted.key>", error)`.
 - Wire services in the composition root (`ApiContext::create` / `create_app`), store them in `AppState`, and never construct repositories in handlers.
-- Contracts are for the API and the web app; core does not depend on contracts. After changing a contract struct, run `make contracts` and update the Zod schema in `packages/contracts/ts/index.ts` (it must `satisfies` the generated type).
+- Contracts are for the API and the web app; core does not depend on contracts. After changing a contract struct, update its samples in `packages/contracts/tests/fixtures.rs`, run `make contracts`, and update the Zod schema in `packages/contracts/ts/index.ts` (it must `satisfies` the generated type and parse every sample in `test/fixtures/`).
 - `apps/web` only imports `@copilot/contracts` and talks to the API over HTTP.
 - Log with `tracing` macros and dotted keys; no `println!` / `eprintln!` / `dbg!` (Clippy denies them) and no `console.*` outside `apps/web/src/logging.ts` (Biome denies it).
 - TypeScript uses alias imports only (no `./` or `../`); Rust uses `crate::` paths (no `super::` outside test modules).

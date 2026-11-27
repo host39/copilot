@@ -1,0 +1,16 @@
+[
+  {
+    "decisions": [
+      {
+        "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+        "decision": "deny",
+        "reason": "Not now.",
+        "scope": "once"
+      },
+      {
+        "callId": "019abf6c-2f6e-7a51-8c3e-00000000000c",
+        "decision": "approve"
+      }
+    ]
+  }
+]

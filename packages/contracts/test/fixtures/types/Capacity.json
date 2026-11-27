@@ -1,0 +1,12 @@
+[
+  {
+    "level": "fits",
+    "used": 12000,
+    "window": 200000
+  },
+  {
+    "level": "unknown",
+    "used": 0,
+    "window": null
+  }
+]

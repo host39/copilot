@@ -1,0 +1,26 @@
+[
+  {
+    "awaitingApproval": false,
+    "createdAt": "2026-11-26T12:12:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "pinned": true,
+    "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+    "scheduleId": "019abf6c-2f6e-7a51-8c3e-000000000008",
+    "title": "Weather in Berlin",
+    "unread": true,
+    "updatedAt": "2026-11-26T12:13:00.123456Z"
+  },
+  {
+    "awaitingApproval": true,
+    "createdAt": "2026-11-26T12:12:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000011",
+    "modelId": null,
+    "pinned": false,
+    "projectId": null,
+    "scheduleId": null,
+    "title": "Weather in Berlin",
+    "unread": false,
+    "updatedAt": "2026-11-26T12:13:00.123456Z"
+  }
+]

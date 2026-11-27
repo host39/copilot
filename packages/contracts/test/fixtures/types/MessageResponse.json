@@ -1,0 +1,120 @@
+[
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "createdAt": "2026-11-26T12:11:00.123456Z",
+    "error": null,
+    "finishReason": "stop",
+    "id": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "parts": [
+      {
+        "text": "Here is the forecast.",
+        "type": "text"
+      },
+      {
+        "fileId": "019abf6c-2f6e-7a51-8c3e-000000000003",
+        "mediaType": "application/pdf",
+        "name": "report.pdf",
+        "type": "file"
+      },
+      {
+        "durationMs": 2500,
+        "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000a",
+        "format": "wav",
+        "transcript": "What is the weather?",
+        "type": "audio"
+      },
+      {
+        "durationMs": null,
+        "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000a",
+        "format": "wav",
+        "transcript": null,
+        "type": "audio"
+      },
+      {
+        "text": "The user wants a forecast.",
+        "type": "reasoning"
+      },
+      {
+        "approval": "denied",
+        "arguments": {
+          "city": "Berlin"
+        },
+        "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+        "complete": true,
+        "denyReason": "Not now.",
+        "serverId": "019abf6c-2f6e-7a51-8c3e-000000000006",
+        "toolName": "forecast",
+        "type": "toolCall"
+      },
+      {
+        "approval": "pending",
+        "arguments": {},
+        "callId": "019abf6c-2f6e-7a51-8c3e-00000000000c",
+        "complete": false,
+        "denyReason": null,
+        "serverId": null,
+        "toolName": "schedule_prompt",
+        "type": "toolCall"
+      },
+      {
+        "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+        "content": [
+          {
+            "text": "Sunny, 21 °C.",
+            "type": "text"
+          },
+          {
+            "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000d",
+            "type": "image"
+          }
+        ],
+        "isError": false,
+        "status": "ok",
+        "truncated": true,
+        "type": "toolResult"
+      }
+    ],
+    "role": "assistant",
+    "status": "complete",
+    "updatedAt": "2026-11-26T12:12:00.123456Z",
+    "usage": {
+      "cacheReadTokens": 1000,
+      "cacheWriteTokens": 0,
+      "inputTokens": 1200,
+      "outputTokens": 300,
+      "reasoningTokens": 120
+    }
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "createdAt": "2026-11-26T12:11:00.123456Z",
+    "error": null,
+    "finishReason": null,
+    "id": "019abf6c-2f6e-7a51-8c3e-00000000000f",
+    "modelId": null,
+    "parts": [
+      {
+        "text": "What is the weather?",
+        "type": "text"
+      }
+    ],
+    "role": "user",
+    "status": "complete",
+    "updatedAt": "2026-11-26T12:12:00.123456Z",
+    "usage": null
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "createdAt": "2026-11-26T12:11:00.123456Z",
+    "error": "The provider rejected the API key.",
+    "finishReason": "error",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000010",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "parts": [],
+    "role": "assistant",
+    "status": "error",
+    "updatedAt": "2026-11-26T12:12:00.123456Z",
+    "usage": null
+  }
+]

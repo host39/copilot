@@ -1,0 +1,22 @@
+[
+  {
+    "builtinTools": [
+      "schedules"
+    ],
+    "instructions": "Use Fahrenheit.",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "pinned": true,
+    "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+    "reasoning": "high",
+    "title": "Renamed",
+    "toolOverrides": [],
+    "voiceReplies": false
+  },
+  {
+    "builtinTools": null,
+    "modelId": null,
+    "projectId": null,
+    "reasoning": null
+  },
+  {}
+]

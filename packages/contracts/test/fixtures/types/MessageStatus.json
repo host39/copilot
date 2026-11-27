@@ -1,0 +1,8 @@
+[
+  "streaming",
+  "complete",
+  "awaiting_approval",
+  "cancelled",
+  "error",
+  "refused"
+]

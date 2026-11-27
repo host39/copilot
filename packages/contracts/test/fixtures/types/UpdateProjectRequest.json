@@ -1,0 +1,19 @@
+[
+  {
+    "builtinTools": [],
+    "defaultModelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "icon": "📚",
+    "instructions": "",
+    "name": "Renamed",
+    "pinned": false,
+    "reasoning": "off",
+    "toolServerIds": [
+      "019abf6c-2f6e-7a51-8c3e-000000000006"
+    ]
+  },
+  {
+    "defaultModelId": null,
+    "reasoning": null
+  },
+  {}
+]

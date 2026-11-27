@@ -1,0 +1,60 @@
+[
+  {
+    "items": [
+      {
+        "approval": "ask",
+        "createdAt": "2026-11-26T12:07:00.123456Z",
+        "credentials": "set",
+        "enabled": true,
+        "id": "019abf6c-2f6e-7a51-8c3e-000000000006",
+        "name": "Weather",
+        "protocolVersion": "2025-11-25",
+        "reviewRequired": false,
+        "slug": "weather",
+        "toolModes": {
+          "forecast": "auto",
+          "set_alert": "ask"
+        },
+        "tools": [
+          {
+            "description": "The forecast for a city.",
+            "inputSchema": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "name": "forecast",
+            "readOnly": true,
+            "title": "Forecast"
+          }
+        ],
+        "toolsFetchedAt": "2026-11-26T12:07:00.123456Z",
+        "updatedAt": "2026-11-26T12:08:00.123456Z",
+        "url": "https://mcp.example.com/weather"
+      },
+      {
+        "approval": "ask",
+        "createdAt": "2026-11-26T12:07:00.123456Z",
+        "credentials": "missing",
+        "enabled": true,
+        "id": "019abf6c-2f6e-7a51-8c3e-000000000007",
+        "name": "Weather",
+        "protocolVersion": null,
+        "reviewRequired": true,
+        "slug": "weather",
+        "toolModes": {},
+        "tools": null,
+        "toolsFetchedAt": null,
+        "updatedAt": "2026-11-26T12:08:00.123456Z",
+        "url": "https://mcp.example.com/weather"
+      }
+    ],
+    "total": 2
+  }
+]

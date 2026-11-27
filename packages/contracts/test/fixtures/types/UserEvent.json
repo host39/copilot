@@ -1,0 +1,24 @@
+[
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "type": "chat.updated"
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "type": "run.started"
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "status": "awaiting_approval",
+    "type": "run.finished"
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "type": "approval.pending"
+  },
+  {
+    "scheduleId": "019abf6c-2f6e-7a51-8c3e-000000000008",
+    "type": "schedule.updated"
+  }
+]

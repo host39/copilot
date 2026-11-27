@@ -1,0 +1,105 @@
+[
+  {
+    "available": true,
+    "capabilities": {
+      "audioIn": false,
+      "audioOut": false,
+      "defaultReasoning": "medium",
+      "pdf": false,
+      "reasoning": true,
+      "reasoningLevels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "tools": true,
+      "vision": true
+    },
+    "contextWindow": 200000,
+    "createdAt": "2026-11-26T12:02:00.123456Z",
+    "detected": {
+      "audioIn": false,
+      "audioOut": false,
+      "defaultReasoning": null,
+      "pdf": false,
+      "reasoning": false,
+      "reasoningLevels": [],
+      "tools": true,
+      "vision": true
+    },
+    "displayName": "Model Large",
+    "enabled": true,
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "kind": "openai",
+    "locks": [
+      {
+        "capability": "audioOut",
+        "reason": "This provider cannot stream audio."
+      }
+    ],
+    "maxOutputTokens": 32768,
+    "overrides": {
+      "audioIn": null,
+      "audioOut": null,
+      "pdf": null,
+      "reasoning": true,
+      "tools": null,
+      "vision": null
+    },
+    "preset": "openrouter",
+    "providerId": "019abf6c-2f6e-7a51-8c3e-000000000001",
+    "providerName": "OpenRouter",
+    "reasoningOffWithTools": false,
+    "remoteId": "example/model-large",
+    "updatedAt": "2026-11-26T12:03:00.123456Z"
+  },
+  {
+    "available": true,
+    "capabilities": {
+      "audioIn": false,
+      "audioOut": false,
+      "defaultReasoning": "medium",
+      "pdf": false,
+      "reasoning": true,
+      "reasoningLevels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "tools": true,
+      "vision": true
+    },
+    "contextWindow": null,
+    "createdAt": "2026-11-26T12:02:00.123456Z",
+    "detected": {
+      "audioIn": false,
+      "audioOut": false,
+      "defaultReasoning": null,
+      "pdf": false,
+      "reasoning": false,
+      "reasoningLevels": [],
+      "tools": true,
+      "vision": true
+    },
+    "displayName": "Model Large",
+    "enabled": true,
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "kind": "openai",
+    "locks": [],
+    "maxOutputTokens": null,
+    "overrides": {
+      "audioIn": null,
+      "audioOut": null,
+      "pdf": null,
+      "reasoning": true,
+      "tools": null,
+      "vision": null
+    },
+    "preset": "openrouter",
+    "providerId": "019abf6c-2f6e-7a51-8c3e-000000000001",
+    "providerName": "OpenRouter",
+    "reasoningOffWithTools": true,
+    "remoteId": "example/model-large",
+    "updatedAt": "2026-11-26T12:03:00.123456Z"
+  }
+]

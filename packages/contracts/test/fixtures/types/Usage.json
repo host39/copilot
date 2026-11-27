@@ -1,0 +1,16 @@
+[
+  {
+    "cacheReadTokens": 1000,
+    "cacheWriteTokens": 0,
+    "inputTokens": 1200,
+    "outputTokens": 300,
+    "reasoningTokens": 120
+  },
+  {
+    "cacheReadTokens": null,
+    "cacheWriteTokens": null,
+    "inputTokens": null,
+    "outputTokens": null,
+    "reasoningTokens": null
+  }
+]

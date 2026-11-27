@@ -1,0 +1,19 @@
+[
+  {
+    "builtinTools": [
+      "schedules"
+    ],
+    "defaultModelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "icon": "🔬",
+    "instructions": "Cite sources.",
+    "name": "Research",
+    "pinned": true,
+    "reasoning": "low",
+    "toolServerIds": [
+      "019abf6c-2f6e-7a51-8c3e-000000000006"
+    ]
+  },
+  {
+    "name": "Notes"
+  }
+]

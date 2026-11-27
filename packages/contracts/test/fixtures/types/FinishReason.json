@@ -1,0 +1,9 @@
+[
+  "stop",
+  "tool_calls",
+  "length",
+  "refusal",
+  "error",
+  "other",
+  "tool_limit"
+]

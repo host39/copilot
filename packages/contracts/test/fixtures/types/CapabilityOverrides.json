@@ -1,0 +1,18 @@
+[
+  {
+    "audioIn": false,
+    "audioOut": false,
+    "pdf": false,
+    "reasoning": true,
+    "tools": true,
+    "vision": true
+  },
+  {
+    "audioIn": null,
+    "audioOut": null,
+    "pdf": null,
+    "reasoning": null,
+    "tools": null,
+    "vision": null
+  }
+]

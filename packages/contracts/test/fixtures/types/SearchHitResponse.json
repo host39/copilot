@@ -1,0 +1,14 @@
+[
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "chatTitle": "Weather in Berlin",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "snippet": "Sunny, 21 °C."
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "chatTitle": "Weather in Berlin",
+    "messageId": null,
+    "snippet": "Weather in Berlin"
+  }
+]

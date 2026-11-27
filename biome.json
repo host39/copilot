@@ -7,7 +7,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/ts/generated", "!**/target"]
+    "includes": ["**", "!**/ts/generated", "!**/contracts/test/fixtures", "!**/target"]
   },
   "formatter": {
     "enabled": true,

@@ -1,0 +1,26 @@
+[
+  {
+    "chatId": null,
+    "createdAt": "2026-11-26T12:04:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000003",
+    "included": true,
+    "mediaType": "application/pdf",
+    "name": "report.pdf",
+    "pageCount": 12,
+    "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+    "sizeBytes": 524288,
+    "tokenEstimate": 12000
+  },
+  {
+    "chatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "createdAt": "2026-11-26T12:04:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000003",
+    "included": false,
+    "mediaType": "image/png",
+    "name": "photo.png",
+    "pageCount": null,
+    "projectId": null,
+    "sizeBytes": 524288,
+    "tokenEstimate": 12000
+  }
+]

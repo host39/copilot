@@ -1,0 +1,9 @@
+[
+  {
+    "apiKey": "sk-new",
+    "baseUrl": "https://api.example.com/v1",
+    "enabled": false,
+    "name": "Renamed"
+  },
+  {}
+]

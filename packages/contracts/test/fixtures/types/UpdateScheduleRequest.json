@@ -1,0 +1,17 @@
+[
+  {
+    "cron": "0 19 * * *",
+    "enabled": true,
+    "instructions": "",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "name": "Evening news",
+    "onAsk": "deny",
+    "prompt": "Summarize the day.",
+    "reasoning": "high",
+    "timezone": "America/New_York"
+  },
+  {
+    "reasoning": null
+  },
+  {}
+]

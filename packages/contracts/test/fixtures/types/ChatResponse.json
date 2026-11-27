@@ -1,0 +1,48 @@
+[
+  {
+    "approvedTools": [
+      {
+        "name": "forecast",
+        "serverId": "019abf6c-2f6e-7a51-8c3e-000000000006"
+      }
+    ],
+    "builtinTools": [
+      "schedules"
+    ],
+    "createdAt": "2026-11-26T12:12:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "instructions": "Use Celsius.",
+    "lastReadAt": "2026-11-26T12:13:00.123456Z",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "pinned": true,
+    "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+    "reasoning": "medium",
+    "scheduleId": "019abf6c-2f6e-7a51-8c3e-000000000008",
+    "title": "Weather in Berlin",
+    "toolOverrides": [
+      {
+        "enabled": false,
+        "serverId": "019abf6c-2f6e-7a51-8c3e-000000000006"
+      }
+    ],
+    "updatedAt": "2026-11-26T12:13:00.123456Z",
+    "voiceReplies": true
+  },
+  {
+    "approvedTools": [],
+    "builtinTools": null,
+    "createdAt": "2026-11-26T12:12:00.123456Z",
+    "id": "019abf6c-2f6e-7a51-8c3e-000000000005",
+    "instructions": "",
+    "lastReadAt": null,
+    "modelId": null,
+    "pinned": false,
+    "projectId": null,
+    "reasoning": null,
+    "scheduleId": null,
+    "title": "",
+    "toolOverrides": [],
+    "updatedAt": "2026-11-26T12:13:00.123456Z",
+    "voiceReplies": false
+  }
+]

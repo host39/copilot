@@ -1,0 +1,26 @@
+[
+  {
+    "audioIn": false,
+    "audioOut": false,
+    "defaultReasoning": "medium",
+    "pdf": false,
+    "reasoning": true,
+    "reasoningLevels": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "tools": true,
+    "vision": true
+  },
+  {
+    "audioIn": false,
+    "audioOut": false,
+    "defaultReasoning": null,
+    "pdf": false,
+    "reasoning": false,
+    "reasoningLevels": [],
+    "tools": true,
+    "vision": true
+  }
+]

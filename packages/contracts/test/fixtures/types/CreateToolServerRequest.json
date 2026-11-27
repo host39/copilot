@@ -1,0 +1,16 @@
+[
+  {
+    "approval": "auto",
+    "bearer": "token-sample",
+    "headers": {
+      "X-Team": "blue"
+    },
+    "name": "Weather",
+    "slug": "weather",
+    "url": "https://mcp.example.com/weather"
+  },
+  {
+    "name": "Files",
+    "url": "https://mcp.example.com/files"
+  }
+]

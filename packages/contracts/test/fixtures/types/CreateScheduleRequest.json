@@ -1,0 +1,19 @@
+[
+  {
+    "cron": "0 7 * * 1-5",
+    "instructions": "Keep it short.",
+    "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+    "name": "Morning news",
+    "onAsk": "pause",
+    "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+    "prompt": "Summarize the news.",
+    "reasoning": "medium",
+    "timezone": "Europe/Berlin"
+  },
+  {
+    "cron": "0 9 * * 1",
+    "name": "Weekly review",
+    "prompt": "Review the week.",
+    "timezone": "UTC"
+  }
+]

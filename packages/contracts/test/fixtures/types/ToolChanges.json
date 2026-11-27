@@ -1,0 +1,18 @@
+[
+  {
+    "added": [
+      "forecast"
+    ],
+    "changed": [
+      "set_alert"
+    ],
+    "removed": [
+      "radar"
+    ]
+  },
+  {
+    "added": [],
+    "changed": [],
+    "removed": []
+  }
+]

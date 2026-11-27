@@ -1,0 +1,37 @@
+[
+  {
+    "items": [
+      {
+        "builtinTools": [
+          "schedules"
+        ],
+        "createdAt": "2026-11-26T12:05:00.123456Z",
+        "defaultModelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+        "icon": "🔬",
+        "id": "019abf6c-2f6e-7a51-8c3e-000000000004",
+        "instructions": "Cite sources.",
+        "name": "Research",
+        "pinned": true,
+        "reasoning": "high",
+        "toolServerIds": [
+          "019abf6c-2f6e-7a51-8c3e-000000000006"
+        ],
+        "updatedAt": "2026-11-26T12:06:00.123456Z"
+      },
+      {
+        "builtinTools": [],
+        "createdAt": "2026-11-26T12:05:00.123456Z",
+        "defaultModelId": null,
+        "icon": "",
+        "id": "019abf6c-2f6e-7a51-8c3e-000000000004",
+        "instructions": "",
+        "name": "Research",
+        "pinned": false,
+        "reasoning": null,
+        "toolServerIds": [],
+        "updatedAt": "2026-11-26T12:06:00.123456Z"
+      }
+    ],
+    "total": 2
+  }
+]

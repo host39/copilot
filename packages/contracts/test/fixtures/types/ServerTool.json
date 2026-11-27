@@ -1,0 +1,21 @@
+[
+  {
+    "description": "Alerts when rain is expected.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "set_alert",
+    "readOnly": false,
+    "title": "Set an alert"
+  },
+  {
+    "description": "",
+    "inputSchema": {
+      "type": "object"
+    },
+    "name": "ping",
+    "readOnly": true,
+    "title": null
+  }
+]

@@ -1,0 +1,130 @@
+[
+  {
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "role": "assistant",
+    "seq": 1,
+    "type": "message.started",
+    "windowStartId": "019abf6c-2f6e-7a51-8c3e-00000000000f"
+  },
+  {
+    "index": 0,
+    "kind": "reasoning",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "seq": 2,
+    "type": "part.started"
+  },
+  {
+    "index": 0,
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "seq": 3,
+    "text": "The user wants a forecast.",
+    "type": "reasoning.delta"
+  },
+  {
+    "index": 1,
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "seq": 4,
+    "text": "Checking.",
+    "type": "text.delta"
+  },
+  {
+    "data": "AAAA",
+    "format": "pcm16",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "seq": 5,
+    "type": "audio.delta"
+  },
+  {
+    "arguments": {
+      "city": "Berlin",
+      "days": 2
+    },
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "needsApproval": false,
+    "seq": 6,
+    "serverId": "019abf6c-2f6e-7a51-8c3e-000000000006",
+    "title": "Forecast",
+    "toolName": "forecast",
+    "type": "tool.requested"
+  },
+  {
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "output": [
+      {
+        "text": "The tool did not answer in time.",
+        "type": "text"
+      }
+    ],
+    "seq": 7,
+    "status": "timeout",
+    "truncated": false,
+    "type": "tool.finished"
+  },
+  {
+    "arguments": {
+      "name": "News"
+    },
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000c",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "needsApproval": true,
+    "seq": 8,
+    "serverId": null,
+    "title": "Schedule a prompt",
+    "toolName": "schedule_prompt",
+    "type": "tool.requested"
+  },
+  {
+    "finishReason": "tool_calls",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "refusal": null,
+    "seq": 9,
+    "status": "awaiting_approval",
+    "type": "message.finished",
+    "usage": {
+      "cacheReadTokens": 1000,
+      "cacheWriteTokens": 0,
+      "inputTokens": 1200,
+      "outputTokens": 300,
+      "reasoningTokens": 120
+    }
+  },
+  {
+    "finishReason": "refusal",
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "refusal": {
+      "category": "cyber",
+      "explanation": "The model declined to answer."
+    },
+    "seq": 10,
+    "status": "refused",
+    "type": "message.finished",
+    "usage": null
+  },
+  {
+    "finishReason": null,
+    "messageId": "019abf6c-2f6e-7a51-8c3e-00000000000e",
+    "refusal": null,
+    "seq": 11,
+    "status": "cancelled",
+    "type": "message.finished",
+    "usage": {
+      "cacheReadTokens": null,
+      "cacheWriteTokens": null,
+      "inputTokens": null,
+      "outputTokens": null,
+      "reasoningTokens": null
+    }
+  },
+  {
+    "code": "PROVIDER_AUTH",
+    "message": "The provider rejected the API key.",
+    "seq": 12,
+    "type": "error"
+  },
+  {
+    "seq": 13,
+    "type": "done"
+  }
+]

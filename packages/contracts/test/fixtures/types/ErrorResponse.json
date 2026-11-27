@@ -1,0 +1,15 @@
+[
+  {
+    "code": "VALIDATION_ERROR",
+    "details": {
+      "retryAfterSecs": 30
+    },
+    "error": "Name is required.",
+    "field": "name",
+    "requestId": "c0ffee"
+  },
+  {
+    "code": "NOT_FOUND",
+    "error": "Chat not found."
+  }
+]

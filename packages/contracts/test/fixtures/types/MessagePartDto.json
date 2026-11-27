@@ -1,0 +1,69 @@
+[
+  {
+    "text": "Here is the forecast.",
+    "type": "text"
+  },
+  {
+    "fileId": "019abf6c-2f6e-7a51-8c3e-000000000003",
+    "mediaType": "application/pdf",
+    "name": "report.pdf",
+    "type": "file"
+  },
+  {
+    "durationMs": 2500,
+    "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000a",
+    "format": "wav",
+    "transcript": "What is the weather?",
+    "type": "audio"
+  },
+  {
+    "durationMs": null,
+    "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000a",
+    "format": "wav",
+    "transcript": null,
+    "type": "audio"
+  },
+  {
+    "text": "The user wants a forecast.",
+    "type": "reasoning"
+  },
+  {
+    "approval": "denied",
+    "arguments": {
+      "city": "Berlin"
+    },
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+    "complete": true,
+    "denyReason": "Not now.",
+    "serverId": "019abf6c-2f6e-7a51-8c3e-000000000006",
+    "toolName": "forecast",
+    "type": "toolCall"
+  },
+  {
+    "approval": "pending",
+    "arguments": {},
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000c",
+    "complete": false,
+    "denyReason": null,
+    "serverId": null,
+    "toolName": "schedule_prompt",
+    "type": "toolCall"
+  },
+  {
+    "callId": "019abf6c-2f6e-7a51-8c3e-00000000000b",
+    "content": [
+      {
+        "text": "Sunny, 21 °C.",
+        "type": "text"
+      },
+      {
+        "fileId": "019abf6c-2f6e-7a51-8c3e-00000000000d",
+        "type": "image"
+      }
+    ],
+    "isError": false,
+    "status": "ok",
+    "truncated": true,
+    "type": "toolResult"
+  }
+]

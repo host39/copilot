@@ -1,0 +1,15 @@
+[
+  {
+    "data": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "createdAt": "2026-11-26T12:00:00.123456Z",
+      "enabled": true,
+      "id": "019abf6c-2f6e-7a51-8c3e-000000000001",
+      "key": "set",
+      "kind": "openai",
+      "name": "OpenRouter",
+      "preset": "openrouter",
+      "updatedAt": "2026-11-26T12:01:00.123456Z"
+    }
+  }
+]

@@ -17,7 +17,7 @@ End-to-end workflow for a new business domain: `$ARGUMENTS` (for example `Widget
 - [ ] 4. Domain mod.rs barrel + re-export from core lib.rs
 - [ ] 5. Migration (scaffold + SQL), apply with make migrate
 - [ ] 6. sqlx repository in packages/database
-- [ ] 7. Contract DTOs in packages/contracts (Rust + Zod), make contracts
+- [ ] 7. Contract DTOs in packages/contracts (Rust + Zod + fixture samples), make contracts
 - [ ] 8. API route with OpenAPI, wired in the composition root
 - [ ] 9. Web API client + page
 - [ ] 10. Colocated tests, Bruno folder; make check
@@ -83,8 +83,9 @@ pub struct WidgetDto { pub id: String, pub name: String, pub created_at: String 
 
 Requests (`CreateWidgetRequest`) and responses get their own types; wrap responses in `ListResponse<T>` / `DetailsResponse<T>` (see `/api-response-patterns`). Then:
 
-- `make contracts` regenerates `packages/contracts/ts/generated/`.
-- Add Zod schemas to `packages/contracts/ts/index.ts` with `satisfies z.ZodType<WidgetDto>`, and re-export the generated types.
+- Add samples of each new type (every optional field set at least once, every enum value) and of each new route body to `packages/contracts/tests/fixtures.rs`.
+- `make contracts` regenerates `packages/contracts/ts/generated/` and the fixtures in `packages/contracts/test/fixtures/`.
+- Add Zod schemas to `packages/contracts/ts/index.ts` with `satisfies z.ZodType<WidgetDto>` (named `widgetDtoSchema`, body schemas `<name>BodySchema`), and re-export the generated types. `test/fixtures.test.ts` parses every sample with its schema.
 
 Core must **not** depend on contracts; map between entity and DTO in the API.
 

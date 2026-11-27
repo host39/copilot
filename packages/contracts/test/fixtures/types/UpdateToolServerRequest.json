@@ -1,0 +1,21 @@
+[
+  {
+    "approval": "ask",
+    "credentials": {
+      "bearer": "token-sample",
+      "headers": {
+        "X-Api-Key": "key-sample"
+      }
+    },
+    "enabled": false,
+    "name": "Weather",
+    "toolModes": {
+      "forecast": "off"
+    },
+    "url": "https://mcp.example.com/v2"
+  },
+  {
+    "credentials": null
+  },
+  {}
+]

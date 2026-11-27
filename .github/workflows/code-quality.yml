@@ -126,11 +126,13 @@ jobs:
       - name: Run database tests
         run: make test-db
 
-      - name: Check contract bindings are current
+      # `make contracts` rewrites the bindings and the conformance fixtures that the TypeScript
+      # tests (lint job) parse with the Zod schemas; the committed files must match.
+      - name: Check contract bindings and fixtures are current
         run: |
           make contracts
-          git diff --exit-code -- packages/contracts/ts/generated
-          test -z "$(git ls-files --others --exclude-standard -- packages/contracts/ts/generated)"
+          git diff --exit-code -- packages/contracts/ts/generated packages/contracts/test/fixtures
+          test -z "$(git ls-files --others --exclude-standard -- packages/contracts/ts/generated packages/contracts/test/fixtures)"
 
       - name: Build API (release)
         run: cargo build --release --locked -p copilot-api -p copilot-database

@@ -5,6 +5,7 @@
 API_ENV := apps/api/.env.local
 WITH_API_ENV := bash scripts/with-env.sh $(API_ENV)
 CONTRACTS_TS := packages/contracts/ts/generated
+CONTRACTS_FIXTURES := packages/contracts/test/fixtures
 
 help:
 	@echo "Targets:"
@@ -18,7 +19,7 @@ help:
 	@echo "  migrate        Apply migrations + readonly grants"
 	@echo "  seed           Apply local SQL seed files"
 	@echo "  migrations     Scaffold a migration pair (name=<name>)"
-	@echo "  contracts      Regenerate TypeScript bindings from Rust contracts"
+	@echo "  contracts      Regenerate TypeScript bindings and conformance fixtures from Rust contracts"
 	@echo "  test           Rust and TypeScript unit tests"
 	@echo "  test-db        Tests that need Postgres (ignored by default; one throwaway database each)"
 	@echo "  test-bruno     Bruno API tests (starts this checkout's API; BASE_URL=<url> tests a running one)"
@@ -75,6 +76,7 @@ migrations:
 contracts:
 	rm -rf $(CONTRACTS_TS)
 	cargo test -q -p copilot-contracts export_bindings
+	cargo test -q -p copilot-contracts --test fixtures
 
 test:
 	cargo test --workspace
@@ -108,8 +110,8 @@ boundaries:
 check: format lint type-check test boundaries
 
 ci: lint type-check test boundaries contracts
-	git diff --exit-code -- $(CONTRACTS_TS) || (echo "Run 'make contracts' and commit the result." && false)
-	@test -z "$$(git ls-files --others --exclude-standard -- $(CONTRACTS_TS))" || (echo "Untracked bindings: run 'make contracts' and commit." && false)
+	git diff --exit-code -- $(CONTRACTS_TS) $(CONTRACTS_FIXTURES) || (echo "Run 'make contracts' and commit the result." && false)
+	@test -z "$$(git ls-files --others --exclude-standard -- $(CONTRACTS_TS) $(CONTRACTS_FIXTURES))" || (echo "Untracked bindings or fixtures: run 'make contracts' and commit." && false)
 
 build:
 	cargo build --release -p copilot-api -p copilot-database

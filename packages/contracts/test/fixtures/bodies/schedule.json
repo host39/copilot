@@ -1,0 +1,28 @@
+[
+  {
+    "data": {
+      "consecutiveFailures": 1,
+      "createdAt": "2026-11-26T12:09:00.123456Z",
+      "createdBy": "assistant",
+      "cron": "0 7 * * 1-5",
+      "description": "At 07:00, Monday through Friday",
+      "disabledReason": null,
+      "enabled": true,
+      "id": "019abf6c-2f6e-7a51-8c3e-000000000008",
+      "instructions": "Keep it short.",
+      "lastError": "The provider is overloaded.",
+      "lastRunAt": "2026-11-26T12:09:00.123456Z",
+      "lastStatus": "error",
+      "modelId": "019abf6c-2f6e-7a51-8c3e-000000000002",
+      "name": "Morning news",
+      "nextRunAt": "2026-11-26T12:30:00.123456Z",
+      "onAsk": "pause",
+      "projectId": "019abf6c-2f6e-7a51-8c3e-000000000004",
+      "prompt": "Summarize the news.",
+      "reasoning": "low",
+      "sourceChatId": "019abf6c-2f6e-7a51-8c3e-000000000005",
+      "timezone": "Europe/Berlin",
+      "updatedAt": "2026-11-26T12:10:00.123456Z"
+    }
+  }
+]

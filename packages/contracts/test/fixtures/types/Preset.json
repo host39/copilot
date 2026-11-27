@@ -1,0 +1,8 @@
+[
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+  "ollama",
+  "custom"
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "capabilityOverrides": {
+      "audioIn": false,
+      "audioOut": false,
+      "pdf": false,
+      "reasoning": true,
+      "tools": true,
+      "vision": true
+    },
+    "contextWindow": 128000,
+    "displayName": "Large",
+    "enabled": true,
+    "maxOutputTokens": 8192
+  },
+  {
+    "contextWindow": null,
+    "maxOutputTokens": null
+  },
+  {}
+]

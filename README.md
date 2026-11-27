@@ -63,7 +63,7 @@ make dev-web        # web only on :4000
 | `make migrate` | Apply migrations + readonly grants (and the server role's, with `DB_SERVER_PASSWORD`) |
 | `make seed` | Apply local SQL seed files |
 | `make migrations` | Scaffold a migration pair (`name=create_widgets`) |
-| `make contracts` | Regenerate TypeScript bindings from the Rust contracts |
+| `make contracts` | Regenerate TypeScript bindings and conformance fixtures from the Rust contracts |
 | `pnpm db:stop` / `pnpm db:reset` | Stop or reset the Postgres container |
 | `make test` | Rust and TypeScript unit tests |
 | `make test-db` | Tests that need Postgres (one throwaway database per test) |

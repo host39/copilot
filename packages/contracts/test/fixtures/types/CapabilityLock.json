@@ -1,0 +1,6 @@
+[
+  {
+    "capability": "pdf",
+    "reason": "This provider cannot read PDFs."
+  }
+]
