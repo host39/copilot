@@ -185,7 +185,7 @@ fn turn(request: &Value) -> Result<Turn, String> {
             "tool" => {
                 let id = message.get("tool_call_id").and_then(Value::as_str);
                 if !id.is_some_and(|id| calls.contains(id)) {
-                    return Err("Invalid parameter: messages with role 'tool' must be a response to a preceeding message with 'tool_calls'.".to_owned());
+                    return Err("Invalid parameter: messages with role 'tool' must be a response to a preceding message with 'tool_calls'.".to_owned());
                 }
             }
             _ => {}
