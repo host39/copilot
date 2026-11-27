@@ -14,9 +14,11 @@ import path from "@web/routes/path";
 import { filterModels } from "@web/routes/settings/provider/models";
 import { providerSchema, refreshSummary } from "@web/routes/settings/providers/presets";
 import {
+  AUTO_ENABLE_MAX,
   firstModel,
   initialSetup,
   keepsKey,
+  modelsNote,
   type SetupEvent,
   type SetupState,
   type StartState,
@@ -204,13 +206,11 @@ function Models({ state, dispatch }: StepProps) {
   return (
     <div className="space-y-4">
       <h2 className="text-base font-semibold">Choose models</h2>
-      <p className="text-sm text-muted">
-        {all.length > 20
-          ? "This provider offers many models. Turn on the ones you want in the model picker."
-          : "Every model is turned on. Turn off the ones you do not want in the model picker."}
-      </p>
+      {models.isSuccess && all.length > 0 ? (
+        <p className="text-sm text-muted">{modelsNote(all.length)}</p>
+      ) : null}
       <QueryState query={models}>
-        {all.length > 20 ? (
+        {all.length > AUTO_ENABLE_MAX ? (
           <div className="relative">
             <label htmlFor="setup-search" className="sr-only">
               Search models
@@ -248,12 +248,18 @@ function Models({ state, dispatch }: StepProps) {
           </Button>
         ) : null}
       </QueryState>
-      <div className="flex flex-wrap justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="secondary" onClick={() => dispatch({ type: "back" })}>
           Back
         </Button>
+        {models.isSuccess && all.length > 0 && first === undefined ? (
+          <p id="setup-start-hint" className="ml-auto text-sm text-muted">
+            Turn on a model to start.
+          </p>
+        ) : null}
         <Button
           disabled={first === undefined}
+          aria-describedby={first === undefined ? "setup-start-hint" : undefined}
           onClick={() => {
             const start: StartState = { modelId: first?.id };
             navigate(path.home, { replace: true, state: start });

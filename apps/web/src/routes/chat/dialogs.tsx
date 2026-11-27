@@ -7,7 +7,7 @@ import { saveInstructions, updateChat } from "@web/api/routes/chats";
 import { keys } from "@web/api/routes/keys";
 import { fetchProjects } from "@web/api/routes/projects";
 import Button from "@web/components/Button/Button";
-import { useModalBusy } from "@web/components/Dialog/Modal";
+import { useModalBusy, useModalDirty } from "@web/components/Dialog/Modal";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { FormNotice } from "@web/components/Form/FormNotice";
 import { TextArea } from "@web/components/Form/TextArea";
@@ -79,6 +79,7 @@ export function InstructionsForm({
     (item) => item.id !== chat.projectId && item.instructions.trim() !== ""
   );
   useModalBusy(save.isPending || toProject.isPending);
+  useModalDirty(changed);
   const error = save.error ?? toProject.error;
 
   return (

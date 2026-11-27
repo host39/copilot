@@ -14,6 +14,7 @@ import {
   unreadable,
   uploaded,
 } from "@web/components/Chat/composer";
+import { keepComposer, readComposer } from "@web/components/Chat/drafts";
 import { AudioPreview, MicButton, RecordingBar, SpeakToggle } from "@web/components/Chat/Voice";
 import { type MicNote, useRecorder } from "@web/hooks/useRecorder";
 import { size } from "@web/routes/project/files";
@@ -50,6 +51,11 @@ type ComposerProps = {
   tools?: ReactNode;
   /** "Speak replies", shown for models with `audioOut`. */
   speak?: { on: boolean; onChange: (on: boolean) => void };
+  /**
+   * Where the unsent text and files are kept while the user looks elsewhere (`draftKey`): they
+   * come back when the composer mounts again and go once a send succeeds.
+   */
+  draft?: string;
 };
 
 /** Whether the browser sizes the text area to its text itself (`field-sizing: content`). */
@@ -166,11 +172,15 @@ export function Composer({
   discard,
   tools,
   speak,
+  draft,
 }: ComposerProps) {
-  const [text, setText] = useState("");
-  const [list, dispatch] = useReducer(attachments, []);
-  const files = useRef(new Map<string, File>());
-  const counter = useRef(0);
+  const [kept] = useState(() => (draft ? readComposer(draft) : undefined));
+  const [text, setText] = useState(kept?.text ?? "");
+  const [list, dispatch] = useReducer(attachments, kept?.items ?? []);
+  const files = useRef(new Map<string, File>(kept?.files));
+  const counter = useRef(kept?.counter ?? 0);
+  // Uploads still running when the composer goes are deleted when they finish (`pick`).
+  const live = useRef(true);
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const micButton = useRef<HTMLButtonElement>(null);
@@ -197,6 +207,20 @@ export function Composer({
     if (target === "field") field.current?.focus();
     if (target === "mic") micButton.current?.focus();
   }, [idle]);
+
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  // Every change is kept, so leaving the chat (or the page in the app) never loses the draft.
+  useEffect(() => {
+    if (draft) {
+      keepComposer(draft, { text, items: list, files: files.current, counter: counter.current });
+    }
+  }, [draft, text, list]);
 
   // Browsers without `field-sizing` grow the field from its scroll height (capped by max-height),
   // also when it comes back after a recording.
@@ -227,8 +251,8 @@ export function Composer({
       if (!upload) continue;
       upload(file, file.name, (loaded) => dispatch({ type: "progress", key, loaded }))
         .then((saved) => {
-          // The chip may have been removed while the file uploaded.
-          const next = uploaded(files.current.has(key), key, saved);
+          // The chip may have been removed, or the composer left, while the file uploaded.
+          const next = uploaded(live.current && files.current.has(key), key, saved);
           if ("discard" in next) discard?.(next.discard);
           else dispatch(next);
         })

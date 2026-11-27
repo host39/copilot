@@ -4,7 +4,7 @@
 
 import type { ProjectResponse, ToolServerResponse } from "@copilot/contracts";
 import { describe, expect, test } from "@rstest/core";
-import { draftBody } from "@web/components/Chat/StartChat";
+import { draftBody, retryBody } from "@web/components/Chat/StartChat";
 import { ToolsMenu } from "@web/components/Chat/ToolsMenu";
 import {
   builtinOn,
@@ -239,6 +239,27 @@ describe("the tools menu", () => {
       reasoning: "low",
       toolOverrides: [{ serverId: WEATHER, enabled: false }],
       builtinTools: [],
+    });
+  });
+
+  test("sending again after a failed first send brings the created chat in line with the draft", () => {
+    // Every choice is sent, so one changed back to its default also reaches the chat.
+    const none = { toolOverrides: [], builtinTools: null };
+    expect(retryBody(MODEL, null, none, false)).toEqual({
+      modelId: MODEL,
+      reasoning: null,
+      toolOverrides: [],
+      builtinTools: null,
+      voiceReplies: false,
+    });
+    expect(
+      retryBody(MODEL, "high", { toolOverrides: [], builtinTools: ["schedules"] }, true)
+    ).toEqual({
+      modelId: MODEL,
+      reasoning: "high",
+      toolOverrides: [],
+      builtinTools: ["schedules"],
+      voiceReplies: true,
     });
   });
 });

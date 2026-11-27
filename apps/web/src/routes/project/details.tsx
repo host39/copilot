@@ -8,7 +8,7 @@ import { StartChat } from "@web/components/Chat/StartChat";
 import { ChatRow } from "@web/components/Chats/ChatRow";
 import { useChatPages } from "@web/components/Chats/pages";
 import { ConfirmDialog } from "@web/components/Dialog/ConfirmDialog";
-import { Modal, useModalBusy } from "@web/components/Dialog/Modal";
+import { Modal, useModalBusy, useModalDirty } from "@web/components/Dialog/Modal";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { TextField } from "@web/components/Form/TextField";
 import { PageTitle } from "@web/components/Layout/PageTitle";
@@ -51,11 +51,17 @@ function RenameForm({ project, onDone }: { project: ProjectDetailsResponse; onDo
       onDone();
     }
   );
+  const [dirty, setDirty] = useState(false);
   useModalBusy(form.busy);
+  useModalDirty(dirty);
   return (
     <form
       noValidate
       className="space-y-4"
+      onChange={(event) => {
+        const data = new FormData(event.currentTarget);
+        setDirty(data.get("name") !== project.name || data.get("icon") !== project.icon);
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);

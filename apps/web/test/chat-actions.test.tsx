@@ -19,7 +19,13 @@ import {
   readyDecisions,
 } from "@web/components/Chat/messages";
 import { ApprovalPanel, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
-import { conversationQuery, messageFiles, phaseNote, writingIds } from "@web/routes/chat/page";
+import {
+  conversationQuery,
+  messageFiles,
+  nearBottom,
+  phaseNote,
+  writingIds,
+} from "@web/routes/chat/page";
 import {
   apply,
   DRAFT_ID,
@@ -296,6 +302,14 @@ describe("the turn", () => {
     expect(conversationQuery(failed, true).isError).toBe(false);
     // A refresh that failed after the messages were read keeps showing them.
     expect(conversationQuery({ ...failed, data: [] }, false).isError).toBe(false);
+  });
+
+  test("the view follows new text only while the user reads the end of the conversation", () => {
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_400, clientHeight: 600 })).toBe(true);
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_330, clientHeight: 600 })).toBe(true);
+    // Scrolled up to read or copy an earlier answer: new messages leave the view where it is.
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_300, clientHeight: 600 })).toBe(false);
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 0, clientHeight: 600 })).toBe(false);
   });
 });
 
