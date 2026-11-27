@@ -215,10 +215,7 @@ function Models({ state, dispatch }: StepProps) {
             <label htmlFor="setup-search" className="sr-only">
               Search models
             </label>
-            <LuSearch
-              aria-hidden
-              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
-            />
+            <LuSearch aria-hidden className="input-icon" />
             <input
               id="setup-search"
               type="search"

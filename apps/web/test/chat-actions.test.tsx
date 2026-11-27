@@ -18,7 +18,7 @@ import {
   laterCount,
   readyDecisions,
 } from "@web/components/Chat/messages";
-import { ApprovalPanel, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
+import { ApprovalPanel, approvalNote, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
 import {
   conversationQuery,
   messageFiles,
@@ -358,6 +358,14 @@ describe("tool cards", () => {
     expect(html.match(/>Deny</g)).toHaveLength(2);
     expect(html).toContain("Reason for denying (optional)");
     expect(html).toContain("0 of 2 decided");
+    // Screen readers hear that the answer stopped for the user.
+    expect(html).toContain('<p role="alert" class="sr-only">Tool approval needed: ');
+  });
+
+  test("the approval announcement names every tool waiting", () => {
+    expect(approvalNote([call, builtin], { titles: { [call.callId]: "Delete a file" } })).toBe(
+      `Tool approval needed: Delete a file, ${builtin.toolName}.`
+    );
   });
 });
 

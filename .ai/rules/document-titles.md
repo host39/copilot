@@ -21,6 +21,8 @@ export default function WidgetsPage() {
 
 - **Home / default**: `<PageTitle />` renders plain `Copilot` (matches `html.title` in `apps/web/rsbuild.config.ts`).
 - **Action**: a short page label in **title case** (`Page Not Found`, `Widget Details`).
+- **Named items**: a page for one item the user named shows that name as typed, so tabs and history entries tell items apart (a chat's title, a project's name), with a fixed label (`Chat`, `Project`) while it loads.
+- **Waiting for the user**: `attention` puts `(!)` before the title while the page needs the user (a tool approval), so the tab stands out in the background.
 - Do not set `document.title` in effects.
 
 ```tsx

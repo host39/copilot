@@ -2,17 +2,9 @@
 // when the user typed one (a blank field keeps the stored key).
 
 import type { ProviderResponse, UpdateProviderRequest } from "@copilot/contracts";
+import { isHttp } from "@web/forms";
 import { NAME_MAX_CHARS } from "@web/routes/settings/providers/presets";
 import { z } from "zod";
-
-function isHttp(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 /** Whether two URLs share scheme, host, and port (the server keeps the key only then). */
 export function sameOrigin(a: string, b: string): boolean {

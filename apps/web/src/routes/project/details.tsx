@@ -221,6 +221,26 @@ const TABS: readonly [Tab, string][] = [
 ];
 
 /**
+ * The tab a key moves to in a tab list (the ARIA tabs pattern): Left and Right step and wrap
+ * around, Home and End go to the ends. `undefined` for any other key.
+ */
+export function nextTab<T>(key: string, current: T, tabs: readonly T[]): T | undefined {
+  const index = tabs.indexOf(current);
+  switch (key) {
+    case "ArrowRight":
+      return tabs[(index + 1) % tabs.length];
+    case "ArrowLeft":
+      return tabs[(index - 1 + tabs.length) % tabs.length];
+    case "Home":
+      return tabs[0];
+    case "End":
+      return tabs[tabs.length - 1];
+    default:
+      return undefined;
+  }
+}
+
+/**
  * A project: its name and icon, a composer that starts a chat in it, its chats, and a side panel
  * (a tab on phones) with instructions, files and the capacity bar, the default model, tools, and
  * schedules.
@@ -245,7 +265,22 @@ export function ProjectDetails({ id }: { id: string }) {
         {data ? (
           <>
             <Header project={data} />
-            <div role="tablist" aria-label="Project" className="mt-4 flex gap-1 lg:hidden">
+            <div
+              role="tablist"
+              aria-label="Project"
+              className="mt-4 flex gap-1 lg:hidden"
+              onKeyDown={(event) => {
+                const next = nextTab(
+                  event.key,
+                  tab,
+                  TABS.map(([value]) => value)
+                );
+                if (next === undefined) return;
+                event.preventDefault();
+                setTab(next);
+                document.getElementById(`project-tab-${next}`)?.focus();
+              }}
+            >
               {TABS.map(([value, label]) => (
                 <button
                   key={value}
@@ -254,6 +289,7 @@ export function ProjectDetails({ id }: { id: string }) {
                   id={`project-tab-${value}`}
                   aria-selected={tab === value}
                   aria-controls={`project-panel-${value}`}
+                  tabIndex={tab === value ? 0 : -1}
                   onClick={() => setTab(value)}
                   className="nav-item aria-selected:bg-raised aria-selected:font-medium"
                 >

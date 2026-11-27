@@ -68,6 +68,11 @@ type ModelPickerProps = {
   /** Tools are on for the chat, which turns reasoning off on some connections. */
   toolsOn?: boolean;
   disabled?: boolean;
+  /**
+   * In a toolbar beside a title (the chat header): on phones the button takes at most 45% of the
+   * row and leaves out the capability icons, so the title keeps room.
+   */
+  compact?: boolean;
 };
 
 /**
@@ -81,6 +86,7 @@ export function ModelPicker({
   onChange,
   toolsOn = false,
   disabled = false,
+  compact = false,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const current = models.find((model) => model.id === modelId);
@@ -97,7 +103,7 @@ export function ModelPicker({
         onClick={() => setOpen(true)}
         disabled={disabled}
         aria-haspopup="dialog"
-        className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-3 text-sm font-medium hover:bg-raised disabled:opacity-60"
+        className={`inline-flex min-h-10 min-w-0 items-center gap-2 rounded-lg px-3 text-sm font-medium hover:bg-raised disabled:opacity-60 ${compact ? "max-w-[45%] shrink-0 sm:max-w-sm" : "max-w-full"}`}
       >
         <span className="sr-only">Model: </span>
         <span className="truncate">{label}</span>
@@ -106,7 +112,11 @@ export function ModelPicker({
             {levelLabel(fitLevel(current, reasoning), current)}
           </span>
         ) : null}
-        {current ? <CapabilityIcons model={current} /> : null}
+        {current ? (
+          <span className={compact ? "hidden sm:inline-flex" : "inline-flex"}>
+            <CapabilityIcons model={current} />
+          </span>
+        ) : null}
         <LuChevronDown aria-hidden className="shrink-0 text-muted" />
       </button>
       <Modal open={open} title="Choose a Model" onClose={() => setOpen(false)}>

@@ -25,6 +25,7 @@ import { Markdown, nodeText } from "@web/components/Chat/Markdown";
 import { MessageList } from "@web/components/Chat/MessageList";
 import { callStatus, resultText } from "@web/components/Chat/ToolCard";
 import { inlineImage, safeLink, transformUrl } from "@web/components/Chat/urls";
+import { ATTENTION_MARK, pageTitle } from "@web/components/Layout/PageTitle";
 import { Menu } from "@web/components/Menu/Menu";
 import { ModelPicker, Sheet } from "@web/components/ModelPicker/ModelPicker";
 import { InstructionsForm, MoveForm } from "@web/routes/chat/dialogs";
@@ -577,6 +578,19 @@ describe("the chat view", () => {
     expect(html).toContain(`href="/projects/${PROJECT}"`);
     expect(html).toContain("✈️ Travel");
     expect(html).not.toContain("Choose a model to continue.");
+    // The tab names the chat; phones get New chat (in the chat's project) in the header.
+    expect(html).toContain("<title>Copilot | Trip plans</title>");
+    expect(html).toMatch(/aria-label="New chat" title="New chat" class="[^"]*lg:hidden"/);
+    expect(html).toContain(`href="/?project=${PROJECT}"`);
+    // The picker leaves the title room on phones: capped, without the capability icons.
+    expect(html).toContain("max-w-[45%]");
+    expect(html).toContain('class="hidden sm:inline-flex"');
+  });
+
+  test("the tab marks a chat that waits for an approval", () => {
+    expect(pageTitle("Trip plans")).toBe("Copilot | Trip plans");
+    expect(pageTitle("Trip plans", true)).toBe(`${ATTENTION_MARK} Copilot | Trip plans`);
+    expect(pageTitle()).toBe("Copilot");
   });
 
   test("a chat without a model asks for one and cannot send", () => {

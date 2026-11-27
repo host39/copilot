@@ -6,7 +6,7 @@ import { choose, readyDecisions } from "@web/components/Chat/messages";
 import { ScheduleProposal } from "@web/components/Schedule/Proposal";
 import type { ToolCall, ToolResult } from "@web/routes/chat/stream";
 import { readProposal, type ScheduleContext } from "@web/routes/schedule/rules";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { LuCheck, LuCheckCheck, LuX } from "react-icons/lu";
 
 /**
@@ -208,6 +208,18 @@ type ApprovalPanelProps = ToolNames & {
   onDecide: (decisions: CallDecision[]) => Promise<boolean>;
 };
 
+/** What a screen reader hears when an answer stops for approvals ("Tool approval needed: ..."). */
+export function approvalNote(calls: ToolCall[], names: ToolNames): string {
+  const titles = calls.map((call) => toolLabel(call, names).title);
+  return `Tool approval needed: ${titles.join(", ")}.`;
+}
+
+/** Whether moving focus would take it from a field the user is typing in. */
+function typing(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  return element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
+}
+
 /**
  * The approval cards of an answer that waits: Approve, Approve for this chat, or Deny with an
  * optional reason, per call. The decisions go together once every call has one (the server takes
@@ -237,9 +249,20 @@ export function ApprovalPanel({ calls, onDecide, ...names }: ApprovalPanelProps)
     if (!ok) setChoices({});
   }
 
+  // The answer stopped for the user: announce it, and put focus on the first Approve unless the
+  // user is typing elsewhere.
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (typing(document.activeElement)) return;
+    panel.current?.querySelector("button")?.focus({ preventScroll: true });
+  }, []);
+
   const decided = calls.filter((call) => choices[call.callId]).length;
   return (
-    <section aria-label="Tool approvals" className="space-y-2">
+    <section ref={panel} aria-label="Tool approvals" className="space-y-2">
+      <p role="alert" className="sr-only">
+        {approvalNote(calls, names)}
+      </p>
       <ul className="space-y-2">
         {calls.map((call) => (
           <ApprovalCard

@@ -40,6 +40,7 @@ import {
 } from "@web/components/ModelPicker/models";
 import { fieldErrors } from "@web/forms";
 import path from "@web/routes/path";
+import { nextTab } from "@web/routes/project/details";
 import {
   addUpload,
   capacityAfter,
@@ -836,5 +837,18 @@ describe("the project screens", () => {
     expect(html).toContain("Schedules");
     expect(html).toContain('aria-label="Delete project"');
     expect(html).toContain('role="tablist"');
+    // Roving tab stops: only the selected tab is in the Tab order; arrows move between tabs.
+    expect(html).toMatch(/id="project-tab-chats" aria-selected="true"[^>]*tabindex="0"/);
+    expect(html).toMatch(/id="project-tab-project" aria-selected="false"[^>]*tabindex="-1"/);
+  });
+
+  test("the tabs follow the arrow keys, Home, and End, and wrap around", () => {
+    const tabs = ["chats", "project"] as const;
+    expect(nextTab("ArrowRight", "chats", tabs)).toBe("project");
+    expect(nextTab("ArrowRight", "project", tabs)).toBe("chats");
+    expect(nextTab("ArrowLeft", "chats", tabs)).toBe("project");
+    expect(nextTab("Home", "project", tabs)).toBe("chats");
+    expect(nextTab("End", "chats", tabs)).toBe("project");
+    expect(nextTab("Enter", "chats", tabs)).toBeUndefined();
   });
 });

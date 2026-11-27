@@ -11,6 +11,7 @@ import type {
 } from "@copilot/contracts";
 import { describeError } from "@web/api/errors";
 import { createToolServer, testToolServer } from "@web/api/routes/tool-servers";
+import { isHttp } from "@web/forms";
 import { NAME_MAX_CHARS } from "@web/routes/settings/providers/presets";
 import { z } from "zod";
 
@@ -104,15 +105,6 @@ export const credentialsSchema = z
       context.addIssue({ code: "custom", path: [problem.field], message: problem.message });
   })
   .transform((input) => credentials(input.bearer, input.rows));
-
-function isHttp(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 const name = z
   .string()

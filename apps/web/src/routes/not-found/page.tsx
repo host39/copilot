@@ -18,9 +18,7 @@ const NotFoundPage: FC = () => {
         className="mx-auto mb-6 h-56 sm:h-72 w-auto"
       />
       <p className="text-sm font-medium uppercase tracking-[0.2em] text-muted">404</p>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-fg sm:text-3xl">
-        Page not found
-      </h1>
+      <h1 className="page-heading">Page not found</h1>
       <p className="mt-3 text-sm text-muted sm:text-base">
         The page you are looking for does not exist or may have been moved.
       </p>

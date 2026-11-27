@@ -20,6 +20,7 @@ import { type ListActions, MessageList } from "@web/components/Chat/MessageList"
 import { VOICE_MESSAGE } from "@web/components/Chat/messages";
 import { ToolsMenu } from "@web/components/Chat/ToolsMenu";
 import { TOOLS_OFF_NOTE, toolsWarning } from "@web/components/Chat/tools";
+import { chatTitle } from "@web/components/Chats/ChatRow";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import { MenuButton, useOwnHeader } from "@web/components/Layout/Shell";
@@ -28,7 +29,7 @@ import { useSpeaker } from "@web/hooks/useSpeaker";
 import { useChatSaved } from "@web/routes/chat/dialogs";
 import { ChatHeader } from "@web/routes/chat/header";
 import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
-import { type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
+import { pendingCalls, type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
 import { type Attached, type Phase, useTurn } from "@web/routes/chat/turn";
 import path from "@web/routes/path";
 import { scheduleContext } from "@web/routes/schedule/rules";
@@ -160,6 +161,15 @@ function useScroll(
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [scroller]);
   return { away, latest };
+}
+
+/**
+ * The tab title: the chat's title, so tabs and history entries tell chats apart, marked while an
+ * answer waits for tool approvals.
+ */
+function TabTitle({ chat, shown }: { chat: ChatResponse | undefined; shown: ViewMessage[] }) {
+  const waiting = shown.some((message) => pendingCalls(message).length > 0);
+  return <PageTitle page={chat ? chatTitle(chat) : "Chat"} attention={waiting} />;
 }
 
 /** "Jump to latest", over the end of the conversation while the user reads further up. */
@@ -421,7 +431,7 @@ function ChatView({ chatId }: { chatId: string }) {
 
   return (
     <section className="flex h-full flex-col">
-      <PageTitle page="Chat" />
+      <TabTitle chat={data} shown={shown} />
       {data ? (
         <ChatHeader
           chat={data}
