@@ -52,6 +52,10 @@ pub const AUDIO_OUT_VOICE: &str = "alloy";
 pub const AUDIO_OUT_FORMAT: &str = "pcm16";
 /// Live runs per user.
 pub const MAX_ACTIVE_RUNS_PER_USER: usize = 3;
+/// Uploads whose bodies are read at once, per user and in all (each is held in memory whole);
+/// more wait their turn.
+pub const UPLOADS_PER_USER: usize = 2;
+pub const UPLOADS_AT_ONCE: usize = 4;
 /// Scheduled runs that execute at once.
 pub const MAX_SCHEDULED_RUNS: usize = 2;
 pub const SCHEDULER_TICK_SECS: u64 = 30;

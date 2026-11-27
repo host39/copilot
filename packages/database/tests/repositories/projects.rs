@@ -5,7 +5,7 @@ use copilot_core::{
 use copilot_database::{DbPool, PgStore};
 use uuid::Uuid;
 
-use crate::{at, file_in, model, server, store, user};
+use crate::{at, file_in, lock_waiters, model, server, store, user};
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run make test-db"]
@@ -420,24 +420,6 @@ async fn saving_a_chat_as_a_project_moves_the_chat_and_its_attachments(pool: DbP
         .unwrap()
         .expect("their chat");
     assert_eq!(untouched.project_id(), None);
-}
-
-/// Waits until `count` sessions of the test's database wait for a lock.
-async fn lock_waiters(store: &PgStore, count: i64) {
-    for _ in 0..250 {
-        let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity \
-             WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        )
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
-        if waiting >= count {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("{count} sessions never waited for the lock");
 }
 
 #[sqlx::test(migrations = false)]

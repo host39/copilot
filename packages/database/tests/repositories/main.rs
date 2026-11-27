@@ -176,3 +176,21 @@ pub async fn updated_at(
         .expect("the chat exists")
         .updated_at()
 }
+
+/// Waits until `count` sessions of the test's database wait for a lock.
+pub async fn lock_waiters(store: &PgStore, count: i64) {
+    for _ in 0..250 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        if waiting >= count {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("{count} sessions never waited for the lock");
+}

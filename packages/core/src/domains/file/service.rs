@@ -97,16 +97,11 @@ impl FileService {
             .with_context("maxUploadMb", self.limits.max_upload_mb));
         }
         let media_type = MediaType::detect(name, &bytes)?;
+        let quota = self.limits.max_storage_mb * MEBIBYTE;
+        // Fails fast before hashing; `create` checks again under the user's lock.
         let used = self.files.usage(actor.user_id).await?;
-        if used.saturating_add(size_bytes) > self.limits.max_storage_mb * MEBIBYTE {
-            return Err(DomainError::business_rule(
-                format!(
-                    "Your file storage is full ({} MB). Delete files to make room.",
-                    self.limits.max_storage_mb
-                ),
-                "STORAGE_FULL",
-            )
-            .with_context("maxStorageMb", self.limits.max_storage_mb));
+        if used.saturating_add(size_bytes) > quota {
+            return Err(self.storage_full());
         }
         let page_count = (media_type.kind() == FileKind::Pdf).then(|| pdf_pages(&bytes));
         let measured = Measured {
@@ -117,8 +112,22 @@ impl FileService {
             page_count,
         };
         let file = StoredFile::create(actor.user_id, owner, name, measured, self.clock.now())?;
-        self.files.create(&file, bytes).await?;
+        if !self.files.create(&file, bytes, quota).await? {
+            // Uploads at once filled the room since `usage`.
+            return Err(self.storage_full());
+        }
         Ok(file)
+    }
+
+    fn storage_full(&self) -> DomainError {
+        DomainError::business_rule(
+            format!(
+                "Your file storage is full ({} MB). Delete files to make room.",
+                self.limits.max_storage_mb
+            ),
+            "STORAGE_FULL",
+        )
+        .with_context("maxStorageMb", self.limits.max_storage_mb)
     }
 
     /// A project's files, oldest first.
@@ -255,7 +264,7 @@ mod tests {
     use crate::domains::provider::{
         ModelQuery, ModelService, ModelUpdate, NewProvider, Preset, ProviderKind, ProviderService,
     };
-    use crate::shared::ids::ChatId;
+    use crate::shared::ids::{ChatId, UserId};
     use crate::shared::net::PrivateNetwork;
     use crate::testing::{
         FakeCipher, FixedClock, MemoryStore, ScriptedGateway, actor, remote_model,
@@ -453,6 +462,93 @@ mod tests {
                 .upload(&bob, bob_owner, "1.txt", mebibyte)
                 .await
                 .is_ok()
+        );
+    }
+
+    /// The store's files, with `usage` read before other uploads at once were stored (it always
+    /// reports an empty storage).
+    struct Racing(Arc<MemoryStore>);
+
+    #[async_trait::async_trait]
+    impl FileRepository for Racing {
+        async fn list(&self, user: UserId, owner: FileOwner) -> DomainResult<Vec<StoredFile>> {
+            FileRepository::list(self.0.as_ref(), user, owner).await
+        }
+
+        async fn get(&self, user: UserId, id: FileId) -> DomainResult<Option<StoredFile>> {
+            FileRepository::get(self.0.as_ref(), user, id).await
+        }
+
+        async fn create(&self, file: &StoredFile, bytes: Bytes, quota: u64) -> DomainResult<bool> {
+            FileRepository::create(self.0.as_ref(), file, bytes, quota).await
+        }
+
+        async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>> {
+            FileRepository::content(self.0.as_ref(), user, id).await
+        }
+
+        async fn update(&self, file: &StoredFile) -> DomainResult<()> {
+            FileRepository::update(self.0.as_ref(), file).await
+        }
+
+        async fn move_to(
+            &self,
+            user: UserId,
+            ids: &[FileId],
+            project: ProjectId,
+        ) -> DomainResult<()> {
+            FileRepository::move_to(self.0.as_ref(), user, ids, project).await
+        }
+
+        async fn delete(&self, user: UserId, id: FileId) -> DomainResult<bool> {
+            FileRepository::delete(self.0.as_ref(), user, id).await
+        }
+
+        async fn usage(&self, _user: UserId) -> DomainResult<u64> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn uploads_at_once_never_pass_the_quota_together() {
+        let clock = Arc::new(FixedClock::default());
+        let store = Arc::new(MemoryStore::new(clock.clone()));
+        let limits = FileLimits {
+            max_upload_mb: 1,
+            max_storage_mb: 2,
+        };
+        let files = FileService::new(
+            Arc::new(Racing(store.clone())),
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            clock.clone(),
+            limits,
+        );
+        let projects = ProjectService::new(store.clone(), store.clone(), store.clone(), clock);
+        let alice = actor();
+        let input = NewProject {
+            name: "Docs".to_owned(),
+            ..NewProject::default()
+        };
+        let owner = FileOwner::Project(projects.create(&alice, input).await.unwrap().id());
+        let mebibyte = Bytes::from(vec![b'a'; MEBIBYTE as usize]);
+        for name in ["1.txt", "2.txt"] {
+            files
+                .upload(&alice, owner, name, mebibyte.clone())
+                .await
+                .unwrap();
+        }
+        let error = files
+            .upload(&alice, owner, "3.txt", mebibyte)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "STORAGE_FULL", "the store's own check");
+        assert_eq!(
+            FileRepository::usage(store.as_ref(), alice.user_id)
+                .await
+                .unwrap(),
+            2 * MEBIBYTE
         );
     }
 

@@ -32,7 +32,8 @@ rustauth = { workspace = true, features = ["axum", "postgres"] }
 # Query strings (`routes::path::Params`).
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+# `sync`: the run registry's broadcast channels and the upload slots' semaphores.
+tokio = { workspace = true, features = ["sync"] }
 # `sync::CancellationToken` only: the root token that shutdown cancels.
 tokio-util = { workspace = true }
 # Serves the web bundle (`WEB_DIR`).

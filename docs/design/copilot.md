@@ -384,7 +384,7 @@ trait ProjectRepository {
 trait FileRepository {
     async fn list(&self, user: UserId, owner: FileOwner) -> DomainResult<Vec<StoredFile>>;
     async fn get(&self, user: UserId, id: FileId) -> DomainResult<Option<StoredFile>>;
-    async fn create(&self, file: &StoredFile, bytes: Bytes) -> DomainResult<()>; // row and content, one tx
+    async fn create(&self, file: &StoredFile, bytes: Bytes, quota: u64) -> DomainResult<bool>; // row and content, one tx; false (nothing stored) past the quota, checked under a per-user lock
     async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>>;
     async fn update(&self, file: &StoredFile) -> DomainResult<()>;  // name, included
     async fn move_to(&self, user: UserId, ids: &[FileId], project: ProjectId) -> DomainResult<()>;
@@ -956,7 +956,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 ### Files
 
-1. Uploads: `MAX_UPLOAD_MB` (25) per file and `MAX_STORAGE_MB_PER_USER` (1024) per user (`SUM(size_bytes)` checked before accepting). The media type comes from the extension plus a magic-byte check, never from the client header alone. Accepted: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`, `audio/wav`, `audio/mpeg`, and text (valid UTF-8 with a text or code extension, stored as `text/plain` or `text/markdown`). Anything else is rejected with "This file type is not supported."
+1. Uploads: `MAX_UPLOAD_MB` (25) per file and `MAX_STORAGE_MB_PER_USER` (1024) per user (`SUM(size_bytes)` checked before accepting, and again under a per-user advisory lock in the transaction that stores the file, so uploads at once never pass it together). An upload's body is read only once the request holds an upload slot: `UPLOADS_PER_USER` (2) per user and `UPLOADS_AT_ONCE` (4) in all; others wait their turn, so upload memory stays bounded. The media type comes from the extension plus a magic-byte check, never from the client header alone. Accepted: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`, `audio/wav`, `audio/mpeg`, and text (valid UTF-8 with a text or code extension, stored as `text/plain` or `text/markdown`). Anything else is rejected with "This file type is not supported."
 2. `GET /api/files/{id}/content` always sends `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`, and `Content-Disposition: attachment; filename*=UTF-8''<percent-encoded name>`. `Content-Type` is the stored type when it is on the allowlist above, otherwise `application/octet-stream`. SVG and HTML are never served as their own types.
 3. Clients fetch file bytes with the `Authorization` header and render them through `blob:` URLs. No route accepts a token in the query string.
 
@@ -983,6 +983,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 | Scheduled runs at once | `MAX_SCHEDULED_RUNS` (2) |
 | Enabled schedules per user, shortest gap | 20; 15 minutes |
 | Storage per user | `MAX_STORAGE_MB_PER_USER` (1024) |
+| Uploads read at once | `UPLOADS_PER_USER` (2) per user, `UPLOADS_AT_ONCE` (4) in all; more wait |
 | One streamed answer | Text, reasoning, transcripts, and tool call names, ids, and arguments up to the request's output token limit times `BYTES_PER_TOKEN` times `ANSWER_SLACK` (4), at most `ANSWER_MAX_BYTES` (8 MiB); `ANSWER_MAX_PARTS` (256) parts; `AUDIO_OUT_MAX_BYTES` of spoken audio. The event that would pass a cap is dropped, and the answer ends as an `error` ("The provider sent more than this model's output limit allows.", `PROVIDER_BAD_RESPONSE`) with what streamed kept |
 
 ### CORS

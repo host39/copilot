@@ -1532,8 +1532,8 @@ impl FileRepository for Gauge {
             .await
     }
 
-    async fn create(&self, file: &StoredFile, bytes: Bytes) -> DomainResult<()> {
-        FileRepository::create(self.store.as_ref(), file, bytes).await
+    async fn create(&self, file: &StoredFile, bytes: Bytes, quota: u64) -> DomainResult<bool> {
+        FileRepository::create(self.store.as_ref(), file, bytes, quota).await
     }
 
     async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>> {

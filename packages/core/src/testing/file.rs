@@ -33,14 +33,23 @@ impl FileRepository for MemoryStore {
             .cloned())
     }
 
-    async fn create(&self, file: &StoredFile, bytes: Bytes) -> DomainResult<()> {
+    async fn create(&self, file: &StoredFile, bytes: Bytes, quota: u64) -> DomainResult<bool> {
         let mut tables = self.tables();
         if tables.files.contains_key(&file.id()) {
             return Err(duplicate("files"));
         }
         tables.check_owner(file.user_id(), file.owner())?;
+        let used: u64 = tables
+            .files
+            .values()
+            .filter(|(stored, _)| stored.user_id() == file.user_id())
+            .map(|(stored, _)| stored.size_bytes())
+            .sum();
+        if used.saturating_add(file.size_bytes()) > quota {
+            return Ok(false);
+        }
         tables.files.insert(file.id(), (file.clone(), bytes));
-        Ok(())
+        Ok(true)
     }
 
     async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>> {

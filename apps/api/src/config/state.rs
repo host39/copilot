@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
 use crate::helpers::runs::RunRegistry;
+use crate::helpers::uploads::UploadSlots;
 
 /// Shared state handed to every handler via `State<AppState>`. The composition root
 /// (`helpers::bootstrap::wire`) builds every service once; handlers never build repositories or
@@ -31,4 +32,6 @@ pub struct AppState {
     pub engine: Arc<ChatEngine>,
     /// The chats that are answering now: one run per chat, a few per user.
     pub runs: Arc<RunRegistry>,
+    /// The uploads being read now: a few per user and in all.
+    pub uploads: Arc<UploadSlots>,
 }

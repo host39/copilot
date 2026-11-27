@@ -107,10 +107,31 @@ impl FileRepository for PgStore {
         row.map(StoredFile::try_from).transpose()
     }
 
-    async fn create(&self, file: &StoredFile, bytes: Bytes) -> DomainResult<()> {
+    async fn create(&self, file: &StoredFile, bytes: Bytes, quota: u64) -> DomainResult<bool> {
         let key = "database.files.create.failed";
         let (project, chat) = columns(file.owner());
         let mut tx = self.pool().begin().await.map_err(failed(key))?;
+        // One upload of the user at a time checks the quota and inserts, so uploads at once
+        // cannot all fit the same room. The two-key form keeps clear of the single-key locks
+        // that sqlx and lib-rustauth take.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtext('copilot.files.quota'), hashtext($1::text))",
+        )
+        .bind(file.user_id().uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed(key))?;
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM files WHERE user_id = $1",
+        )
+        .bind(file.user_id().uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(failed(key))?;
+        let used = u64::try_from(used).unwrap_or_default();
+        if used.saturating_add(file.size_bytes()) > quota {
+            return Ok(false);
+        }
         sqlx::query(
             "INSERT INTO files (created_at, size_bytes, token_estimate, page_count, id, user_id, \
              project_id, chat_id, included, name, media_type, sha256) \
@@ -140,7 +161,8 @@ impl FileRepository for PgStore {
             .execute(&mut *tx)
             .await
             .map_err(failed(key))?;
-        tx.commit().await.map_err(failed(key))
+        tx.commit().await.map_err(failed(key))?;
+        Ok(true)
     }
 
     async fn content(&self, user: UserId, id: FileId) -> DomainResult<Option<Bytes>> {

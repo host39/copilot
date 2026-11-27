@@ -5,7 +5,7 @@ use copilot_core::{
 };
 use copilot_database::{DbPool, PgStore};
 
-use crate::{at, store, user};
+use crate::{at, lock_waiters, store, user};
 
 async fn project(store: &PgStore, owner: UserId, name: &str) -> Project {
     let project = Project::create(owner, name, at(0)).unwrap();
@@ -42,14 +42,18 @@ async fn files_round_trip_with_their_bytes_for_their_owner_only(pool: DbPool) {
     let to = FileOwner::Project(research.id());
     let second = text_file(owner, to, "b.md", b"second", 2);
     let first = text_file(owner, to, "a.md", b"# first", 1);
-    files
-        .create(&second, Bytes::from_static(b"second"))
-        .await
-        .unwrap();
-    files
-        .create(&first, Bytes::from_static(b"# first"))
-        .await
-        .unwrap();
+    assert!(
+        files
+            .create(&second, Bytes::from_static(b"second"), u64::MAX)
+            .await
+            .unwrap()
+    );
+    assert!(
+        files
+            .create(&first, Bytes::from_static(b"# first"), u64::MAX)
+            .await
+            .unwrap()
+    );
 
     assert_eq!(
         files.list(owner, to).await.unwrap(),
@@ -105,10 +109,12 @@ async fn files_move_between_owners_of_one_user(pool: DbPool) {
     let research = project(&store, owner, "Research").await;
     let theirs = project(&store, other, "Theirs").await;
     let attachment = text_file(owner, FileOwner::Chat(chat.id()), "a.md", b"hi", 1);
-    files
-        .create(&attachment, Bytes::from_static(b"hi"))
-        .await
-        .unwrap();
+    assert!(
+        files
+            .create(&attachment, Bytes::from_static(b"hi"), u64::MAX)
+            .await
+            .unwrap()
+    );
     assert_eq!(
         files.list(owner, FileOwner::Chat(chat.id())).await.unwrap(),
         vec![attachment.clone()]
@@ -154,7 +160,7 @@ async fn files_move_between_owners_of_one_user(pool: DbPool) {
     let foreign = text_file(owner, FileOwner::Project(theirs.id()), "x.md", b"x", 2);
     assert!(
         files
-            .create(&foreign, Bytes::from_static(b"x"))
+            .create(&foreign, Bytes::from_static(b"x"), u64::MAX)
             .await
             .is_err(),
         "a file never lands in another user's project"
@@ -166,4 +172,73 @@ async fn files_move_between_owners_of_one_user(pool: DbPool) {
         .await
         .unwrap();
     assert_eq!(contents, 0, "row and bytes are one transaction");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn uploads_at_once_never_pass_the_quota_together(pool: DbPool) {
+    let store = store(pool).await;
+    let files: &dyn FileRepository = &store;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let to = FileOwner::Project(project(&store, owner, "Research").await.id());
+    let quota = 10;
+    assert!(
+        files
+            .create(
+                &text_file(owner, to, "a.md", b"1234", 1),
+                Bytes::from_static(b"1234"),
+                quota
+            )
+            .await
+            .unwrap()
+    );
+
+    // Both uploads read 4 of 10 bytes used before either is stored; only one of them fits.
+    let first = text_file(owner, to, "b.md", b"12345", 2);
+    let second = text_file(owner, to, "c.md", b"12345", 3);
+    let mut holder = store.pool().begin().await.unwrap();
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtext('copilot.files.quota'), hashtext($1::text))",
+    )
+    .bind(owner.uuid())
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let (stored_first, stored_second, ()) = tokio::join!(
+        files.create(&first, Bytes::from_static(b"12345"), quota),
+        files.create(&second, Bytes::from_static(b"12345"), quota),
+        async {
+            lock_waiters(&store, 2).await;
+            holder.commit().await.unwrap();
+        },
+    );
+    let stored = [stored_first.unwrap(), stored_second.unwrap()];
+    assert_eq!(
+        stored.iter().filter(|stored| **stored).count(),
+        1,
+        "{stored:?}"
+    );
+    assert_eq!(files.usage(owner).await.unwrap(), 9);
+    let refused = if stored[0] { &second } else { &first };
+    assert_eq!(files.get(owner, refused.id()).await.unwrap(), None);
+    let contents: i64 = sqlx::query_scalar("SELECT count(*) FROM file_contents WHERE file_id = $1")
+        .bind(refused.id().uuid())
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(contents, 0, "nothing of the refused upload is stored");
+
+    // The quota counts the user's own files only.
+    let theirs = FileOwner::Project(project(&store, other, "Theirs").await.id());
+    assert!(
+        files
+            .create(
+                &text_file(other, theirs, "d.md", b"12345", 4),
+                Bytes::from_static(b"12345"),
+                quota
+            )
+            .await
+            .unwrap()
+    );
 }

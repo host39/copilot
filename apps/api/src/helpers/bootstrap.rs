@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
+use crate::helpers::uploads::UploadSlots;
 use crate::{AppDependencies, create_app};
 
 pub struct ApiContext {
@@ -188,5 +189,6 @@ pub fn wire(
         schedules: Arc::new(schedules),
         engine: Arc::new(engine),
         runs: Arc::new(runs),
+        uploads: Arc::new(UploadSlots::default()),
     }
 }

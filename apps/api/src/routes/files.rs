@@ -1,7 +1,8 @@
 //! Files: project files, chat attachments, and their bytes (`FileService`). Uploads are
 //! `multipart/form-data` with one part named `file` (`UPLOAD_FIELD`), read in chunks and refused
-//! as soon as they pass `MAX_UPLOAD_MB`; the service then checks the type (extension and magic
-//! bytes) and the storage quota. The content route sends the safety headers of "Files" in
+//! as soon as they pass `MAX_UPLOAD_MB`, and only once the request holds an upload slot
+//! (`UploadSlots`, a few per user and in all); the service then checks the type (extension and
+//! magic bytes) and the storage quota. The content route sends the safety headers of "Files" in
 //! `docs/design/copilot.md`: an attachment, never rendered inline, with the exact allowed type.
 
 use axum::extract::multipart::{Multipart, MultipartError, MultipartRejection};
@@ -145,6 +146,8 @@ async fn store(
     owner: FileOwner,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, axum::Json<DetailsResponse<FileResponse>>), HttpError> {
+    // Held until the file is stored: the body is in memory until then.
+    let _slot = state.uploads.acquire(caller.user_id).await;
     let (name, bytes) = upload(multipart, state.config.files.max_upload_mb).await?;
     let file = state.files.upload(caller, owner, &name, bytes).await?;
     let data = response(&file);
