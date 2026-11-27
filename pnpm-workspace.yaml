@@ -1,4 +1,5 @@
 packages:
+  - apps/native
   - apps/web
   - packages/contracts
 

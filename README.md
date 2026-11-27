@@ -134,6 +134,7 @@ Pass `--skip-git-init` to keep your own git setup.
 | --- | --- | --- |
 | `apps/api` | `copilot-api` | axum HTTP adapter; composition root, OpenAPI routes, the `server` entrypoint |
 | `apps/web` | `@copilot/web` | Rsbuild + React Router SPA (minimal placeholder) |
+| `apps/native` | `@copilot/native` + `copilot-native` | Tauri 2 shell for Linux and Android around the web build; outside the Cargo workspace ([apps/native/README.md](./apps/native/README.md)) |
 | `packages/core` | `copilot-core` | Domain entities, services, ports, shared errors and types |
 | `packages/database` | `copilot-database` | Postgres pool, env, migrations, seed, sqlx repositories |
 | `packages/middleware` | `copilot-middleware` | CORS, error handler, request id, request logger |

@@ -5,6 +5,7 @@ import { clearToken, followStorage, getToken, setToken, subscribeToken } from "@
 import {
   buildServerUrl,
   forgetServerUrl,
+  isAndroid,
   isNative,
   parseServerUrl,
   saveServerUrl,
@@ -144,6 +145,24 @@ describe("server URL", () => {
     forgetServerUrl();
     expect(serverUrl()).toBeUndefined();
     expect(getToken()).toBeNull();
+  });
+
+  test("only the native app on Android handles the back button", () => {
+    const real = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const agent = (userAgent: string) =>
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+    try {
+      const phone = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/142.0";
+      const desktop = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+      agent(phone);
+      expect(isAndroid()).toBe(false);
+      Object.defineProperty(globalThis, "isTauri", { value: true, configurable: true });
+      expect(isAndroid()).toBe(true);
+      agent(desktop);
+      expect(isAndroid()).toBe(false);
+    } finally {
+      if (real) Object.defineProperty(globalThis, "navigator", real);
+    }
   });
 
   test("refuses to store an invalid URL", () => {

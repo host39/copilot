@@ -1,4 +1,4 @@
-.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke lint format type-check boundaries check ci build clean
+.PHONY: help install update update-latest setup dev dev-api dev-web run-api fake-llm migrate seed migrations contracts test test-db test-bruno smoke lint format type-check boundaries check ci build native-dev native-lint native-build android-dev android-build clean
 
 .DEFAULT_GOAL := help
 
@@ -32,6 +32,11 @@ help:
 	@echo "  check          format + lint + type-check + test + boundaries"
 	@echo "  ci             check without writes, plus contract drift"
 	@echo "  build          Release API binaries + production web bundle"
+	@echo "  native-dev     Desktop app on the web dev server (needs WebKitGTK; apps/native/README.md)"
+	@echo "  native-lint    rustfmt and Clippy for the Tauri shell (needs WebKitGTK)"
+	@echo "  native-build   Linux .deb of the desktop app (needs WebKitGTK)"
+	@echo "  android-dev    Android app on a device or emulator (needs the Android SDK and NDK)"
+	@echo "  android-build  Debug-signed arm64 APK (needs the Android SDK and NDK)"
 	@echo "  clean          Wipe build output, dependencies, and the database volume"
 
 install:
@@ -125,8 +130,28 @@ build:
 	cargo build --release -p copilot-api -p copilot-database
 	pnpm --filter @copilot/web build
 
+# The Tauri shell (apps/native) builds outside the Cargo workspace and outside `make check`.
+NATIVE_CRATE := apps/native/src-tauri/Cargo.toml
+
+native-dev:
+	pnpm --filter @copilot/native tauri dev
+
+native-lint:
+	cargo fmt --manifest-path $(NATIVE_CRATE) --check
+	cargo clippy --manifest-path $(NATIVE_CRATE) --all-targets -- -D warnings
+
+native-build:
+	pnpm --filter @copilot/native tauri build --bundles deb
+
+android-dev:
+	pnpm --filter @copilot/native tauri android dev
+
+android-build:
+	pnpm --filter @copilot/native tauri android build --apk --target aarch64
+
 clean:
 	docker compose down -v
 	cargo clean
+	cargo clean --manifest-path $(NATIVE_CRATE)
 	find . -name node_modules -type d -prune -exec rm -rf {} +
 	find . \( -name dist -o -name out -o -name .run \) -type d -prune -exec rm -rf {} +

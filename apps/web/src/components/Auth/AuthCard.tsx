@@ -1,3 +1,4 @@
+import { ServerLink } from "@web/components/Auth/ServerLink";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import type { ReactNode } from "react";
 
@@ -7,10 +8,12 @@ type AuthCardProps = {
   description?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** Native builds show the server with a link to change it; the Connect screen turns it off. */
+  server?: boolean;
 };
 
 /** The centered card of the sign-in, setup, and connect screens. */
-export function AuthCard({ title, description, children, footer }: AuthCardProps) {
+export function AuthCard({ title, description, children, footer, server = true }: AuthCardProps) {
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center bg-surface px-4 py-10">
       <PageTitle page={title} />
@@ -25,6 +28,7 @@ export function AuthCard({ title, description, children, footer }: AuthCardProps
           <div className="mt-6">{children}</div>
         </div>
         {footer ? <div className="mt-6 text-center text-sm text-muted">{footer}</div> : null}
+        {server ? <ServerLink className="mt-4 text-center text-sm text-muted" /> : null}
       </div>
     </main>
   );

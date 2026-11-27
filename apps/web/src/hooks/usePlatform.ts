@@ -6,7 +6,7 @@ import {
   type Shortcut,
   shortcut,
 } from "@web/components/Layout/platform";
-import { isNative } from "@web/config";
+import { isAndroid } from "@web/config";
 import { log } from "@web/logging";
 import path from "@web/routes/path";
 import { useEffect, useRef } from "react";
@@ -58,7 +58,8 @@ export function useShortcuts(help: () => void): void {
 /**
  * Android back in the native app: closes the topmost dialog, then goes back in the app's history,
  * then to the chat list, and leaves the app only from there. Browsers already close modal dialogs
- * on back (close requests) and go back in history themselves.
+ * on back (close requests) and go back in history themselves; the desktop app has no back button
+ * (Tauri's listener exists only on Android).
  */
 export function useBackButton(): void {
   const navigate = useNavigate();
@@ -67,7 +68,7 @@ export function useBackButton(): void {
   at.current = location.pathname;
 
   useEffect(() => {
-    if (!isNative()) return;
+    if (!isAndroid()) return;
     let stopped = false;
     let unregister: (() => Promise<void>) | undefined;
     import("@tauri-apps/api/app")

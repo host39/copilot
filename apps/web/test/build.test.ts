@@ -66,6 +66,19 @@ describe("dev server", () => {
     expect(config).toContain("port: 4000");
   });
 
+  test("serves the native app's dev build: a phone on TAURI_DEV_HOST, and only on port 4000", () => {
+    expect(config).toContain("const tauriHost = process.env.TAURI_DEV_HOST;");
+    expect(config).toContain("...(tauriHost ? { host: tauriHost } : {})");
+    expect(config).toContain('client: { protocol: "ws", host: tauriHost, port: 4000 }');
+    expect(config).toContain("strictPort: tauri,");
+    expect(config).toContain("process.env.TAURI_ENV_PLATFORM");
+    const native = JSON.parse(readFileSync("../native/src-tauri/tauri.conf.json", "utf8")) as {
+      build: { devUrl: string; frontendDist: string };
+    };
+    expect(native.build.devUrl).toBe("http://localhost:4000");
+    expect(native.build.frontendDist).toBe("../../web/dist");
+  });
+
   test("keeps the composer above the on-screen keyboard and offers both color schemes", () => {
     expect(config).toContain("interactive-widget=resizes-content");
     expect(config).toContain('"color-scheme": "light dark"');

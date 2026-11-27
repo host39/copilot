@@ -1,14 +1,15 @@
-// The sign-in, setup, and register screens follow rustauth's setup status, and the Connect
-// screen's warning for unencrypted servers.
+// The sign-in, setup, and register screens follow rustauth's setup status, the Connect screen's
+// warning for unencrypted servers, and the native app's link to change its server.
 
 import type { SetupStatusResponse } from "@copilot/contracts";
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { clearToken } from "@web/auth/token";
-import { isPrivateHost, needsHttpWarning } from "@web/config";
+import { forgetServerUrl, isPrivateHost, needsHttpWarning, saveServerUrl } from "@web/config";
 import LoginPage from "@web/routes/auth/login/page";
 import RegisterPage from "@web/routes/auth/register/page";
 import SetupPage from "@web/routes/auth/setup/page";
+import ConnectPage from "@web/routes/connect/page";
 import type { ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -31,7 +32,24 @@ const closed = { needsSetup: false, registrationOpen: false };
 
 afterEach(() => {
   clearToken();
+  Reflect.deleteProperty(globalThis, "isTauri");
+  Reflect.deleteProperty(globalThis, "localStorage");
 });
+
+/** Runs as the native app, connected to `url` (a Map-backed `localStorage` holds it). */
+function connect(url: string): void {
+  const items = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => items.set(key, value),
+      removeItem: (key: string) => items.delete(key),
+    },
+  });
+  Object.defineProperty(globalThis, "isTauri", { value: true, configurable: true });
+  saveServerUrl(url);
+}
 
 describe("sign-in", () => {
   test("offers sign-up only while registration is open", () => {
@@ -78,6 +96,33 @@ describe("register", () => {
 
   test("sends a server without accounts to setup", () => {
     expect(render(<RegisterPage />, fresh)).not.toContain("new-password");
+  });
+});
+
+describe("server link", () => {
+  test("the native app's sign-in screens name the server and link to the Connect screen", () => {
+    connect("https://copilot.example/");
+    for (const page of [<LoginPage key="login" />, <RegisterPage key="register" />]) {
+      const html = render(page, open);
+      expect(html).toContain("https://copilot.example");
+      expect(html).toContain('href="/connect"');
+    }
+    expect(render(<SetupPage />, fresh)).toContain('href="/connect"');
+  });
+
+  test("web builds and the Connect screen itself show no link", () => {
+    expect(render(<LoginPage />, open)).not.toContain('href="/connect"');
+    connect("https://copilot.example");
+    expect(render(<ConnectPage />, open)).not.toContain('href="/connect"');
+  });
+
+  test("the Connect screen offers to keep a server already chosen", () => {
+    connect("https://copilot.example");
+    const html = render(<ConnectPage />, open);
+    expect(html).toContain("keep the current server");
+    expect(html).toContain('value="https://copilot.example"');
+    forgetServerUrl();
+    expect(render(<ConnectPage />, open)).not.toContain("keep the current server");
   });
 });
 

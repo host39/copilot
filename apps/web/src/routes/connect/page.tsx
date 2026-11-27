@@ -8,7 +8,7 @@ import { text } from "@web/forms";
 import path from "@web/routes/path";
 import { useState } from "react";
 import { LuTriangleAlert } from "react-icons/lu";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 /**
  * Native builds: the address of the Copilot server, checked with `GET /health` before it is
@@ -20,6 +20,7 @@ export default function ConnectPage() {
   const [alert, setAlert] = useState<string>();
   const [insecure, setInsecure] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const current = serverUrl();
 
   async function connect(data: FormData): Promise<void> {
     setError(undefined);
@@ -48,6 +49,14 @@ export default function ConnectPage() {
   return (
     <AuthCard
       title="Connect to Server"
+      server={false}
+      footer={
+        current === undefined ? null : (
+          <Link to={path.home} className="text-link">
+            Keep the current server
+          </Link>
+        )
+      }
       description="Enter the address of your Copilot server, as you would open it in a browser."
     >
       <form
@@ -69,7 +78,7 @@ export default function ConnectPage() {
           autoCorrect="off"
           spellCheck={false}
           placeholder="https://copilot.example.com"
-          defaultValue={serverUrl() ?? ""}
+          defaultValue={current ?? ""}
           onChange={() => setInsecure(undefined)}
           required
           error={error}

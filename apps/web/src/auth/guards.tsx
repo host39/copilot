@@ -1,6 +1,7 @@
 // Route guards for the table in `routes/index.tsx`.
 
 import { isAdmin, type Session, useSession, useToken } from "@web/auth/session";
+import { ServerLink } from "@web/components/Auth/ServerLink";
 import { ErrorView } from "@web/components/Error/ErrorView";
 import { DefaultLoading } from "@web/components/Suspense/DefaultLoading";
 import { isNative, serverUrl } from "@web/config";
@@ -35,6 +36,7 @@ export function RequireSession() {
         <ErrorView
           title="Cannot reach the server"
           description="Check your connection, then try again."
+          details={isNative() ? <ServerLink /> : undefined}
           onRetry={session.retry}
         />
       );
