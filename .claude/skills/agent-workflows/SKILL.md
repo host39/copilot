@@ -13,6 +13,16 @@ The owner's standing decisions for building with multiple AI agents. Apply them 
 - Prefer fewer, well-briefed agents over many small ones. Point agents at the exact spec sections and files they need instead of asking them to read everything.
 - When the owner asks how much budget a plan will use, estimate it from what comparable finished steps cost and say which parts are uncertain.
 
+## Autonomy and Questions
+
+The owner starts long runs and then does other things. Waiting idle for a reply wastes hours.
+
+- Keep going through every planned phase to the end without pausing between phases. Do not stop to report and wait; report and continue.
+- Ask questions early (at the start, while the owner is present) or batch them at the end. Ask only with the interactive question tool (multiple-choice options plus "Other"), because it sends the owner a phone notification; a question in plain chat text goes unseen. While a question is open, keep doing every piece of work that does not depend on the answer.
+- Make reasonable decisions where the spec is silent, record them (track notes, ADRs, or the roadmap), and keep going.
+- When a usage or spend limit stops the run, schedule a resume for the reset time and continue automatically when it arrives. No approval is needed.
+- Cloud sessions may refuse to push git tags. Create the tag locally and ask the owner (with the question tool, at the end) to create it on GitHub.
+
 ## Resumable Work
 
 The owner may pause the run at any time and resume hours later.
