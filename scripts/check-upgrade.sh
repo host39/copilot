@@ -7,7 +7,7 @@
 #    itself (the release being made is not its own predecessor). Its `server`, `migrate`, and
 #    `fake-llm` are built in a temporary git worktree (target directory `<target>/upgrade`), and
 #    its own scripts/smoke.sh runs on them with SMOKE_KEEP=1: a fresh database migrated by that
-#    release and filled through its API (the administrator, three provider connections with
+#    release and filled through its API (the administrator, its provider connections with
 #    sealed keys, chats with answers and an error, a tool server, an approved tool call). The
 #    database is kept.
 # 2. This commit's `migrate` runs on that database: the upgrade. Every migration of this commit
@@ -173,7 +173,9 @@ SMOKE_KEEP=1 SMOKE_BIN_DIR="$seed_bin" SMOKE_SECRET_KEY="$SECRET" SMOKE_FAKE_KEY
   bash "$seed_root/scripts/smoke.sh" >"$RUN_DIR/seed.log" 2>&1 || fail "the seeding smoke run (see $RUN_DIR/seed.log)"
 db="$(sed -n 's/^scripts\.smoke\.kept //p' "$RUN_DIR/seed.log" | tail -n 1)"
 [[ "$db" =~ ^copilot_smoke_[0-9a-f]+$ ]] || fail "the seeding smoke run kept no database (see $RUN_DIR/seed.log)"
-pass "the ${previous:-current} release wrote its data to $db"
+# The connections that release's smoke test made (a later smoke test may add more).
+connections="$(sql "SELECT count(*) FROM providers" "$db")"
+pass "the ${previous:-current} release wrote its data to $db ($connections connections)"
 
 # --- 2. The upgrade ---------------------------------------------------------------------------
 
@@ -248,8 +250,7 @@ pass "every chat reads with its messages"
 
 request GET /providers
 providers="$(jq -r '.items[].id' <<<"$body")"
-# Three connections from a v0.1 smoke run, four since P7.1 added a Responses connection.
-[[ "$(wc -l <<<"$providers")" -ge 3 ]] || fail "the smoke run's connections should remain: $body"
+[[ "$(wc -l <<<"$providers")" == "$connections" ]] || fail "the $connections connections should remain: $body"
 for provider in $providers; do
   request GET "/providers/$provider"
   jq -e '.data.key == "set"' >/dev/null <<<"$body" || fail "a stored key no longer opens: $body"
