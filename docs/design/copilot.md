@@ -167,8 +167,8 @@ Settings has a **Providers** page. A provider connection has a kind, a preset, a
 Voice follows constraint 1: Copilot sends audio only to a chat model whose API takes audio, and plays audio only when the chat model itself returns it. Source: `docs/research/voice.md`.
 
 - **Anthropic:** the Claude API has no audio input and no speech output, so Claude models get no voice controls; their audio flags are locked off.
-- **Audio in (push to talk):** the composer shows a microphone only when the model has `audio_in` (OpenAI `gpt-audio-*` through Chat Completions `input_audio`, OpenRouter models that list audio input, self-hosted servers that accept `input_audio`, Gemini if the spike confirms it). The client records through an AudioWorklet, resamples to **16 kHz mono PCM16 WAV** (about 32 KB/s), caps a clip at 5 minutes, uploads it as a chat file, and sends it as an audio part. When the provider returns a transcript, it shows under the clip. No codec library, no model.
-- **Audio out:** for `audio_out` models with **Speak replies** on (per chat), the request asks for audio (`modalities: ["text", "audio"]`, `audio: {voice, format: "pcm16"}`). The client plays `audio.delta` events as they arrive; the transcript becomes the message text. After the stream, the API saves the audio as a WAV chat file and an `audio` part, so the speaker button can replay it. Later turns send the transcript as text, never the provider's audio id. Audio is requested only while Speak replies is on, so it is not billed on every turn.
+- **Audio in (push to talk):** the composer shows a microphone only when the model has `audio_in` (OpenAI `gpt-audio-*` through Chat Completions `input_audio`, OpenRouter models that list audio input, self-hosted servers that accept `input_audio`, and Gemini through its OpenAI-compatible endpoint, which the P2.B spike and the P4.1 route tests send `input_audio` to; the P3.4 live check confirms it). The client records through an AudioWorklet, resamples to **16 kHz mono PCM16 WAV** (about 32 KB/s), caps a clip at 5 minutes, uploads it as a chat file, and sends it as an audio part. Any WAV or MP3 chat file becomes an audio part (`format` `wav` or `mp3`), sent as `input_audio` to models with `audio_in` and as the notice `[audio "<name>" omitted: this model cannot read audio]` to others. Audio uploaded to a chat plays for at most `AUDIO_CLIP_MAX_SECS` (5 minutes, read from the container: a WAV file's byte rate and data length, an MP3 file's Xing, Info, or VBRI frame count or else its first frame's bitrate); longer audio is refused with "Audio in a chat can be at most 5 minutes long." Project audio never reaches a model, so only the upload size limits it. Chat Completions providers return no transcript of the user's audio, so a clip's `transcript` stays null until one does; when a provider returns one, it shows under the clip. No codec library, no model.
+- **Audio out:** for `audio_out` models with **Speak replies** on (per chat), the request asks for audio (`modalities: ["text", "audio"]`, `audio: {voice, format: "pcm16"}`). The client plays `audio.delta` events as they arrive; the transcript becomes the message text (a text part). When the answer ends, on every exit (complete, refused, error, stopped, or paused for an approval), the engine saves the audio it streamed as a 24 kHz mono PCM16 WAV chat file named `spoken-reply.wav` through `FileService::upload`, so the size, length, and storage quota rules apply, announces it with `part.started` (`kind: audio`, the index of the answer's last part), and appends an `audio` part with the file id, `format: wav`, `durationMs`, and no transcript (the text part holds it), so the speaker button can replay it. A file that cannot be saved (for example storage full) is logged as `core.engine.speech.save-failed`, and the answer keeps its transcript without the audio part. Later turns send the transcript as text, never the audio or the provider's audio id. Audio is requested only while Speak replies is on, so it is not billed on every turn. Gemini's OpenAI-compatible endpoint documents no audio output, so `audio_out` stays off by default for the `gemini` preset (no metadata reports it), but it is not locked.
 - **Web client:** the microphone starts recording on a tap; the field becomes a bar with the time against the cap (`0:12 / 5:00`), Cancel (or Escape), and Stop. A stopped clip is attached like a picked file (uploaded to the chat at once, a player on its chip to hear it before sending, removed with the chip); the recording stops by itself at the cap or when the microphone goes away and says so. A blocked, missing, or busy microphone, or a page served over plain HTTP (browsers hide the microphone there), gets a message that says what to do. The worklet is a file in `public/` (the CSP allows only same-origin scripts) that mixes to mono; the page resamples with a box filter and encodes the WAV file. The Speak replies toggle sits in the composer beside attach and is stored on the chat (or sent with a new chat's draft). Spoken audio plays only for turns started on that page, from the click that started them (browsers allow audio after a gesture), through Web Audio buffers queued back to back with a 0.1 second lead; opening a chat whose run is speaking stays quiet, and Stop, turning Speak replies off, or leaving the page silences it. Saved recordings and spoken replies play in the browser's player once fetched with the token, one sound at a time.
 - **Not in v1:** provider speech and transcription endpoints, live voice, and the owner's off-by-default option for voice on models without audio.
 
@@ -498,7 +498,7 @@ Two pure functions, unit-tested without fakes, read file metadata only: `convers
    - A part the model cannot accept becomes a text part `[<kind> "<name>" omitted: this model cannot read <kind>]`.
    - A history file part whose file is also an included project file becomes `[file "<name>" is in the project files]`.
    - A file that no longer exists becomes `[file "<name>" was deleted]`.
-   - Assistant audio becomes its transcript.
+   - Assistant audio becomes its transcript: a spoken reply's transcript is its text part, and its `audio` part (which carries no transcript) is never sent.
    - A message never goes out with zero parts.
    - When the request has no tools, or a historical alias is missing from the snapshot (and the message is not replayed), that call and its result become text on both sides: `[called <toolName> with <arguments>]` and `[result: <text>]`. A `tool` message whose results all became text goes out as a user message.
    - A `cancelled` or `error` answer keeps its text and finished calls; calls whose arguments never finished are dropped. A finished call without a stored result (after a restart) gets a synthesized one: `is_error`, "The call was interrupted before it finished.".
@@ -616,7 +616,7 @@ Every event has `type` and `seq` (per run).
 | `type` | Payload |
 | --- | --- |
 | `message.started` | `messageId`, `role`, `windowStartId` |
-| `part.started` | `messageId`, `index`, `kind` (`text`, `reasoning`, `toolCall`, `audio`) |
+| `part.started` | `messageId`, `index`, `kind` (`text`, `reasoning`, `toolCall`, `audio`); a spoken reply's `audio` part starts once the answer ended and its WAV file is saved, just before `message.finished` |
 | `text.delta` | `messageId`, `index`, `text` |
 | `reasoning.delta` | `messageId`, `index`, `text` |
 | `audio.delta` | `messageId`, `data` (base64 PCM16), `format` |
@@ -909,7 +909,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 | --- | --- |
 | `text` part | `{text}` |
 | `file` part | `{file_id, name, media_type}` |
-| `audio` part | `{file_id, format, transcript, duration_ms}` |
+| `audio` part | `{file_id, format, transcript, duration_ms}`; `format` is `wav` or `mp3`. A recorded or uploaded clip has `transcript` and `duration_ms` null; a spoken reply has `duration_ms` and a null `transcript` (its text part holds the transcript) |
 | `reasoning` part | `{text}`; display only |
 | `tool_call` part | `{id (Copilot UUID), provider_call_id, server_id (null for built-in), tool_name, alias, arguments_raw, arguments (object or null), complete, approval: auto, pending, approved, denied, deny_reason}` |
 | `tool_result` part | `{call_id, status: ok, error, denied, cancelled, timeout, is_error, content: [{type: text, text} or {type: image, file_id}], truncated}` |
@@ -969,7 +969,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 
 ### Files
 
-1. Uploads: `MAX_UPLOAD_MB` (25) per file and `MAX_STORAGE_MB_PER_USER` (1024) per user (`SUM(size_bytes)` checked before accepting, and again under a per-user advisory lock in the transaction that stores the file, so uploads at once never pass it together). An upload's body is read only once the request holds an upload slot: `UPLOADS_PER_USER` (2) per user and `UPLOADS_AT_ONCE` (4) in all; others wait their turn, so upload memory stays bounded. The media type comes from the extension plus a magic-byte check, never from the client header alone. Accepted: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`, `audio/wav`, `audio/mpeg`, and text (valid UTF-8 with a text or code extension, stored as `text/plain` or `text/markdown`). Anything else is rejected with "This file type is not supported."
+1. Uploads: `MAX_UPLOAD_MB` (25) per file and `MAX_STORAGE_MB_PER_USER` (1024) per user (`SUM(size_bytes)` checked before accepting, and again under a per-user advisory lock in the transaction that stores the file, so uploads at once never pass it together). An upload's body is read only once the request holds an upload slot: `UPLOADS_PER_USER` (2) per user and `UPLOADS_AT_ONCE` (4) in all; others wait their turn, so upload memory stays bounded. The media type comes from the extension plus a magic-byte check, never from the client header alone. Accepted: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`, `audio/wav`, `audio/mpeg`, and text (valid UTF-8 with a text or code extension, stored as `text/plain` or `text/markdown`). Anything else is rejected with "This file type is not supported." Audio uploaded to a chat that plays longer than `AUDIO_CLIP_MAX_SECS` is rejected (see [Voice](#voice)).
 2. `GET /api/files/{id}/content` always sends `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`, and `Content-Disposition: attachment; filename*=UTF-8''<percent-encoded name>`. `Content-Type` is the stored type when it is on the allowlist above, otherwise `application/octet-stream`. SVG and HTML are never served as their own types.
 3. Clients fetch file bytes with the `Authorization` header and render them through `blob:` URLs. No route accepts a token in the query string.
 
@@ -999,8 +999,9 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 | One run's replay buffer | `RUN_BUFFER_MAX_BYTES` (32 MiB) of text, delta ends, and other events across its answers; past it the run is stopped |
 | Enabled schedules per user, shortest gap | 20; 15 minutes |
 | Storage per user | `MAX_STORAGE_MB_PER_USER` (1024) |
+| Audio in a chat | `AUDIO_CLIP_MAX_SECS` (5 minutes) per uploaded or recorded clip; a spoken reply stops at `AUDIO_OUT_MAX_BYTES`, the same length |
 | Uploads read at once | `UPLOADS_PER_USER` (2) per user, `UPLOADS_AT_ONCE` (4) in all; more wait |
-| One streamed answer | Text, reasoning, transcripts, and tool call names, ids, and arguments up to the request's output token limit times `BYTES_PER_TOKEN` times `ANSWER_SLACK` (4), at most `ANSWER_MAX_BYTES` (8 MiB); `ANSWER_MAX_PARTS` (256) parts; `AUDIO_OUT_MAX_BYTES` of spoken audio. The event that would pass a cap is dropped, and the answer ends as an `error` ("The provider sent more than this model's output limit allows.", `PROVIDER_BAD_RESPONSE`) with what streamed kept |
+| One streamed answer | Text, reasoning, transcripts, and tool call names, ids, and arguments up to the request's output token limit times `BYTES_PER_TOKEN` times `ANSWER_SLACK` (4), at most `ANSWER_MAX_BYTES` (8 MiB); `ANSWER_MAX_PARTS` (256) parts (spoken audio holds one from its first byte); `AUDIO_OUT_MAX_BYTES` of spoken audio. The event that would pass a cap is dropped, and the answer ends as an `error` ("The provider sent more than this model's output limit allows.", `PROVIDER_BAD_RESPONSE`) with what streamed kept, its spoken audio saved too |
 
 ### CORS
 
@@ -1054,7 +1055,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
 | `MAX_TOOL_ROUNDS` | 8 |
 | `ANSWER_SLACK`, `ANSWER_MAX_BYTES`, `ANSWER_MAX_PARTS` | 4, 8 MiB, 256 |
-| `AUDIO_OUT_MAX_BYTES` | 14400000 (five minutes of 24 kHz PCM16; **verify** in P2.B) |
+| `AUDIO_OUT_MAX_BYTES`, `AUDIO_OUT_SAMPLE_RATE` | 14400000 (five minutes of 24 kHz PCM16, checked in P2.B against OpenAI's `pcm16` output), 24000 (the rate the saved WAV file states) |
 | `DEFAULT_MAX_OUTPUT_TOKENS`, `DEFAULT_REASONING_OUTPUT_TOKENS` | 8192, 32768 for models with `reasoning` (or a quarter of a known context window, when smaller) |
 | `REQUEST_MAX_BYTES`, `GEMINI_REQUEST_MAX_BYTES`, `REQUEST_MAX_PDF_PAGES` | 32 MiB, 20 MiB, 100 (**verify** per provider in P2.B) |
 | `AUDIO_OUT_VOICE`, `AUDIO_OUT_FORMAT` | `alloy`, `pcm16` |
@@ -1070,7 +1071,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `TITLE_MAX_CHARS` | 60 |
 | `CONTEXT_WARN_RATIO` | 0.8 |
 | `TOKENS_PER_PDF_PAGE`, `TOKENS_PER_IMAGE`, `BYTES_PER_TOKEN` | 3000, 1600, 4 |
-| `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300, 16000 |
+| `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300 (any audio in a chat), 16000 (the client's recording rate) |
 | `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_GRACE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 5, 10 |
 | `EVENTS_STREAM_MAX_SECS` | 900 |
 

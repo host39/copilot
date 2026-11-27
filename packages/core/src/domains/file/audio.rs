@@ -55,9 +55,9 @@ fn wav_ms(bytes: &[u8]) -> Option<u64> {
     if bytes.len() < 12 || !bytes.starts_with(b"RIFF") || &bytes[8..12] != b"WAVE" {
         return None;
     }
-    let mut offset = 12;
+    let mut offset: usize = 12;
     let mut byte_rate = None;
-    while let Some(header) = bytes.get(offset..offset + 8) {
+    while let Some(header) = offset.checked_add(8).and_then(|end| bytes.get(offset..end)) {
         let size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         let body = offset + 8;
         match &header[..4] {
