@@ -1,5 +1,6 @@
-// Chats and their turns. `sendMessage` answers with the turn's server-sent events, each a
-// `ChatStreamEvent`, ending with `done`.
+// Chats and their turns. The turn routes (`sendMessage`, `regenerate`, `retry`, `decide`) and
+// `attach` answer with the run's server-sent events, each a `ChatStreamEvent`, ending with `done`.
+// Aborting their `signal` only stops reading: the server keeps answering and saves the reply.
 
 import {
   type ChatListQuery,
@@ -10,6 +11,7 @@ import {
   chatBodySchema,
   chatPageBodySchema,
   chatStreamEventSchema,
+  type DecisionsRequest,
   type MessageResponse,
   messageListBodySchema,
   type PageResponse,
@@ -102,4 +104,70 @@ export async function sendMessage(
     body,
     signal,
   });
+}
+
+/** `POST /chats/{id}/regenerate`: deletes the answer after the last user message and answers it again. */
+export async function regenerate(
+  chatId: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  await apiStream(API.chatRegenerate(chatId), chatStreamEventSchema, onEvent, {
+    method: "POST",
+    signal,
+  });
+}
+
+/**
+ * `POST /chats/{id}/retry`: deletes the failed answer (and the results written for its calls) and
+ * answers again; earlier tool rounds of the turn are kept and not run again.
+ */
+export async function retry(
+  chatId: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  await apiStream(API.chatRetry(chatId), chatStreamEventSchema, onEvent, {
+    method: "POST",
+    signal,
+  });
+}
+
+/**
+ * `POST /chats/{id}/messages/{messageId}/decisions`: approves or denies every pending call of the
+ * answer `messageId`, then streams the continued turn.
+ */
+export async function decide(
+  chatId: string,
+  messageId: string,
+  body: DecisionsRequest,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  await apiStream(API.chatDecisions(chatId, messageId), chatStreamEventSchema, onEvent, {
+    method: "POST",
+    body,
+    signal,
+  });
+}
+
+/**
+ * `GET /chats/{id}/stream`: the running turn's events, then live ones. `after` asks only for the
+ * events past that `seq` (a reconnect); a server may still replay from the start. Resolves `false`
+ * when no turn is running (`204`), `true` after the stream ends.
+ */
+export async function attach(
+  chatId: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  options: { after?: number; signal?: AbortSignal } = {}
+): Promise<boolean> {
+  return apiStream(API.chatStream(chatId), chatStreamEventSchema, onEvent, {
+    query: { after: options.after },
+    signal: options.signal,
+  });
+}
+
+/** `POST /chats/{id}/stop`: the running turn stops and keeps its partial answer. */
+export async function stop(chatId: string): Promise<void> {
+  await apiRequest(API.chatStop(chatId), { method: "POST" });
 }
