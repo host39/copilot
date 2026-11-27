@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(tested.body["code"], "TOOL_SERVER_AUTH");
         assert_eq!(
             tested.body["error"],
-            "The tool server requires sign-in. Add a bearer token or headers in its settings."
+            "The tool server requires sign-in. Add a bearer token or headers, or sign in with OAuth, in its settings."
         );
         let details = call(&app, &token, Method::GET, &uri, None).await;
         assert_eq!(details.body["data"]["tools"], Value::Null, "nothing stored");

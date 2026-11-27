@@ -12,7 +12,11 @@
 //!   start with the right lifecycle. A remembered revision the server no longer speaks falls
 //!   back to the probe.
 //! - **Credentials.** The stored bearer token and custom headers go on every request as headers
-//!   (`ToolHeaders::entries`), marked sensitive.
+//!   (`ToolHeaders::entries`), marked sensitive. A server signed in with OAuth gets its access
+//!   token (`AccessTokens::current`) as `Authorization: Bearer` instead; a `401` refreshes it once
+//!   (`AccessTokens::rejected`) and reconnects, before or during a run.
+//! - **Sign-in.** [`McpAuth`] implements core's `ToolAuth`: discovery, dynamic registration, and
+//!   the token endpoint (`oauth`).
 //! - **Listing.** Every page of `tools/list`, with the smallest `ttlMs` as the cache hint, at
 //!   most 16 pages and `MCP_RESPONSE_MAX_BYTES` of definitions in all.
 //! - **Calls.** One connection per server per run, opened on its first call. Each call has its
@@ -40,6 +44,7 @@ mod connection;
 mod convert;
 mod errors;
 mod host;
+mod oauth;
 mod session;
 
 pub use crate::errors::{
@@ -48,3 +53,4 @@ pub use crate::errors::{
     TOOL_SERVER_TOO_LARGE, TOOL_SERVER_UNREACHABLE, TOOL_UNKNOWN,
 };
 pub use crate::host::{Limits, McpHost};
+pub use crate::oauth::McpAuth;

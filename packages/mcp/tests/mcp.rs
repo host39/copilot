@@ -268,7 +268,7 @@ async fn reports_rejected_and_missing_credentials() {
     assert_eq!(error.code(), TOOL_SERVER_AUTH);
     assert_eq!(
         error.to_string(),
-        "The tool server requires sign-in. Add a bearer token or headers in its settings."
+        "The tool server requires sign-in. Add a bearer token or headers, or sign in with OAuth, in its settings."
     );
 
     let error = call(&host(), &wrong, "echo", json!({})).await.unwrap_err();
@@ -595,4 +595,165 @@ async fn never_echoes_the_body_of_a_url_that_is_not_mcp() {
     let error = host().list(&endpoint).await.unwrap_err();
     assert!(!error.to_string().contains("secret-body"), "{error}");
     assert_eq!(error.to_string(), "The tool server answered with HTTP 404.");
+}
+
+/// Access tokens that start at `current` and change to `fresh` once one is rejected, recording
+/// every rejection; with `refusal`, a rejection fails with that code instead.
+struct Tokens {
+    current: std::sync::Mutex<String>,
+    fresh: String,
+    rejected: std::sync::Mutex<Vec<String>>,
+    refusal: Option<&'static str>,
+}
+
+impl Tokens {
+    fn new(current: &str, fresh: &str) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            current: std::sync::Mutex::new(current.to_owned()),
+            fresh: fresh.to_owned(),
+            rejected: std::sync::Mutex::default(),
+            refusal: None,
+        })
+    }
+
+    fn rejections(&self) -> Vec<String> {
+        self.rejected.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl copilot_core::AccessTokens for Tokens {
+    async fn current(&self) -> copilot_core::DomainResult<Secret> {
+        Ok(Secret::new(self.current.lock().unwrap().clone()))
+    }
+
+    async fn rejected(&self, token: &Secret) -> copilot_core::DomainResult<Secret> {
+        self.rejected
+            .lock()
+            .unwrap()
+            .push(token.text().unwrap().to_owned());
+        if let Some(code) = self.refusal {
+            return Err(DomainError::business_rule("Sign in again.", code));
+        }
+        *self.current.lock().unwrap() = self.fresh.clone();
+        Ok(Secret::new(self.fresh.clone()))
+    }
+}
+
+fn signed_in(server: &Running, tokens: std::sync::Arc<Tokens>) -> ToolEndpoint {
+    ToolEndpoint {
+        tokens: Some(copilot_core::TokenSource(tokens)),
+        ..local(server)
+    }
+}
+
+#[tokio::test]
+async fn sends_the_access_token_and_refreshes_it_once_on_401() {
+    for era in [Era::Modern, Era::Legacy] {
+        let server = start(
+            era,
+            Options {
+                require: Some("Bearer fresh".to_owned()),
+                ..Options::default()
+            },
+        )
+        .await;
+        let tokens = Tokens::new("stale", "fresh");
+        let endpoint = signed_in(&server, tokens.clone());
+        let listing = host().list(&endpoint).await.unwrap();
+        assert_eq!(listing.tools.len(), 6, "{era:?}");
+        assert_eq!(tokens.rejections(), ["stale"], "{era:?}: one refresh");
+        let seen = server.seen();
+        assert_eq!(seen.authorization[0], "Bearer stale", "{era:?}");
+        assert!(
+            seen.authorization[1..]
+                .iter()
+                .all(|value| value == "Bearer fresh"),
+            "{era:?}: {:?}",
+            seen.authorization
+        );
+    }
+}
+
+#[tokio::test]
+async fn refreshes_a_token_the_server_rejects_in_the_middle_of_a_run() {
+    let server = start(
+        Era::Modern,
+        Options {
+            require: Some("Bearer one".to_owned()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let tokens = Tokens::new("one", "two");
+    let endpoint = signed_in(&server, tokens.clone());
+    let host = host();
+    let session = host.open(vec![endpoint.clone()]).await.unwrap();
+    let first = session
+        .call(endpoint.server_id, "echo", json!({"text": "a"}), CALL)
+        .await
+        .unwrap();
+    assert_eq!(texts(&first.content), ["echo: a"]);
+    assert!(tokens.rejections().is_empty());
+
+    server.require("Bearer two");
+    let second = session
+        .call(endpoint.server_id, "echo", json!({"text": "b"}), CALL)
+        .await
+        .unwrap();
+    assert_eq!(texts(&second.content), ["echo: b"]);
+    assert_eq!(tokens.rejections(), ["one"]);
+    assert_eq!(
+        server.seen().count("tools/call"),
+        3,
+        "the first call, the refused one, and its retry"
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn a_failed_refresh_fails_with_its_own_error() {
+    let server = start(
+        Era::Modern,
+        Options {
+            require: Some("Bearer other".to_owned()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let tokens = std::sync::Arc::new(Tokens {
+        refusal: Some(copilot_core::SIGN_IN_REQUIRED),
+        ..std::sync::Arc::into_inner(Tokens::new("stale", "unused")).unwrap()
+    });
+    let endpoint = signed_in(&server, tokens.clone());
+    let error = host().list(&endpoint).await.unwrap_err();
+    assert_eq!(error.code(), copilot_core::SIGN_IN_REQUIRED);
+    let error = call(&host(), &endpoint, "echo", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), copilot_core::SIGN_IN_REQUIRED);
+    assert_eq!(tokens.rejections(), ["stale", "stale"]);
+}
+
+#[tokio::test]
+async fn a_refreshed_token_the_server_still_rejects_asks_for_sign_in() {
+    let server = start(
+        Era::Modern,
+        Options {
+            require: Some("Bearer neither".to_owned()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let tokens = Tokens::new("stale", "fresh");
+    let error = host()
+        .list(&signed_in(&server, tokens.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), TOOL_SERVER_AUTH);
+    assert_eq!(
+        error.to_string(),
+        "The tool server did not accept the sign-in. Sign in to it again in its settings."
+    );
+    assert_eq!(tokens.rejections(), ["stale"], "one refresh only");
 }

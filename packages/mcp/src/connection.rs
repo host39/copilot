@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use copilot_core::shared::constants::{MCP_LIST_MAX_PAGES, MCP_TOOLS_MAX};
 use copilot_core::{
-    DomainError, DomainResult, RemoteTool, ToolEndpoint, ToolHeaders, ToolOutput, ToolServerId,
+    DomainError, DomainResult, RemoteTool, Secret, ToolEndpoint, ToolHeaders, ToolOutput,
+    ToolServerId,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{
@@ -20,7 +21,7 @@ use rmcp::{ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, RoleClient,
 use serde_json::{Map, Value};
 
 use crate::convert;
-use crate::errors::{self, Failure, TOOL_SERVER_HEADERS};
+use crate::errors::{self, Credentials, Failure};
 use crate::host::Shared;
 
 /// The modern revision: stateless, no `initialize`, `server/discover` up front.
@@ -101,30 +102,76 @@ impl Attempt {
     }
 }
 
+/// Why a call on an open connection failed.
+pub(crate) enum CallError {
+    /// The server answered `401` to the connection's access token: refresh it and reconnect.
+    Unauthorized,
+    Failed(DomainError),
+}
+
 /// An open connection to one server.
 pub(crate) struct Connection {
     client: Client,
     server_id: ToolServerId,
     version: ProtocolVersion,
-    /// Whether requests carry credentials, for the sign-in message.
-    credentials: bool,
+    /// What requests carry, for the sign-in message.
+    credentials: Credentials,
+    /// The access token every request carries, for a server signed in with OAuth.
+    token: Option<Secret>,
     /// `MCP_RESPONSE_MAX_BYTES`: also the cap on a whole tool list.
     max_bytes: usize,
 }
 
 impl Connection {
+    /// Connects with the endpoint's credentials. A server signed in with OAuth gets the current
+    /// access token on every request; when it answers `401`, the token is refreshed once
+    /// (`AccessTokens::rejected`) and the connection tried again.
+    pub(crate) async fn open(shared: &Shared, endpoint: &ToolEndpoint) -> DomainResult<Self> {
+        let credentials = Credentials::of(endpoint);
+        let report = |failure: Failure| failure.report(endpoint.server_id, credentials);
+        let Some(tokens) = &endpoint.tokens else {
+            return Self::connect(shared, endpoint, None).await.map_err(report);
+        };
+        let token = tokens.0.current().await?;
+        match Self::connect(shared, endpoint, Some(token.clone())).await {
+            Err(failure) if failure.unauthorized() => {
+                tracing::info!(server_id = %endpoint.server_id, "mcp.oauth.token-rejected");
+                let fresh = tokens.0.rejected(&token).await?;
+                Self::connect(shared, endpoint, Some(fresh))
+                    .await
+                    .map_err(report)
+            }
+            other => other.map_err(report),
+        }
+    }
+
+    /// Connects with `token` as the access token, without another refresh.
+    pub(crate) async fn with_token(
+        shared: &Shared,
+        endpoint: &ToolEndpoint,
+        token: Secret,
+    ) -> DomainResult<Self> {
+        Self::connect(shared, endpoint, Some(token))
+            .await
+            .map_err(|failure| failure.report(endpoint.server_id, Credentials::SignIn))
+    }
+
     /// Connects with the revision remembered for the server (this process's memory first, then
     /// the endpoint's stored `protocol_version`), or probes both eras when none is known. A
     /// remembered revision that the server no longer speaks falls back to the probe, and a probe
     /// that finds only legacy revisions behind `server/discover` falls back to `initialize`.
-    pub(crate) async fn open(shared: &Shared, endpoint: &ToolEndpoint) -> DomainResult<Self> {
+    async fn connect(
+        shared: &Shared,
+        endpoint: &ToolEndpoint,
+        token: Option<Secret>,
+    ) -> Result<Self, Failure> {
         let server_id = endpoint.server_id;
-        let credentials = endpoint.headers.is_some();
+        let credentials = Credentials::of(endpoint);
         let http = shared
             .clients
             .pick(endpoint.url.url(), endpoint.network)
-            .map_err(|blocked| Failure::Blocked(blocked).report(server_id, credentials))?;
-        let headers = headers(endpoint)?;
+            .map_err(Failure::Blocked)?;
+        let headers = headers(endpoint, token.as_ref())?;
         let url = endpoint.url.url().as_str();
         let remembered = shared
             .eras
@@ -182,7 +229,7 @@ impl Connection {
             Ok(client) => client,
             Err(failed) => {
                 shared.eras.forget(server_id, url);
-                return Err(failed.failure().report(server_id, credentials));
+                return Err(failed.failure());
             }
         };
         // Core keeps the tool list; rmcp's own response cache would serve stale lists to the
@@ -205,8 +252,14 @@ impl Connection {
             server_id,
             version,
             credentials,
+            token,
             max_bytes: shared.limits.response_max_bytes,
         })
+    }
+
+    /// The access token the connection's requests carry.
+    pub(crate) fn token(&self) -> Option<&Secret> {
+        self.token.as_ref()
     }
 
     /// The negotiated MCP revision.
@@ -258,19 +311,31 @@ impl Connection {
     /// match (`-32602` or `-32020`), the tools are listed again on this connection, which also
     /// gives rmcp the input schemas it needs for `Mcp-Param-*` headers. A tool that is still
     /// listed is called once more after a header mismatch; one that is gone fails with
-    /// `TOOL_UNKNOWN`.
-    pub(crate) async fn call(&self, name: &str, arguments: &Value) -> DomainResult<ToolOutput> {
+    /// `TOOL_UNKNOWN`. A `401` to the connection's access token is [`CallError::Unauthorized`].
+    pub(crate) async fn call(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<ToolOutput, CallError> {
         let started = Instant::now();
         let result = match self.send(name, arguments).await {
             Err(ServiceError::McpError(data))
                 if data.code == ErrorCode::INVALID_PARAMS
                     || data.code == ErrorCode::HEADER_MISMATCH =>
             {
-                self.refresh(name, arguments, data).await?
+                self.refresh(name, arguments, data)
+                    .await
+                    .map_err(CallError::Failed)?
             }
             other => other,
         };
-        let output = self.finish(name, result)?;
+        if let Err(error) = &result
+            && self.token.is_some()
+            && Failure::request(error).unauthorized()
+        {
+            return Err(CallError::Unauthorized);
+        }
+        let output = self.finish(name, result).map_err(CallError::Failed)?;
         tracing::info!(
             server_id = %self.server_id,
             tool = name,
@@ -370,22 +435,25 @@ pub(crate) struct Listing {
     pub(crate) ttl: Option<Duration>,
 }
 
-/// The endpoint's stored credentials as headers, every value marked sensitive.
-fn headers(endpoint: &ToolEndpoint) -> DomainResult<HashMap<HeaderName, HeaderValue>> {
-    let Some(secret) = &endpoint.headers else {
-        return Ok(HashMap::new());
+/// The endpoint's stored credentials, or the access token as `Authorization: Bearer`, as
+/// headers, every value marked sensitive.
+fn headers(
+    endpoint: &ToolEndpoint,
+    token: Option<&Secret>,
+) -> Result<HashMap<HeaderName, HeaderValue>, Failure> {
+    let entries = match (token, &endpoint.headers) {
+        (Some(token), _) => {
+            let token = token.text().ok_or(Failure::Headers)?;
+            vec![("Authorization".to_owned(), format!("Bearer {token}"))]
+        }
+        (None, Some(secret)) => ToolHeaders::entries(secret).map_err(|_| Failure::Headers)?,
+        (None, None) => return Ok(HashMap::new()),
     };
-    let invalid = || {
-        DomainError::upstream(
-            "The tool server's credentials cannot be sent. Enter them again in its settings.",
-            TOOL_SERVER_HEADERS,
-        )
-    };
-    ToolHeaders::entries(secret)?
+    entries
         .into_iter()
         .map(|(name, value)| {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
-            let mut value = HeaderValue::from_str(&value).map_err(|_| invalid())?;
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| Failure::Headers)?;
+            let mut value = HeaderValue::from_str(&value).map_err(|_| Failure::Headers)?;
             value.set_sensitive(true);
             Ok((name, value))
         })

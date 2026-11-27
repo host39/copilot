@@ -8,14 +8,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use copilot_core::{
-    DomainError, DomainResult, TOOL_TIMEOUT, ToolEndpoint, ToolOutput, ToolServerId, ToolSession,
+    DomainError, DomainResult, Secret, TOOL_TIMEOUT, ToolEndpoint, ToolOutput, ToolServerId,
+    ToolSession,
 };
 use futures_util::future::join_all;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::connection::Connection;
-use crate::errors::TOOL_SERVER_FAILED;
+use crate::connection::{CallError, Connection};
+use crate::errors::{Credentials, Failure, TOOL_SERVER_FAILED};
 use crate::host::Shared;
 
 /// A server's connection in this session.
@@ -77,12 +78,46 @@ impl McpSession {
                 entry.insert(slot)
             }
         };
-        match slot {
-            Slot::Open(connection) => connection.call(name, arguments).await,
-            Slot::Failed { message, code } => {
-                Err(DomainError::upstream(message.clone(), code.clone()))
+        let Slot::Open(connection) = slot else {
+            let Slot::Failed { message, code } = slot else {
+                unreachable!("a slot is open or failed");
+            };
+            return Err(DomainError::upstream(message.clone(), code.clone()));
+        };
+        match connection.call(name, arguments).await {
+            Ok(output) => Ok(output),
+            Err(CallError::Failed(error)) => Err(error),
+            Err(CallError::Unauthorized) => {
+                // The access token was refused mid-run: refresh it once, reconnect, call again.
+                // The server refused the request before running the tool, so calling again is
+                // safe.
+                tracing::info!(server_id = %server_id, "mcp.oauth.token-rejected");
+                let rejected = connection.token().cloned();
+                let fresh = self.reconnect(endpoint, rejected).await?;
+                let stale = std::mem::replace(connection, fresh);
+                stale.close(self.shared.limits.close).await;
+                match connection.call(name, arguments).await {
+                    Ok(output) => Ok(output),
+                    Err(CallError::Failed(error)) => Err(error),
+                    Err(CallError::Unauthorized) => {
+                        Err(Failure::Auth.report(server_id, Credentials::SignIn))
+                    }
+                }
             }
         }
+    }
+
+    /// A new connection after the server refused `rejected`, with a refreshed access token.
+    async fn reconnect(
+        &self,
+        endpoint: &ToolEndpoint,
+        rejected: Option<Secret>,
+    ) -> DomainResult<Connection> {
+        let (Some(tokens), Some(rejected)) = (&endpoint.tokens, rejected) else {
+            return Err(Failure::Auth.report(endpoint.server_id, Credentials::of(endpoint)));
+        };
+        let fresh = tokens.0.rejected(&rejected).await?;
+        Connection::with_token(&self.shared, endpoint, fresh).await
     }
 }
 

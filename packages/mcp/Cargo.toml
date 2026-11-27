@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 # `sync`: the session's connections live behind an async mutex.
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
+# OAuth metadata, registration, and token URLs (sign-in).
+url = { workspace = true }
 
 [dev-dependencies]
 # The in-process MCP server of the tests: rmcp's own Streamable HTTP server (both eras), served
@@ -31,6 +33,8 @@ copilot-security = { workspace = true }
 # `tests/logs.rs` checks what reaches the log through the filter the logger installs.
 copilot-logger = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
+# A scripted authorization server for the sign-in tests (`tests/oauth.rs`).
+wiremock = { workspace = true }
 
 [lints]
 workspace = true
