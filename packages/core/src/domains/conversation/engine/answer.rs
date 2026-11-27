@@ -48,9 +48,12 @@ impl Ceiling {
 pub(crate) struct Answer {
     message_id: MessageId,
     ceiling: Ceiling,
-    /// What counts toward `ceiling.bytes` and `ceiling.audio` so far.
+    /// What counts toward `ceiling.bytes` so far.
     streamed: u64,
-    audio: u64,
+    /// The spoken reply's PCM16 audio so far (it counts toward `ceiling.audio`). Once the answer
+    /// ends it becomes a WAV chat file and the answer's last part, so it holds a part from its
+    /// first byte on.
+    speech: Vec<u8>,
     pub(crate) parts: Vec<Part>,
     /// The adapter's part index to the stored part's position.
     slots: HashMap<u32, usize>,
@@ -67,7 +70,7 @@ impl Answer {
             message_id,
             ceiling,
             streamed: 0,
-            audio: 0,
+            speech: Vec::new(),
             parts: Vec::new(),
             slots: HashMap::new(),
             transcript: None,
@@ -113,6 +116,7 @@ impl Answer {
                 });
             }
             LlmEvent::AudioDelta { data, transcript } => {
+                self.speech.extend_from_slice(&data);
                 sink.emit(TurnEvent::AudioDelta {
                     message_id: self.message_id,
                     data,
@@ -203,7 +207,7 @@ impl Answer {
             LlmEvent::AudioDelta { data, transcript } => {
                 let text = transcript.as_deref().unwrap_or_default();
                 let opens = self.transcript.is_none() && !text.is_empty();
-                (size(text), data.len() as u64, opens)
+                (size(text), data.len(), opens)
             }
             LlmEvent::ToolCallStarted {
                 provider_call_id,
@@ -221,15 +225,21 @@ impl Answer {
             | LlmEvent::Finished { .. } => (0, 0, false),
         };
         let streamed = self.streamed + bytes;
-        let audio = self.audio + audio;
-        let parts = self.parts.len() + usize::from(opens);
-        if streamed > self.ceiling.bytes || audio > self.ceiling.audio || parts > self.ceiling.parts
+        let spoken = self.speech.len() + audio;
+        let parts = self.parts.len() + usize::from(opens) + usize::from(spoken > 0);
+        if streamed > self.ceiling.bytes
+            || spoken as u64 > self.ceiling.audio
+            || parts > self.ceiling.parts
         {
             return Err(DomainError::new(TOO_LONG, TOO_LONG_CODE));
         }
         self.streamed = streamed;
-        self.audio = audio;
         Ok(())
+    }
+
+    /// The spoken reply's PCM16 audio (empty when the answer spoke nothing).
+    pub(crate) fn speech(&self) -> &[u8] {
+        &self.speech
     }
 
     /// Whether adapter index `index` as `kind` starts a new part (see [`Answer::slot`]).
@@ -471,13 +481,42 @@ mod tests {
             data: Bytes::from_static(data),
             transcript: Some("hi".to_owned()),
         };
-        answer.apply(audio(b"abcd"), &context(), &sink).unwrap();
+        answer.apply(audio(b"ab"), &context(), &sink).unwrap();
+        answer.apply(audio(b"cd"), &context(), &sink).unwrap();
         answer.apply(audio(b"e"), &context(), &sink).unwrap_err();
         assert_eq!(
             answer.parts,
             [Part::Text {
-                text: "hi".to_owned()
-            }]
+                text: "hihi".to_owned()
+            }],
+            "the transcript is a text part"
         );
+        assert_eq!(answer.speech(), b"abcd", "the refused delta is not kept");
+    }
+
+    #[test]
+    fn spoken_audio_holds_a_part() {
+        let sink = RecordingSink::new();
+        let mut answer = small(100, 100, 2);
+        answer.apply(text(0, "a"), &context(), &sink).unwrap();
+        let audio = LlmEvent::AudioDelta {
+            data: Bytes::from_static(b"ab"),
+            transcript: None,
+        };
+        answer.apply(audio.clone(), &context(), &sink).unwrap();
+        answer.apply(audio, &context(), &sink).unwrap();
+        let refused = answer.apply(
+            LlmEvent::PartStarted {
+                index: 1,
+                kind: PartKind::Reasoning,
+            },
+            &context(),
+            &sink,
+        );
+        assert!(
+            refused.is_err(),
+            "the text part and the audio part fill two"
+        );
+        assert_eq!(answer.speech(), b"abab");
     }
 }

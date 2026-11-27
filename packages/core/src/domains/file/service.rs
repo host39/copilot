@@ -7,6 +7,7 @@ use futures_util::future::try_join;
 use sha2::{Digest, Sha256};
 
 use crate::domains::chat::ChatRepository;
+use crate::domains::file::audio::duration_ms;
 use crate::domains::file::capacity::Capacity;
 use crate::domains::file::entities::{FileOwner, Measured, StoredFile};
 use crate::domains::file::media::{FileKind, MediaType, estimate, pdf_pages};
@@ -15,7 +16,9 @@ use crate::domains::project::ProjectRepository;
 use crate::domains::provider::ModelRepository;
 use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
-use crate::shared::constants::{DEFAULT_MAX_STORAGE_MB_PER_USER, DEFAULT_MAX_UPLOAD_MB};
+use crate::shared::constants::{
+    AUDIO_CLIP_MAX_SECS, DEFAULT_MAX_STORAGE_MB_PER_USER, DEFAULT_MAX_UPLOAD_MB,
+};
 use crate::shared::errors::{DomainError, DomainResult};
 use crate::shared::ids::{FileId, ProjectId};
 
@@ -74,8 +77,9 @@ impl FileService {
     }
 
     /// Stores an upload after checking, in order: the owner belongs to the caller, the size
-    /// limit, the type (extension plus magic bytes), and the caller's storage quota. Records the
-    /// SHA-256, the token estimate, and the page count of PDFs.
+    /// limit, the type (extension plus magic bytes), the length of audio for a chat (at most
+    /// `AUDIO_CLIP_MAX_SECS`, when the file says how long it plays), and the caller's storage
+    /// quota. Records the SHA-256, the token estimate, and the page count of PDFs.
     pub async fn upload(
         &self,
         actor: &Actor,
@@ -97,6 +101,9 @@ impl FileService {
             .with_context("maxUploadMb", self.limits.max_upload_mb));
         }
         let media_type = MediaType::detect(name, &bytes)?;
+        if matches!(owner, FileOwner::Chat(_)) && media_type.kind() == FileKind::Audio {
+            check_clip(media_type, &bytes)?;
+        }
         let quota = self.limits.max_storage_mb * MEBIBYTE;
         // Fails fast before hashing; `create` checks again under the user's lock.
         let used = self.files.usage(actor.user_id).await?;
@@ -248,6 +255,21 @@ impl FileService {
     }
 }
 
+/// Audio a chat sends to a model plays for at most `AUDIO_CLIP_MAX_SECS`. Project audio never
+/// reaches a model, so only the upload size limits it.
+fn check_clip(media: MediaType, bytes: &[u8]) -> DomainResult<()> {
+    let limit = u64::from(AUDIO_CLIP_MAX_SECS) * 1_000;
+    if duration_ms(media, bytes).is_some_and(|played| played > limit) {
+        return Err(DomainError::validation(format!(
+            "Audio in a chat can be at most {} minutes long.",
+            AUDIO_CLIP_MAX_SECS / 60
+        ))
+        .with_field("file")
+        .with_context("maxSeconds", AUDIO_CLIP_MAX_SECS));
+    }
+    Ok(())
+}
+
 fn not_found(id: FileId) -> DomainError {
     DomainError::not_found("File", id.to_string())
 }
@@ -258,7 +280,10 @@ fn project_not_found(id: ProjectId) -> DomainError {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
+    use crate::domains::chat::Chat;
     use crate::domains::file::capacity::CapacityLevel;
     use crate::domains::project::{NewProject, ProjectService, ProjectUpdate};
     use crate::domains::provider::{
@@ -278,6 +303,7 @@ mod tests {
         providers: ProviderService,
         models: ModelService,
         gateway: Arc<ScriptedGateway>,
+        store: Arc<MemoryStore>,
     }
 
     fn fixture(limits: FileLimits) -> Fixture {
@@ -308,8 +334,9 @@ mod tests {
                 clock.clone(),
                 PrivateNetwork::Admins,
             ),
-            models: ModelService::new(store.clone(), store.clone(), store, clock),
+            models: ModelService::new(store.clone(), store.clone(), store.clone(), clock),
             gateway,
+            store,
         }
     }
 
@@ -424,6 +451,70 @@ mod tests {
         assert_eq!(error.to_string(), "Files must be at most 1 MB.");
         let exact = Bytes::from(vec![b'a'; MEBIBYTE as usize]);
         assert!(f.files.upload(&caller, owner, "a.txt", exact).await.is_ok());
+    }
+
+    /// A WAV file of `seconds` of 8 kHz mono PCM16 silence.
+    fn clip(seconds: usize) -> Bytes {
+        crate::domains::file::wav(&vec![0; seconds * 16_000], 8_000)
+    }
+
+    #[tokio::test]
+    async fn caps_audio_for_a_chat_at_five_minutes() {
+        let f = fixture(FileLimits::default());
+        let caller = actor();
+        let chat = Chat::create(caller.user_id, Utc::now());
+        ChatRepository::insert(f.store.as_ref(), &chat)
+            .await
+            .unwrap();
+        let owner = FileOwner::Chat(chat.id());
+        let longest = f
+            .files
+            .upload(&caller, owner, "clip.wav", clip(300))
+            .await
+            .unwrap();
+        assert_eq!(longest.media_type(), "audio/wav");
+
+        let error = f
+            .files
+            .upload(&caller, owner, "clip.wav", clip(301))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Audio in a chat can be at most 5 minutes long."
+        );
+        assert!(
+            matches!(&error, DomainError::Validation { field: Some(field), .. } if field == "file")
+        );
+
+        // A constant-bitrate MP3 of 301 seconds at 8 kbps (MPEG-2, 24 kHz).
+        let mut mp3 = vec![0xff, 0xf3, 0x14, 0xc0];
+        mp3.resize(301 * 1_000, 0);
+        let error = f
+            .files
+            .upload(&caller, owner, "talk.mp3", Bytes::from(mp3.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Audio in a chat can be at most 5 minutes long."
+        );
+
+        // Project audio never reaches a model: only the size limit applies.
+        let project = new_project(&f, &caller).await;
+        f.files
+            .upload(&caller, FileOwner::Project(project), "clip.wav", clip(301))
+            .await
+            .unwrap();
+        f.files
+            .upload(
+                &caller,
+                FileOwner::Project(project),
+                "talk.mp3",
+                Bytes::from(mp3),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

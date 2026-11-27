@@ -12,7 +12,7 @@
     "test": "rstest run"
   },
   "dependencies": {
-    "@rustauth/contracts": "github:host39/lib-rustauth#02181ccc9ef4362f879f0947d574d6e553f997c2&path:packages/contracts",
+    "@rustauth/contracts": "github:host39/lib-rustauth#5b7c5c54e7e9dde853d0cf90df85638a4a9e15f9&path:packages/contracts",
     "zod": "^4.6.7"
   },
   "devDependencies": {

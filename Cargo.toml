@@ -23,9 +23,10 @@ copilot-providers = { path = "packages/providers" }
 copilot-security = { path = "packages/security" }
 
 # lib-rustauth: identity (users, sessions, roles, the `auth` schema). Use the facade only; members
-# enable the features they need (docs/integration.md in lib-rustauth). Pinned by commit until the
-# first release tag; a bump is its own commit (see docs/design/roadmap.md, "How Copilot Pins It").
-rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "02181ccc9ef4362f879f0947d574d6e553f997c2", default-features = false }
+# enable the features they need (docs/integration.md in lib-rustauth). Pinned by the commit of the
+# v0.1.0 release until its tag is on GitHub; a bump is its own commit (see docs/design/roadmap.md,
+# "How Copilot Pins It").
+rustauth = { git = "https://github.com/host39/lib-rustauth", rev = "5b7c5c54e7e9dde853d0cf90df85638a4a9e15f9", default-features = false }
 
 # External crates. Versions and features: docs/research/dependencies.md (rmcp: docs/research/mcp.md).
 # Keep aws-lc-rs out of the tree (`cargo tree -i aws-lc-rs` prints nothing): sqlx uses ring, so

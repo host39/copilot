@@ -54,6 +54,7 @@ lib-rustauth (`host39/lib-rustauth`) is the owner's shared authentication and au
 - Gates: P1.1 to P1.3, P1.5, and P1.6 need nothing from Track R. P1.4 needs L3 (the `auth` migrations). P1.7 needs L4. P1.8 needs L5, or the `ts` fallback described in the spec's Identity section.
 - Copilot never patches or vendors rustauth. A change Copilot needs (an extractor, a route, a column) becomes a step in lib-rustauth, then a pin bump here.
 - lib-rustauth is public, so CI fetches the git dependency without credentials (verified at P1.4).
+- Current pin: `5b7c5c5`, the v0.1.0 release (MIT licensed since that commit; no API change from `02181cc`), bumped in P4.1. The `v0.1.0` tag exists only in the local lib-rustauth checkout (cloud sessions cannot push tags), so the pin stays a `rev` until the owner pushes the tag; then it becomes `tag = "v0.1.0"`.
 
 ## Phase 1: Foundation and Walking Skeleton
 

@@ -30,12 +30,14 @@ use crate::domains::tool::{
     ApprovalMode, NewToolServer, ServerOverride, ToolMode, ToolServer, ToolServerRepository,
     ToolServerUpdate,
 };
-use crate::ports::llm_gateway::{LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities};
+use crate::ports::llm_gateway::{
+    AudioOut, LlmMessage, LlmPart, PartKind, RemoteModel, ReportedCapabilities,
+};
 use crate::ports::tool_host::{TOOL_UNKNOWN, ToolContent, ToolListing, ToolOutput};
 use crate::shared::actor::Actor;
 use crate::shared::base_url::BaseUrl;
 use crate::shared::builtin_tool::BuiltinTool;
-use crate::shared::constants::MCP_RESULT_MAX_BYTES;
+use crate::shared::constants::{AUDIO_OUT_MAX_BYTES, MCP_RESULT_MAX_BYTES};
 use crate::shared::ids::{ChatId, ModelId, ProjectId, ToolServerId, UserId};
 use crate::shared::net::PrivateNetwork;
 use crate::shared::reasoning::ReasoningLevel;
@@ -62,6 +64,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(FileLimits::default())
+}
+
+fn fixture_with(limits: FileLimits) -> Fixture {
     let clock = Arc::new(FixedClock::default());
     let store = Arc::new(MemoryStore::new(clock.clone()));
     let gateway = Arc::new(ScriptedGateway::new());
@@ -83,7 +89,7 @@ fn fixture() -> Fixture {
         store.clone(),
         store.clone(),
         clock.clone(),
-        FileLimits::default(),
+        limits,
     );
     let caller = actor();
     store.add_user(&caller);
@@ -2214,4 +2220,273 @@ async fn retry_of_a_first_round_failure_answers_again_with_current_settings() {
         [Role::User, Role::Assistant]
     );
     assert!(f.gateway.requests()[1].system.contains("Be brief."));
+}
+
+/// A model that speaks (`audio_out`), and a chat with Speak replies on.
+async fn speaking_chat(f: &Fixture) -> Chat {
+    let reported = ReportedCapabilities {
+        audio_out: Some(true),
+        ..ReportedCapabilities::default()
+    };
+    f.chat_with(
+        reported,
+        NewChat {
+            voice_replies: true,
+            ..NewChat::default()
+        },
+    )
+    .await
+}
+
+fn spoken(data: Vec<u8>, transcript: Option<&str>) -> LlmEvent {
+    LlmEvent::AudioDelta {
+        data: Bytes::from(data),
+        transcript: transcript.map(str::to_owned),
+    }
+}
+
+fn finished() -> LlmEvent {
+    LlmEvent::Finished {
+        reason: FinishReason::Stop,
+        refusal: None,
+    }
+}
+
+/// The saved file and bytes of an answer's audio part, with the part's duration.
+async fn speech(f: &Fixture, answer: &Message) -> (StoredFile, Bytes, Option<u32>) {
+    let (file_id, duration) = answer
+        .parts()
+        .iter()
+        .find_map(|part| match part {
+            Part::Audio {
+                file_id,
+                format,
+                transcript,
+                duration_ms,
+            } => {
+                assert_eq!(format, "wav");
+                assert_eq!(transcript, &None, "the transcript is the text part");
+                Some((*file_id, *duration_ms))
+            }
+            _ => None,
+        })
+        .expect("an audio part");
+    let file = FileRepository::get(f.store.as_ref(), f.caller.user_id, file_id)
+        .await
+        .unwrap()
+        .expect("the saved file");
+    let bytes = FileRepository::content(f.store.as_ref(), f.caller.user_id, file_id)
+        .await
+        .unwrap()
+        .expect("its bytes");
+    (file, bytes, duration)
+}
+
+#[tokio::test]
+async fn spoken_replies_are_saved_as_wav_files_and_replayed_as_transcripts() {
+    let f = fixture();
+    let chat = speaking_chat(&f).await;
+    // Half a second each at 24 kHz PCM16.
+    let first: Vec<u8> = (0..24_000_u32).map(|byte| byte as u8).collect();
+    let second = vec![7_u8; 24_000];
+    f.gateway.push_events(vec![
+        spoken(first.clone(), Some("Hel")),
+        spoken(second.clone(), Some("lo")),
+        spoken(Vec::new(), None),
+        finished(),
+    ]);
+    let (outcome, events) = f.send(&chat, "Say hello").await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+
+    let request = &f.gateway.requests()[0];
+    assert_eq!(
+        request.audio_out,
+        Some(AudioOut {
+            voice: "alloy".to_owned(),
+            format: "pcm16".to_owned(),
+        }),
+        "audio is asked for while Speak replies is on"
+    );
+    let answer = f.history(&chat).await[1].clone();
+    assert_eq!(answer.parts().len(), 2);
+    assert_eq!(
+        answer.parts()[0],
+        text_part("Hello"),
+        "the transcript is the text"
+    );
+    let (file, bytes, duration) = speech(&f, &answer).await;
+    assert_eq!(duration, Some(1_000));
+    assert_eq!(file.name(), SPOKEN_REPLY);
+    assert_eq!(file.media_type(), "audio/wav");
+    assert_eq!(file.owner(), FileOwner::Chat(chat.id()));
+    let pcm = [first, second].concat();
+    assert_eq!(bytes, wav(&pcm, 24_000), "a 24 kHz mono PCM16 WAV file");
+
+    assert_eq!(
+        kinds(&events),
+        [
+            "message.started",
+            "audio.delta",
+            "part.started",
+            "text.delta",
+            "audio.delta",
+            "text.delta",
+            "audio.delta",
+            "part.started",
+            "message.finished",
+            "done"
+        ]
+    );
+    assert!(matches!(
+        &events[1],
+        TurnEvent::AudioDelta { message_id, format, .. }
+            if *message_id == answer.id() && format == "pcm16"
+    ));
+    assert!(matches!(
+        &events[2],
+        TurnEvent::PartStarted {
+            index: 0,
+            kind: PartKind::Text,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &events[7],
+        TurnEvent::PartStarted { message_id, index: 1, kind: PartKind::Audio }
+            if *message_id == answer.id()
+    ));
+
+    // Speak replies off: no audio is asked for, and the reply goes back as its transcript only.
+    f.chats
+        .update(
+            &f.caller,
+            chat.id(),
+            ChatUpdate {
+                voice_replies: Some(false),
+                ..ChatUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    f.gateway.push_events(text_reply("Hi"));
+    f.send(&chat, "Again").await;
+    let next = &f.gateway.requests()[1];
+    assert_eq!(next.audio_out, None);
+    assert_eq!(
+        next.messages[1],
+        LlmMessage {
+            role: Role::Assistant,
+            parts: vec![LlmPart::Text("Hello".to_owned())],
+            replay: None,
+        }
+    );
+    assert!(
+        next.messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .all(|part| !matches!(part, LlmPart::Audio { .. })),
+        "the spoken audio never goes back"
+    );
+}
+
+#[tokio::test]
+async fn models_without_audio_out_are_never_asked_to_speak() {
+    let f = fixture();
+    let chat = f
+        .chat(NewChat {
+            voice_replies: true,
+            ..NewChat::default()
+        })
+        .await;
+    f.gateway.push_events(text_reply("Hello"));
+    f.send(&chat, "Hi").await;
+    assert_eq!(f.gateway.requests()[0].audio_out, None);
+}
+
+#[tokio::test]
+async fn a_stopped_spoken_reply_keeps_the_audio_it_streamed() {
+    let f = fixture();
+    let chat = speaking_chat(&f).await;
+    f.gateway.push_steps(vec![
+        Step::Event(Ok(spoken(vec![1; 4_800], Some("Wait")))),
+        Step::Stall,
+    ]);
+    let turn = f.prepare(&chat, send("Talk")).await;
+    let (sink, cancel, handle) = f.spawn(turn);
+    until(|| {
+        sink.events()
+            .iter()
+            .any(|event| matches!(event, TurnEvent::AudioDelta { .. }))
+    })
+    .await;
+    cancel.cancel();
+    let outcome = handle.await.unwrap().unwrap();
+    assert_eq!(outcome.status, MessageStatus::Cancelled);
+    let answer = f.history(&chat).await[1].clone();
+    assert_eq!(answer.status(), MessageStatus::Cancelled);
+    assert_eq!(answer.parts()[0], text_part("Wait"));
+    let (_, bytes, duration) = speech(&f, &answer).await;
+    assert_eq!(duration, Some(100));
+    assert_eq!(bytes.len(), 44 + 4_800);
+}
+
+#[tokio::test]
+async fn spoken_audio_past_five_minutes_ends_the_answer_and_keeps_what_streamed() {
+    let f = fixture();
+    let chat = speaking_chat(&f).await;
+    let most = usize::try_from(AUDIO_OUT_MAX_BYTES).unwrap();
+    f.gateway.push_events(vec![
+        spoken(vec![0; most], Some("Long")),
+        spoken(vec![0; 2], Some(" more")),
+        finished(),
+    ]);
+    let (outcome, events) = f.send(&chat, "Talk").await;
+    assert_eq!(outcome.status, MessageStatus::Error);
+    assert_eq!(outcome.error.as_deref(), Some(answer::TOO_LONG));
+    let deltas = events
+        .iter()
+        .filter(|event| matches!(event, TurnEvent::AudioDelta { .. }))
+        .count();
+    assert_eq!(deltas, 1, "the refused delta is never sent");
+    let answer = f.history(&chat).await[1].clone();
+    assert_eq!(answer.parts()[0], text_part("Long"));
+    let (_, bytes, duration) = speech(&f, &answer).await;
+    assert_eq!(duration, Some(300_000), "five minutes fit the clip limit");
+    assert_eq!(bytes.len(), 44 + most);
+}
+
+#[tokio::test]
+async fn a_spoken_reply_that_cannot_be_saved_keeps_its_transcript() {
+    let f = fixture_with(FileLimits {
+        max_upload_mb: 1,
+        max_storage_mb: 1_024,
+    });
+    let chat = speaking_chat(&f).await;
+    // 1.2 MB of audio (25 seconds) does not fit a 1 MB upload limit.
+    f.gateway.push_events(vec![
+        spoken(vec![0; 1_200_000], Some("Too long to keep")),
+        finished(),
+    ]);
+    let (outcome, events) = f.send(&chat, "Talk").await;
+    assert_eq!(outcome.status, MessageStatus::Complete);
+    let answer = f.history(&chat).await[1].clone();
+    assert_eq!(answer.parts(), [text_part("Too long to keep")]);
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            TurnEvent::PartStarted {
+                kind: PartKind::Audio,
+                ..
+            }
+        )),
+        "no audio part is announced"
+    );
+    let files = FileRepository::list(
+        f.store.as_ref(),
+        f.caller.user_id,
+        FileOwner::Chat(chat.id()),
+    )
+    .await
+    .unwrap();
+    assert!(files.is_empty());
 }
