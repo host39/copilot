@@ -6,8 +6,10 @@
 //!   effort levels on `fake-reasoner`). Claude models have no audio, so neither do these.
 //! - **Requests** need a listed `model` (`404`), `max_tokens`, and messages that end with a
 //!   user message (no prefill). A replayed `thinking` block must carry the signature this server
-//!   gave it, and a `tool_result` must answer a `tool_use` of the message before it (`400`
-//!   otherwise), so a client that changes either while replaying fails here as it would there.
+//!   gave it, a `tool_result` must answer a `tool_use` of the message before it, and every
+//!   `tool_use` must be answered by a `tool_result` at the start of the next message (`400`
+//!   otherwise), so a client that gets any of them wrong while replaying fails here as it would
+//!   there.
 //! - **Streams** are named events: `message_start`, `ping`, per block `content_block_start`,
 //!   deltas (`thinking_delta` then `signature_delta`, `text_delta`, `input_json_delta`), and
 //!   `content_block_stop`, then `message_delta` with the stop reason (`refusal` with
@@ -184,10 +186,11 @@ fn turn(request: &Value) -> Result<Turn, String> {
         return Err("This model does not support assistant message prefill. The conversation must end with a user message.".to_owned());
     }
     let mut input_chars = system_chars(request.get("system"));
-    let mut previous: HashSet<String> = HashSet::new();
+    let mut previous: Vec<String> = Vec::new();
     for (position, message) in messages.iter().enumerate() {
         let blocks = blocks(message);
-        let mut calls = HashSet::new();
+        answered(&previous, position, message, &blocks)?;
+        let mut calls = Vec::new();
         for (index, block) in blocks.iter().enumerate() {
             input_chars += block_text(block).len();
             match kind(block) {
@@ -205,7 +208,7 @@ fn turn(request: &Value) -> Result<Turn, String> {
                 }
                 "tool_use" => {
                     if let Some(id) = block.get("id").and_then(Value::as_str) {
-                        calls.insert(id.to_owned());
+                        calls.push(id.to_owned());
                     }
                 }
                 "tool_result" => {
@@ -213,7 +216,7 @@ fn turn(request: &Value) -> Result<Turn, String> {
                         .get("tool_use_id")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    if !previous.contains(id) {
+                    if !previous.iter().any(|call| call == id) {
                         return Err(format!(
                             "messages.{position}.content.{index}: unexpected `tool_use_id` found in `tool_result` blocks: {id}. Each `tool_result` block must have a corresponding `tool_use` block in the previous message."
                         ));
@@ -267,6 +270,39 @@ fn turn(request: &Value) -> Result<Turn, String> {
         Some("adaptive" | "enabled")
     );
     Ok(turn)
+}
+
+/// Anthropic's check that the `tool_use` blocks of the message before `message` (`calls`) are
+/// answered right away: `message` is a user message that starts with a `tool_result` block for
+/// each of them.
+fn answered(
+    calls: &[String],
+    position: usize,
+    message: &Value,
+    blocks: &[Value],
+) -> Result<(), String> {
+    let leading: HashSet<&str> = if role(message) == "user" {
+        blocks
+            .iter()
+            .take_while(|block| kind(block) == "tool_result")
+            .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let missing: Vec<&str> = calls
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !leading.contains(id))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "messages.{}: `tool_use` ids were found without `tool_result` blocks immediately after: {}. Each `tool_use` block must have a corresponding `tool_result` block in the next message.",
+        position.saturating_sub(1),
+        missing.join(", ")
+    ))
 }
 
 fn role(message: &Value) -> &str {

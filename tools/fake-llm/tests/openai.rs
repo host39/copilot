@@ -91,7 +91,9 @@ async fn refuses_a_missing_or_wrong_key() {
 
 #[tokio::test]
 async fn streams_you_said_in_chunks_with_usage_and_done() {
-    let answer = openai(user("hello")).await;
+    let mut body = user("hello");
+    body["stream_options"] = json!({ "include_usage": true });
+    let answer = openai(body).await;
     assert_eq!(answer.status, StatusCode::OK);
     assert!(
         answer
@@ -119,6 +121,19 @@ async fn streams_you_said_in_chunks_with_usage_and_done() {
     assert_eq!(usage["prompt_tokens"], 2);
     assert_eq!(usage["completion_tokens"], 4);
     assert_eq!(chunks[0]["object"], "chat.completion.chunk");
+}
+
+#[tokio::test]
+async fn streams_usage_only_when_asked() {
+    let answer = openai(user("hello")).await;
+    let events = answer.events();
+    assert_eq!(events.last().map(|(_, data)| data.as_str()), Some("[DONE]"));
+    let chunks = answer.chunks();
+    assert_eq!(finish(&chunks), ["stop"]);
+    assert!(
+        chunks.iter().all(|chunk| chunk.get("usage").is_none()),
+        "no usage chunk without stream_options.include_usage"
+    );
 }
 
 #[tokio::test]
@@ -263,6 +278,119 @@ async fn a_tool_message_without_its_call_is_refused() {
     let answer = openai(body).await;
     assert_eq!(answer.status, StatusCode::BAD_REQUEST);
     assert_eq!(answer.json()["error"]["type"], "invalid_request_error");
+}
+
+#[tokio::test]
+async fn a_call_without_its_tool_message_is_refused() {
+    let call = |id: &str| json!({ "id": id, "type": "function", "function": { "name": "echo", "arguments": "{}" } });
+    let refused = |messages: Value| async move {
+        let answer = openai(json!({ "model": "fake-chat", "messages": messages })).await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{messages}");
+        let body = answer.json();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // The next message is the user's, not the call's result.
+    let message = refused(json!([
+        { "role": "user", "content": "a" },
+        { "role": "assistant", "content": null, "tool_calls": [call("call_1")] },
+        { "role": "user", "content": "hello" },
+    ]))
+    .await;
+    assert!(
+        message.contains("must be followed by tool messages") && message.ends_with("call_1"),
+        "{message}"
+    );
+
+    // One of two calls answered, at the end of the request.
+    let message = refused(json!([
+        { "role": "user", "content": "a" },
+        { "role": "assistant", "content": null, "tool_calls": [call("call_1"), call("call_2")] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "hi" },
+    ]))
+    .await;
+    assert!(message.ends_with(": call_2"), "{message}");
+
+    // A result that comes later, after another message, answers nothing.
+    let message = refused(json!([
+        { "role": "user", "content": "a" },
+        { "role": "assistant", "content": null, "tool_calls": [call("call_1")] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "hi" },
+        { "role": "user", "content": "b" },
+        { "role": "tool", "tool_call_id": "call_1", "content": "again" },
+    ]))
+    .await;
+    assert!(
+        message.contains("must be a response to a preceeding message"),
+        "{message}"
+    );
+
+    // A result for a call of an older assistant message.
+    let message = refused(json!([
+        { "role": "user", "content": "a" },
+        { "role": "assistant", "content": null, "tool_calls": [call("call_1")] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "hi" },
+        { "role": "assistant", "content": null, "tool_calls": [call("call_2")] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "again" },
+    ]))
+    .await;
+    assert!(message.contains("'call_1' not found"), "{message}");
+
+    // Every call answered, then the conversation goes on.
+    let answer = openai(json!({
+        "model": "fake-chat",
+        "stream": true,
+        "messages": [
+            { "role": "user", "content": "a" },
+            { "role": "assistant", "content": null, "tool_calls": [call("call_1"), call("call_2")] },
+            { "role": "tool", "tool_call_id": "call_2", "content": "two" },
+            { "role": "tool", "tool_call_id": "call_1", "content": "one" },
+            { "role": "assistant", "content": "done" },
+            { "role": "user", "content": "hello" },
+        ],
+    }))
+    .await;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(joined(&answer.chunks(), "content"), "You said: hello");
+}
+
+#[tokio::test]
+async fn text_written_for_files_is_not_the_message() {
+    let parts = |texts: &[&str]| -> Value {
+        texts
+            .iter()
+            .map(|text| json!({ "type": "text", "text": text }))
+            .collect()
+    };
+    let body = json!({
+        "model": "fake-chat",
+        "stream": true,
+        "messages": [{ "role": "user", "content": parts(&[
+            "think hello",
+            "<file name=\"notes.txt\">\nabc\n</file>",
+        ]) }],
+    });
+    let chunks = openai(body).await.chunks();
+    assert!(joined(&chunks, "reasoning_content").contains("think hello"));
+    assert_eq!(
+        joined(&chunks, "content"),
+        "You said: think hello (with 1 attachment)"
+    );
+
+    let body = json!({
+        "model": "fake-chat",
+        "stream": true,
+        "messages": [{ "role": "user", "content": parts(&[
+            "failed 429",
+            "[audio \"clip.wav\" omitted: this model cannot read audio]",
+        ]) }],
+    });
+    let answer = openai(body).await;
+    assert_eq!(answer.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]

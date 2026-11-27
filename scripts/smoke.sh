@@ -5,9 +5,10 @@
 # starts fake-llm and the API on ports of their own, and drives the API the way a person would:
 #
 #   1. register the first account with the setup token;
-#   2. add an OpenAI-compatible connection to the fake server, refresh its models, enable
-#      fake-chat, chat "hello" (streamed "You said: hello"), then "failed 403" (a PROVIDER_AUTH
-#      error), and read the saved messages back;
+#   2. add an OpenAI-compatible connection (the `openai` preset with the fake's base URL) to the
+#      fake server, refresh its models, enable fake-chat, chat "hello" (streamed "You said:
+#      hello" with usage), then "failed 403" (a PROVIDER_AUTH error), and read the saved
+#      messages back; a `custom` connection's "hello" completes without usage (none was asked);
 #   3. add the fake MCP server as a tool server, Test it, ask for `tool echo {...}`, approve the
 #      call, and check the result and "Tool said: ...";
 #   4. the same text flow over an Anthropic connection to the fake server.
@@ -110,7 +111,9 @@ else
   cargo build -q -p copilot-api --bin server
   cargo build -q -p copilot-database --bin migrate
   cargo build -q -p fake-llm
-  BIN="$ROOT/${CARGO_TARGET_DIR:-target}/debug"
+  target="${CARGO_TARGET_DIR:-target}"
+  [[ "$target" == /* ]] || target="$ROOT/$target"
+  BIN="$target/debug"
 fi
 for binary in server migrate fake-llm; do
   [[ -x "$BIN/$binary" ]] || fail "no executable $BIN/$binary"
@@ -211,13 +214,13 @@ expect 201 "register with the setup token"
 token="$(field .data.token)"
 pass "registered the administrator with the setup token"
 
-# connect <kind> <name> <base URL>: adds a connection, refreshes it, enables fake-chat, and sets
-# $model to fake-chat's id.
+# connect <kind> <preset> <name> <base URL>: adds a connection, refreshes it, enables
+# fake-chat, and sets $model to fake-chat's id.
 model=""
 connect() {
-  local kind="$1" name="$2" base="$3" provider
+  local kind="$1" preset="$2" name="$3" base="$4" provider
   request POST /providers \
-    "{\"kind\":\"$kind\",\"preset\":\"custom\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"}"
+    "{\"kind\":\"$kind\",\"preset\":\"$preset\",\"name\":\"$name\",\"baseUrl\":\"$base\",\"apiKey\":\"$FAKE_KEY\"}"
   expect 201 "add the $kind connection"
   provider="$(field .data.id)"
   request POST "/providers/$provider/refresh"
@@ -270,9 +273,22 @@ chat() {
 
 # --- 2. OpenAI-compatible ---------------------------------------------------------------------
 
-connect openai "Fake OpenAI" "$FAKE/v1"
+# The `openai` preset with the fake's base URL, so Copilot asks for streamed usage
+# (`stream_options.include_usage`) and the fake sends it, as OpenAI does.
+connect openai openai "Fake OpenAI" "$FAKE/v1"
 openai_model="$model"
 chat openai
+
+# A `custom` connection asks for no usage, so the fake sends none: the reply still completes.
+connect openai custom "Fake compatible" "$FAKE/v1"
+request POST /chats "{\"modelId\":\"$model\"}"
+expect 201 "create a custom chat"
+stream "/chats/$(field .data.id)/messages" '{"text":"hello"}'
+[[ "$(text)" == "You said: hello" ]] || fail "custom hello: streamed $(text)"
+check "custom: hello completes without usage (none was asked for)" '
+  any(.[]; .type == "message.finished" and .status == "complete" and .finishReason == "stop"
+    and ((.usage.outputTokens // 0) == 0))
+  and (map(.type) | last == "done")'
 
 # --- 3. Tools ---------------------------------------------------------------------------------
 
@@ -306,7 +322,7 @@ pass "the answer after the tool is Tool said: smoke check"
 
 # --- 4. Anthropic -----------------------------------------------------------------------------
 
-connect anthropic "Fake Anthropic" "$FAKE"
+connect anthropic custom "Fake Anthropic" "$FAKE"
 chat anthropic
 
 pass "all steps"

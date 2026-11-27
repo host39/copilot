@@ -53,9 +53,12 @@ impl Turn {
 /// Copilot sends a message's text first and its attachments after it, and merges a user message
 /// whose answer it leaves out of the request (refused, or failed before any text) into the next
 /// one. So the newest message is the last text part and the parts after it; without one, every
-/// part counts.
+/// part counts. Text parts Copilot writes for files ([`for_file`]) count as attachments.
 pub fn newest<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> (String, usize) {
-    let parts: Vec<Option<&str>> = parts.into_iter().collect();
+    let parts: Vec<Option<&str>> = parts
+        .into_iter()
+        .map(|part| part.filter(|text| !for_file(text)))
+        .collect();
     match parts.iter().rposition(Option::is_some) {
         Some(position) => (
             parts[position].unwrap_or_default().trim().to_owned(),
@@ -63,6 +66,16 @@ pub fn newest<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> (String, 
         ),
         None => (String::new(), parts.len()),
     }
+}
+
+/// Notice prefixes Copilot writes in place of a file the model does not get (`[image "a.png"
+/// omitted: ...]`, `[file "a.txt" was deleted]`, `[file "a.txt" is in the project files]`).
+const NOTICES: [&str; 4] = ["[file \"", "[image \"", "[PDF \"", "[audio \""];
+
+/// Whether a text part is one Copilot writes for a file rather than text a person typed: an
+/// inlined text file (`<file name="...">`) or a notice that stands in for a file.
+pub fn for_file(text: &str) -> bool {
+    text.starts_with("<file name=\"") || NOTICES.iter().any(|notice| text.starts_with(notice))
 }
 
 /// One piece of a reply, in order.
@@ -481,6 +494,32 @@ mod tests {
         );
         assert_eq!(newest([None, None]), (String::new(), 2));
         assert_eq!(newest([]), (String::new(), 0));
+    }
+
+    #[test]
+    fn text_written_for_files_counts_as_an_attachment() {
+        assert_eq!(
+            newest([
+                Some("think hello"),
+                Some("<file name=\"notes.txt\">\nabc\n</file>")
+            ]),
+            ("think hello".to_owned(), 1),
+            "an inlined text file"
+        );
+        assert_eq!(
+            newest([
+                Some("failed 429"),
+                Some("[audio \"clip.wav\" omitted: this model cannot read audio]"),
+                Some("[file \"a.txt\" was deleted]"),
+                Some("[PDF \"b.pdf\" omitted: the request is too large]"),
+                Some("[image \"c.png\" omitted: this model cannot read images]"),
+                Some("[file \"d.md\" is in the project files]"),
+            ]),
+            ("failed 429".to_owned(), 5),
+            "notices"
+        );
+        assert!(!for_file("[file] is a word in brackets"));
+        assert!(!for_file("hello <file name=\"x\">"));
     }
 
     #[test]

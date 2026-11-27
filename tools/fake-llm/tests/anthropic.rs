@@ -274,6 +274,102 @@ async fn a_tool_result_without_its_call_is_refused() {
 }
 
 #[tokio::test]
+async fn a_tool_use_without_its_result_right_after_is_refused() {
+    let call = |id: &str| json!({ "type": "tool_use", "id": id, "name": "echo", "input": {} });
+    let result = |id: &str| json!({ "type": "tool_result", "tool_use_id": id, "content": "hi" });
+    let text = |text: &str| json!({ "type": "text", "text": text });
+    let refused = |messages: Value| async move {
+        let answer =
+            anthropic(json!({ "model": "fake-chat", "max_tokens": 1024, "messages": messages }))
+                .await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{messages}");
+        let body = answer.json();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // The next message is the user's text, not the call's result.
+    let message = refused(json!([
+        { "role": "user", "content": [text("a")] },
+        { "role": "assistant", "content": [call("toolu_1")] },
+        { "role": "user", "content": [text("hello")] },
+    ]))
+    .await;
+    assert!(
+        message.starts_with("messages.1: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_1."),
+        "{message}"
+    );
+
+    // One of two calls answered.
+    let message = refused(json!([
+        { "role": "user", "content": [text("a")] },
+        { "role": "assistant", "content": [call("toolu_1"), call("toolu_2")] },
+        { "role": "user", "content": [result("toolu_1"), text("b")] },
+    ]))
+    .await;
+    assert!(message.contains("immediately after: toolu_2."), "{message}");
+
+    // The result comes after text: results must come first.
+    let message = refused(json!([
+        { "role": "user", "content": [text("a")] },
+        { "role": "assistant", "content": [call("toolu_1")] },
+        { "role": "user", "content": [text("b"), result("toolu_1")] },
+    ]))
+    .await;
+    assert!(message.contains("immediately after: toolu_1."), "{message}");
+
+    // Every call answered first, then text.
+    let answer = anthropic(json!({
+        "model": "fake-chat",
+        "max_tokens": 1024,
+        "stream": true,
+        "messages": [
+            { "role": "user", "content": [text("a")] },
+            { "role": "assistant", "content": [call("toolu_1"), call("toolu_2")] },
+            { "role": "user", "content": [result("toolu_2"), result("toolu_1"), text("hello")] },
+        ],
+    }))
+    .await;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(joined(&answer.chunks(), "text"), "You said: hello");
+}
+
+#[tokio::test]
+async fn text_written_for_files_is_not_the_message() {
+    let chunks = anthropic(json!({
+        "model": "fake-chat",
+        "max_tokens": 1024,
+        "stream": true,
+        "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "think hello" },
+            { "type": "text", "text": "<file name=\"notes.txt\">\nabc\n</file>" },
+        ] }],
+    }))
+    .await
+    .chunks();
+    assert!(joined(&chunks, "thinking").contains("think hello"));
+    assert_eq!(
+        joined(&chunks, "text"),
+        "You said: think hello (with 1 attachment)"
+    );
+
+    let answer = anthropic(json!({
+        "model": "fake-chat",
+        "max_tokens": 1024,
+        "stream": true,
+        "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "failed 429" },
+            { "type": "text", "text": "[file \"a.txt\" was deleted]" },
+        ] }],
+    }))
+    .await;
+    assert_eq!(answer.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn refuse_stops_with_refusal_details() {
     let chunks = anthropic(user("refuse")).await.chunks();
     let delta = stop(&chunks);

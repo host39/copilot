@@ -3,11 +3,14 @@
 //! - **Key:** `Authorization: Bearer <key>`, else `401` with OpenAI's `invalid_api_key` body.
 //! - **Models** list OpenRouter's metadata fields (`context_length`, `architecture`
 //!   modalities, `supported_parameters`), which Copilot reads for every preset.
-//! - **Requests** need a listed `model` (`404 model_not_found` otherwise) and `messages`; a
-//!   `tool` message must answer a call of an earlier assistant message (`400` otherwise).
+//! - **Requests** need a listed `model` (`404 model_not_found` otherwise) and `messages`, and
+//!   answer every call right away: the `tool` messages after an assistant message with
+//!   `tool_calls` answer each of its calls, and a `tool` message answers a call of the assistant
+//!   message before its run (`400` otherwise, naming the ids that got no answer).
 //! - **Streams** are data-only SSE chunks: `reasoning_content`, `content`, `tool_calls` with
-//!   argument fragments, and `audio` deltas, then the finish reason, a usage chunk, and
-//!   `[DONE]`. `midstream error` ends with an `error` chunk instead.
+//!   argument fragments, and `audio` deltas, then the finish reason, a usage chunk when
+//!   `stream_options.include_usage` asks for one, and `[DONE]`. `midstream error` ends with an
+//!   `error` chunk instead.
 //! - `fake-reasoner` reasons unless `reasoning_effort` (or `reasoning.effort`) is `none`;
 //!   `fake-audio` speaks only when `modalities` holds `audio`.
 
@@ -129,7 +132,11 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
             let id = format!("chatcmpl-fake-{sequence}");
             if streamed {
                 let delay = state.config.delay(slow);
-                stream(events(&reply, &id, name), delay)
+                let usage = request
+                    .pointer("/stream_options/include_usage")
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                stream(events(&reply, &id, name, usage), delay)
             } else {
                 document(&reply, &id, name, format)
             }
@@ -164,33 +171,14 @@ fn turn(request: &Value) -> Result<Turn, String> {
             "Invalid 'messages': empty array. Expected an array with minimum length 1.".to_owned(),
         );
     }
-    let mut calls = HashSet::new();
     let mut input_chars = 0;
     for message in messages {
-        let content = message.get("content");
-        input_chars += texts(content).iter().map(String::len).sum::<usize>();
-        match role(message) {
-            "assistant" => {
-                for call in message
-                    .get("tool_calls")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(id) = call.get("id").and_then(Value::as_str) {
-                        calls.insert(id.to_owned());
-                    }
-                }
-            }
-            "tool" => {
-                let id = message.get("tool_call_id").and_then(Value::as_str);
-                if !id.is_some_and(|id| calls.contains(id)) {
-                    return Err("Invalid parameter: messages with role 'tool' must be a response to a preceding message with 'tool_calls'.".to_owned());
-                }
-            }
-            _ => {}
-        }
+        input_chars += texts(message.get("content"))
+            .iter()
+            .map(String::len)
+            .sum::<usize>();
     }
+    answered(messages)?;
     let mut turn = Turn {
         model: request
             .get("model")
@@ -252,6 +240,57 @@ fn turn(request: &Value) -> Result<Turn, String> {
     Ok(turn)
 }
 
+/// Checks that every call gets its answer right away, as the real API does: the `tool`
+/// messages after an assistant message with `tool_calls` answer each of its calls, and a `tool`
+/// message only answers a call of the assistant message just before its run of `tool` messages.
+fn answered(messages: &[Value]) -> Result<(), String> {
+    // The calls of the assistant message just before the current run of `tool` messages, and
+    // the ones that have no answer yet (in call order).
+    let mut calls: HashSet<&str> = HashSet::new();
+    let mut waiting: Vec<&str> = Vec::new();
+    for message in messages {
+        if role(message) == "tool" {
+            let id = message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if calls.is_empty() {
+                return Err("Invalid parameter: messages with role 'tool' must be a response to a preceeding message with 'tool_calls'.".to_owned());
+            }
+            if !calls.contains(id) {
+                return Err(format!(
+                    "Invalid parameter: 'tool_call_id' of '{id}' not found in 'tool_calls' of previous message."
+                ));
+            }
+            waiting.retain(|call| *call != id);
+            continue;
+        }
+        unanswered(&waiting)?;
+        waiting = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|_| role(message) == "assistant")
+            .filter_map(|call| call.get("id").and_then(Value::as_str))
+            .collect();
+        calls = waiting.iter().copied().collect();
+    }
+    unanswered(&waiting)
+}
+
+/// OpenAI's `400` for calls that no `tool` message answered.
+fn unanswered(waiting: &[&str]) -> Result<(), String> {
+    if waiting.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: {}",
+            waiting.join(", ")
+        ))
+    }
+}
+
 fn role(message: &Value) -> &str {
     message
         .get("role")
@@ -273,8 +312,9 @@ fn texts(content: Option<&Value>) -> Vec<String> {
     }
 }
 
-/// The streamed chunks of `reply`.
-fn events(reply: &Reply, id: &str, model: &str) -> Vec<Event> {
+/// The streamed chunks of `reply`, with a usage chunk before `[DONE]` only when the request
+/// asked for one (`stream_options.include_usage`), as OpenAI and vLLM do.
+fn events(reply: &Reply, id: &str, model: &str, usage: bool) -> Vec<Event> {
     let created = now();
     let chunk = |delta: Value, finish: Option<&str>| {
         let body = json!({
@@ -358,15 +398,17 @@ fn events(reply: &Reply, id: &str, model: &str) -> Vec<Event> {
         }
     };
     out.push(chunk(json!({}), Some(finish)));
-    let usage = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [],
-        "usage": usage(reply),
-    });
-    out.push(Event::default().data(usage.to_string()));
+    if usage {
+        let body = json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [],
+            "usage": counts(reply),
+        });
+        out.push(Event::default().data(body.to_string()));
+    }
     out.push(Event::default().data("[DONE]"));
     out
 }
@@ -449,12 +491,13 @@ fn document(reply: &Reply, id: &str, model: &str, format: &str) -> Response {
         "created": created,
         "model": model,
         "choices": [{ "index": 0, "message": message, "logprobs": null, "finish_reason": finish }],
-        "usage": usage(reply),
+        "usage": counts(reply),
     }))
     .into_response()
 }
 
-fn usage(reply: &Reply) -> Value {
+/// The `usage` object of `reply`.
+fn counts(reply: &Reply) -> Value {
     let reasoning: usize = reply
         .blocks
         .iter()
