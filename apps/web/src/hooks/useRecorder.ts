@@ -91,7 +91,7 @@ export function useRecorder(onClip: (file: File) => void) {
   const [note, setNote] = useState<MicNote | null>(null);
   const recording = useRef<Recording | null>(null);
   const ending = useRef<Ending | null>(null);
-  // Each start and cancel moves it, so a start that resolves after Cancel lets its recording go.
+  // Each start and cancel moves it, so a start or stop that resolves after Cancel drops its clip.
   const attempt = useRef(0);
   const alive = useRef(true);
   const deliver = useRef(onClip);
@@ -101,9 +101,11 @@ export function useRecorder(onClip: (file: File) => void) {
     const current = recording.current;
     if (!current) return;
     recording.current = null;
+    const mine = attempt.current;
     dispatch({ type: "stop" });
     const clip = await current.stop();
-    if (!alive.current) return;
+    // Cancel while the last samples arrived, or leaving the page, drops the clip.
+    if (!alive.current || attempt.current !== mine) return;
     dispatch({ type: "reset" });
     const outcome = clipOutcome(clip.durationMs, ending.current);
     setNote(outcome.note);
