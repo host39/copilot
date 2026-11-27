@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other checkout
 
 ## Status
 
-Complete: P2R.1 to P2R.5. `make check`, `make test-db`, and `make test-bruno` (134 requests, 342 assertions, against the throwaway database `copilot_bruno_review` on `PORT=3031`) pass. Last green CI: see the roadmap line.
+Complete: P2R.1 to P2R.5. `make check`, `make test-db`, and `make test-bruno` (134 requests, 342 assertions, against the throwaway database `copilot_bruno_review` on `PORT=3031`) pass. Last green CI: `5b802f0` (Code quality, run 45929913709).
 
 ## Sub-Steps
 
