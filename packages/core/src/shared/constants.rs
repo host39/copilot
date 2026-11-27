@@ -95,6 +95,9 @@ pub const BYTES_PER_TOKEN: u64 = 4;
 pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
 pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
 pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
+/// A `GET /api/events` stream ends after this long and the client connects again, so a session
+/// signed out elsewhere stops receiving events within this time.
+pub const EVENTS_STREAM_MAX_SECS: u64 = 900;
 /// On shutdown, live runs get this long to finish on their own; then they are cancelled and get
 /// up to `SHUTDOWN_DRAIN_SECS` more to save their partial answers. Stopping a run (or deleting
 /// its chat or project) waits up to `SHUTDOWN_DRAIN_SECS` for it to save too.

@@ -24,6 +24,35 @@ impl<S: Send + Sync> FromRequestParts<S> for Id {
     }
 }
 
+/// The `{id}` and `{messageId}` of a message route. A value that is not a UUID is a `400`
+/// (`VALIDATION_ERROR`, field `id` or `messageId`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessageIds {
+    pub chat: Uuid,
+    pub message: Uuid,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for MessageIds {
+    type Rejection = HttpError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let invalid = |field: &str| {
+            HttpError::Domain(
+                DomainError::validation("The id in the path is not valid.").with_field(field),
+            )
+        };
+        let Ok(Path((chat, message))) =
+            Path::<(String, String)>::from_request_parts(parts, state).await
+        else {
+            return Err(invalid("id"));
+        };
+        Ok(Self {
+            chat: chat.parse().map_err(|_| invalid("id"))?,
+            message: message.parse().map_err(|_| invalid("messageId"))?,
+        })
+    }
+}
+
 /// The query string of a route, read into `T`. A value that does not fit is a `400`
 /// (`VALIDATION_ERROR`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

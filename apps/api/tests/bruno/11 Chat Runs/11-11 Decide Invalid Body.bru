@@ -1,0 +1,34 @@
+meta {
+  name: 11-11 Decide Invalid Body
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/messages/00000000-0000-7000-8000-000000000000/decisions
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "decisions": [
+      { "callId": "00000000-0000-7000-8000-000000000000", "decision": "maybe" }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/messages/{messageId}/decisions`
+
+  **This test verifies:** a decision is `approve` or `deny`; anything else is a `400`.
+}

@@ -1,0 +1,32 @@
+meta {
+  name: 11-13 Other User Decide
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{runChatId}}/messages/00000000-0000-7000-8000-000000000000/decisions
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "decisions": []
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/messages/{messageId}/decisions` as user B
+
+  **This test verifies:** user B gets `404` for user A's chat and never decides on its calls.
+}

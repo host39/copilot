@@ -307,7 +307,10 @@ trait SecretCipher {
     fn open(&self, sealed: &[u8], aad: &SealContext) -> DomainResult<Secret>; // Err(SECRET_UNREADABLE) after a key change
 }
 struct SealContext { table: &'static str, column: &'static str, row_id: Uuid, user_id: UserId }
-trait TurnSink { fn emit(&self, event: TurnEvent); }                             // non-blocking
+trait TurnSink {
+    fn emit(&self, event: TurnEvent);                                            // non-blocking
+    fn ended(&self, outcome: &TurnOutcome) {}  // just before `done`; not after an `error` exit
+}
 struct Actor { user_id: UserId, is_admin: bool }                                // core/src/shared/, not a port
 
 trait LlmGateway {
@@ -478,7 +481,7 @@ Fakes for every port (in-memory repositories, a scripted `LlmGateway` with scrip
    2. Save the assistant message with its parts, `provider_state`, `usage`, `context_hash`, and finish reason.
    3. If it has `tool_call` parts (whatever the finish reason), resolve the round (see [Tool Execution and Approvals](#tool-execution-and-approvals)). A round that needs approval ends the run.
    4. Otherwise the turn is complete.
-5. **End.** Emit `message.finished` and `done`, release the registry slot, publish `run.finished` to the user's event stream.
+5. **End.** Emit `message.finished`, report the outcome (`TurnSink::ended`), and emit `done`. At `done` the run's sink publishes `approval.pending` (for a paused run) and `run.finished` to the user's event stream, then releases the registry slot, so a run started right after `done` always comes after the last run's `run.finished`.
 
 Tasks are never aborted. Every exit path, including cancel, goes through the save in step 4.2 or [Ending a Turn](#ending-a-turn).
 
@@ -533,7 +536,7 @@ Switching between Claude models on the same connection still replays, because th
 
 **Resolving a round.** Every call of a round is resolved before the next model request.
 
-- If any call is Ask: mark those `tool_call` parts `approval: pending`, set the assistant message to `awaiting_approval`, emit `tool.requested` (with `needsApproval`) for every call and `message.finished` (`awaiting_approval`), publish `approval.pending`, and end the run. Nothing waits in memory.
+- If any call is Ask: mark those `tool_call` parts `approval: pending`, set the assistant message to `awaiting_approval`, emit `tool.requested` (with `needsApproval`) for every call and `message.finished` (`awaiting_approval`), and end the run (its sink publishes `approval.pending` at `done`). Nothing waits in memory.
 - Otherwise: run the calls in call order through one `ToolSession` per run (`MCP_CALL_TIMEOUT_SECS`, 60, per call; status `timeout` on expiry), give denied calls a `denied` result with the reason, write **one** `tool` message with all results in call order, emit `tool.finished` for each, and continue.
 - **Decisions:** `POST /api/chats/{id}/messages/{messageId}/decisions` must cover exactly the pending calls of the chat's latest assistant message while it is `awaiting_approval`; each decision is applied once (`MessageRepository::decide` moves `pending` to `approved` or `denied` in one guarded update). "Approve for this chat" also adds the call's server id and original tool name to `chat_tool_approvals` through `ChatRepository::approve`, which writes approval rows only (only for a server the snapshot still reaches; deleting the server deletes its rows). The response is the SSE stream of the continuation, which executes the stored arguments exactly, from the stored snapshot. A continuation started by a decision runs as interactive, because the user is present, but keeps the snapshot's tool list.
 - **Results:** text is truncated to `MCP_RESULT_MAX_BYTES` (64 KiB) in total with a visible `[truncated N bytes]` note; images (PNG, JPEG, WebP, GIF) are saved as chat files through `FileService::upload`, so the size, magic-byte, and storage quota rules apply, and are sent only when the model has `vision` (any other image, or a failed save, becomes a one-line notice); audio and binary blobs become a one-line notice; `resource_link` becomes `<name>: <uri>`. A call past `MCP_CALL_TIMEOUT_SECS` fails in the adapter with the code `TOOL_TIMEOUT` and gets the status `timeout`; other call failures get `error` with the human message. The built-in schedule tools answer with JSON (`{"created": ...}`, `{"schedules": [...]}`, `{"deleted": ...}`).
@@ -562,7 +565,7 @@ Before any model request in a chat, every `tool_call` part has a result. The eng
 - `reserve` inserts atomically and enforces single-flight per chat (`CHAT_BUSY`) and `MAX_ACTIVE_RUNS_PER_USER` (`TOO_MANY_RUNS`); once shutdown has begun it fails with `SERVER_STOPPING`. User sends, regenerate, decisions, scheduled runs, and Run now all go through it. The returned reservation frees the slot when it is dropped (a failed `prepare`, or the end of the run's task), and the run's sink frees it just before it sends `done`, so a client that saw `done` can send again at once.
 - Every event carries a per-run `seq`, numbered from 1 by the sink as it buffers the event, and goes out with it as the SSE `id`. The buffer merges consecutive text or reasoning deltas of one part into one delta that carries the last merged `seq`, so it grows with the answer's text (capped by the engine, see [Limits](#limits)) rather than with the number of deltas; each merged delta also keeps where each of its deltas ended (4 bytes per delta). `GET /api/chats/{id}/stream` replays the buffer with its `seq` values (a replay may skip `seq` values, never text), then live events, or returns `204` when idle; a client that just loaded the messages drops events it already has. With `?after=<seq>` (a client that lost its connection) the stream starts after that `seq`, cutting a merged delta to the text after it, so nothing is repeated or skipped; a `seq` the running turn never sent (one from an earlier run) replays the turn from the start. A stream that falls behind the broadcast channel catches up from the buffer, cutting a merged delta to the text it has not sent yet, so it never skips or repeats text or an event. A run whose task panics still ends its streams with an `error` event and `done`.
 - Disconnecting does not cancel; `POST /api/chats/{id}/stop` does. It answers `204` once the run has saved its partial answer as `cancelled` (at most `SHUTDOWN_DRAIN_SECS`), and also for an idle chat. Handlers load the chat with the caller's `UserId` before touching the registry, so another user's chat is a `404`, never `CHAT_BUSY`, and its run is never attached or stopped.
-- The registry also fans out the per-user `GET /api/events` stream.
+- The registry also fans out the per-user `GET /api/events` stream: one broadcast channel per user with a stream open (`USER_CHANNEL_CAPACITY`, 64 events), dropped once no stream reads it. A run's sink publishes `run.started` with the run's first event, and `approval.pending` and `run.finished` at `done` before it frees the chat; a run that failed with an error (no outcome) finishes as `error`. The chat routes publish `chat.updated` when a chat is created, changed, read, saved as a project, or deleted.
 
 ### Adapter Rules
 
@@ -621,7 +624,7 @@ Every event has `type` and `seq` (per run).
 
 ### User Events
 
-`GET /api/events` is a per-user SSE stream that lets open clients refresh the sidebar without polling.
+`GET /api/events` is a per-user SSE stream that lets open clients refresh the sidebar without polling. A new stream first gets `run.started` for each of the user's chats answering now (a run starting as the stream connects may get it twice, so clients treat it as idempotent), then live events. Events carry no `seq` and are not replayed: a stream ends after `EVENTS_STREAM_MAX_SECS` (so a session signed out elsewhere stops hearing within that time), when it falls 64 events behind, or on shutdown, and the client connects again and reads the chat list afresh.
 
 | `type` | Payload |
 | --- | --- |
@@ -1059,6 +1062,7 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `TOKENS_PER_PDF_PAGE`, `TOKENS_PER_IMAGE`, `BYTES_PER_TOKEN` | 3000, 1600, 4 |
 | `AUDIO_CLIP_MAX_SECS`, `AUDIO_SAMPLE_RATE` | 300, 16000 |
 | `SSE_KEEP_ALIVE_SECS`, `SHUTDOWN_GRACE_SECS`, `SHUTDOWN_DRAIN_SECS` | 15, 5, 10 |
+| `EVENTS_STREAM_MAX_SECS` | 900 |
 
 ## Native Apps
 

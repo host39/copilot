@@ -24,7 +24,7 @@ use crate::helpers::testing::{
 
 /// The app on `pool` with the first account (the administrator) and a model on `base_url`:
 /// the app, the account's token, and the model's id.
-async fn setup(pool: DbPool, base_url: &str) -> (App, String, String) {
+pub(crate) async fn setup(pool: DbPool, base_url: &str) -> (App, String, String) {
     let app = live(pool, config()).await;
     let token = register(&app.router, "admin").await;
     let model = model_at(&app.router, &token, base_url).await;
@@ -32,7 +32,13 @@ async fn setup(pool: DbPool, base_url: &str) -> (App, String, String) {
 }
 
 /// A JSON request that must succeed; its body.
-async fn call(app: &Router, token: &str, method: Method, uri: &str, body: Option<Value>) -> Value {
+pub(crate) async fn call(
+    app: &Router,
+    token: &str,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> Value {
     let response = send(app.clone(), request(method.clone(), uri, Some(token), body)).await;
     assert!(
         response.status.is_success(),
@@ -43,7 +49,7 @@ async fn call(app: &Router, token: &str, method: Method, uri: &str, body: Option
     response.body
 }
 
-async fn new_chat(app: &Router, token: &str, model: &str) -> String {
+pub(crate) async fn new_chat(app: &Router, token: &str, model: &str) -> String {
     let chat = call(
         app,
         token,
@@ -56,7 +62,13 @@ async fn new_chat(app: &Router, token: &str, model: &str) -> String {
 }
 
 /// Opens a turn route (`messages`, `regenerate`, `retry`) of `chat` as an event stream.
-async fn turn(app: &Router, token: &str, chat: &str, route: &str, body: Option<Value>) -> Events {
+pub(crate) async fn turn(
+    app: &Router,
+    token: &str,
+    chat: &str,
+    route: &str,
+    body: Option<Value>,
+) -> Events {
     match open(
         app.clone(),
         request(
@@ -74,7 +86,7 @@ async fn turn(app: &Router, token: &str, chat: &str, route: &str, body: Option<V
 }
 
 /// Sends `text` and reads the turn to its end; the events.
-async fn say(app: &Router, token: &str, chat: &str, text: &str) -> Vec<Value> {
+pub(crate) async fn say(app: &Router, token: &str, chat: &str, text: &str) -> Vec<Value> {
     let mut events = turn(app, token, chat, "messages", Some(json!({ "text": text }))).await;
     let all = events.rest().await;
     assert_eq!(all.last().map(|event| &event["type"]), Some(&json!("done")));
@@ -82,7 +94,7 @@ async fn say(app: &Router, token: &str, chat: &str, text: &str) -> Vec<Value> {
 }
 
 /// The text of the text deltas in `events`.
-fn text(events: &[Value]) -> String {
+pub(crate) fn text(events: &[Value]) -> String {
     events
         .iter()
         .filter(|event| event["type"] == "text.delta")
@@ -90,7 +102,7 @@ fn text(events: &[Value]) -> String {
         .collect()
 }
 
-fn seqs(events: &[Value]) -> Vec<u64> {
+pub(crate) fn seqs(events: &[Value]) -> Vec<u64> {
     events
         .iter()
         .map(|event| event["seq"].as_u64().expect("a seq"))
@@ -98,7 +110,7 @@ fn seqs(events: &[Value]) -> Vec<u64> {
 }
 
 /// The chat's messages once no run is live.
-async fn settled(app: &Router, token: &str, chat: &str) -> Vec<Value> {
+pub(crate) async fn settled(app: &Router, token: &str, chat: &str) -> Vec<Value> {
     let started = Instant::now();
     loop {
         let stream = send(
@@ -120,7 +132,7 @@ async fn settled(app: &Router, token: &str, chat: &str) -> Vec<Value> {
     messages(app, token, chat).await
 }
 
-async fn messages(app: &Router, token: &str, chat: &str) -> Vec<Value> {
+pub(crate) async fn messages(app: &Router, token: &str, chat: &str) -> Vec<Value> {
     let list = call(
         app,
         token,
@@ -133,7 +145,7 @@ async fn messages(app: &Router, token: &str, chat: &str) -> Vec<Value> {
 }
 
 /// A message's text parts, joined.
-fn content(message: &Value) -> String {
+pub(crate) fn content(message: &Value) -> String {
     message["parts"]
         .as_array()
         .expect("parts")
@@ -144,7 +156,7 @@ fn content(message: &Value) -> String {
 }
 
 /// Waits until the provider has received `count` completion requests.
-async fn requested(llm: &LlmServer, count: usize) {
+pub(crate) async fn requested(llm: &LlmServer, count: usize) {
     let started = Instant::now();
     while llm.requests().len() < count {
         assert!(
@@ -156,7 +168,12 @@ async fn requested(llm: &LlmServer, count: usize) {
 }
 
 /// `GET /chats/{chat}/stream`, with `after` when given.
-async fn attach(app: &Router, token: &str, chat: &str, after: Option<u64>) -> Option<Events> {
+pub(crate) async fn attach(
+    app: &Router,
+    token: &str,
+    chat: &str,
+    after: Option<u64>,
+) -> Option<Events> {
     let query = after.map_or_else(String::new, |seq| format!("?after={seq}"));
     match open(
         app.clone(),

@@ -744,6 +744,32 @@ async fn pauses_for_approval_and_continues_from_the_snapshot() {
 }
 
 #[tokio::test]
+async fn the_sink_hears_the_outcome_just_before_done() {
+    let f = fixture();
+    let (chat, _) = f.tool_chat(ApprovalMode::Ask).await;
+    f.gateway
+        .push_events(call_reply(&[("github__delete", r#"{"id":2}"#)]));
+    let turn = f.prepare(&chat, send("Clean up")).await;
+    let sink = Arc::new(RecordingSink::new());
+    let outcome = f
+        .engine
+        .run(turn, sink.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, MessageStatus::AwaitingApproval);
+    let paused = f.history(&chat).await[1].id();
+    assert_eq!(outcome.message_id, Some(paused));
+    let events = sink.events();
+    assert_eq!(
+        sink.outcomes(),
+        [(outcome, events.len() - 1)],
+        "once, with only `done` after it"
+    );
+    assert!(matches!(events.last(), Some(TurnEvent::Done)));
+}
+
+#[tokio::test]
 async fn cancel_saves_the_partial_answer_and_cancelled_results() {
     let f = fixture();
     let (chat, _) = f.tool_chat(ApprovalMode::Auto).await;

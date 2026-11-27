@@ -15,15 +15,23 @@
 //! Disconnecting a stream never cancels the run; [`RunRegistry::stop`] and shutdown do (each run
 //! gets a child of the root shutdown token). [`RunRegistry::drain`] stops new runs, gives the
 //! live ones a moment to finish, then cancels them and waits for them to save.
+//!
+//! The registry also fans out each user's `GET /api/events` stream ([`RunRegistry::publish`],
+//! [`RunRegistry::watch`]): a channel per user with a stream open, dropped once no stream reads
+//! it. The sink publishes `run.started` with a run's first event, and `approval.pending` (when
+//! the run paused for an approval) and `run.finished` just before it frees the chat at `done`,
+//! so a run started right after `done` always follows the last run's `run.finished`.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use copilot_contracts::ChatStreamEvent;
+use copilot_contracts::{ChatStreamEvent, UserEvent};
 use copilot_core::shared::constants::MAX_ACTIVE_RUNS_PER_USER;
-use copilot_core::{ChatId, DomainError, DomainResult, TurnEvent, TurnSink, UserId};
+use copilot_core::{
+    ChatId, DomainError, DomainResult, MessageStatus, TurnEvent, TurnOutcome, TurnSink, UserId,
+};
 use futures_util::stream::{self, Stream};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, watch};
@@ -32,9 +40,13 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::routes::chats::serializer;
+use crate::routes::convert::ToDto;
 
 /// Events a slow stream may fall behind before it catches up from the replay buffer.
 const CHANNEL_CAPACITY: usize = 256;
+/// User events a slow `GET /api/events` stream may fall behind before it ends (the client
+/// connects again and reads the chat list afresh).
+const USER_CHANNEL_CAPACITY: usize = 64;
 /// The error code of a chat that is already answering.
 pub const CHAT_BUSY: &str = "CHAT_BUSY";
 /// The error code of a user with `MAX_ACTIVE_RUNS_PER_USER` runs.
@@ -50,6 +62,8 @@ pub struct RunRegistry {
     max_per_user: usize,
     /// How many runs are live, for [`RunRegistry::drain`].
     live: watch::Sender<usize>,
+    /// The `GET /api/events` channels of the users with a stream open.
+    users: Mutex<HashMap<UserId, broadcast::Sender<UserEvent>>>,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +97,7 @@ impl RunRegistry {
             shutdown,
             max_per_user,
             live: watch::Sender::new(0),
+            users: Mutex::new(HashMap::new()),
         }
     }
 
@@ -115,7 +130,7 @@ impl RunRegistry {
         }
         let run = Uuid::now_v7();
         let cancel = self.shutdown.child_token();
-        let sink = Arc::new(RunSink::new(Arc::clone(self), chat, run));
+        let sink = Arc::new(RunSink::new(Arc::clone(self), owner, chat, run));
         runs.entries.insert(
             chat,
             Entry {
@@ -220,8 +235,73 @@ impl RunRegistry {
         }
     }
 
+    /// Sends `event` to every `GET /api/events` stream `user` has open (none is fine).
+    pub fn publish(&self, user: UserId, event: UserEvent) {
+        let mut users = self.users();
+        if let Some(sender) = users.get(&user)
+            && sender.send(event).is_err()
+        {
+            // Every stream of the user has ended.
+            users.remove(&user);
+        }
+    }
+
+    /// The user events of `owner`: `run.started` for each chat answering now, then every event
+    /// published from the call on. The stream ends when it falls more than
+    /// `USER_CHANNEL_CAPACITY` events behind; the client then connects again.
+    pub fn watch(&self, owner: UserId) -> UserEvents {
+        let receiver = {
+            let mut users = self.users();
+            users.retain(|_, sender| sender.receiver_count() > 0);
+            users
+                .entry(owner)
+                .or_insert_with(|| broadcast::channel(USER_CHANNEL_CAPACITY).0)
+                .subscribe()
+        };
+        // Listed after subscribing, so a run that starts meanwhile is never missed (at worst
+        // its `run.started` comes twice).
+        let running = self
+            .chats(owner)
+            .into_iter()
+            .map(|chat| UserEvent::RunStarted {
+                chat_id: chat.into(),
+            })
+            .collect();
+        UserEvents { running, receiver }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Runs> {
         self.runs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn users(&self) -> MutexGuard<'_, HashMap<UserId, broadcast::Sender<UserEvent>>> {
+        self.users.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One `GET /api/events` stream (see [`RunRegistry::watch`]).
+#[derive(Debug)]
+pub struct UserEvents {
+    running: VecDeque<UserEvent>,
+    receiver: broadcast::Receiver<UserEvent>,
+}
+
+impl UserEvents {
+    /// The events in order; ends when the stream fell behind.
+    pub fn into_stream(self) -> impl Stream<Item = UserEvent> + Send {
+        stream::unfold(self, |mut events| async move {
+            if let Some(event) = events.running.pop_front() {
+                return Some((event, events));
+            }
+            match events.receiver.recv().await {
+                Ok(event) => Some((event, events)),
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "api.events.lagged");
+                    None
+                }
+                Err(RecvError::Closed) => None,
+            }
+        })
     }
 }
 
@@ -259,11 +339,13 @@ impl Drop for Reservation {
 }
 
 /// The run's events: numbered, buffered for replay, and broadcast. `done` releases the slot
-/// before it is sent.
+/// before it is sent. The owner's event streams get `run.started` with the first event, and
+/// `approval.pending` and `run.finished` with `done`.
 #[derive(Debug)]
 pub struct RunSink {
     state: Arc<Mutex<Buffer>>,
     registry: Arc<RunRegistry>,
+    owner: UserId,
     chat: ChatId,
     run: Uuid,
 }
@@ -277,6 +359,8 @@ struct Buffer {
     lengths: HashMap<PartKey, usize>,
     sender: broadcast::Sender<ChatStreamEvent>,
     done: bool,
+    /// How the run ended (`TurnSink::ended`); none when it failed with an error.
+    outcome: Option<TurnOutcome>,
 }
 
 /// A part of a message: its id and its index.
@@ -402,7 +486,7 @@ fn is_done(event: &ChatStreamEvent) -> bool {
 }
 
 impl RunSink {
-    fn new(registry: Arc<RunRegistry>, chat: ChatId, run: Uuid) -> Self {
+    fn new(registry: Arc<RunRegistry>, owner: UserId, chat: ChatId, run: Uuid) -> Self {
         let (sender, _) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             state: Arc::new(Mutex::new(Buffer {
@@ -411,11 +495,38 @@ impl RunSink {
                 lengths: HashMap::new(),
                 sender,
                 done: false,
+                outcome: None,
             })),
             registry,
+            owner,
             chat,
             run,
         }
+    }
+
+    /// Tells the owner's event streams how the run ended: `approval.pending` when it paused for
+    /// an approval, then `run.finished` (`error` without an outcome).
+    fn finished(&self, outcome: Option<&TurnOutcome>) {
+        let chat_id = self.chat.into();
+        let status = outcome.map_or(MessageStatus::Error, |outcome| outcome.status);
+        if status == MessageStatus::AwaitingApproval
+            && let Some(message) = outcome.and_then(|outcome| outcome.message_id)
+        {
+            self.registry.publish(
+                self.owner,
+                UserEvent::ApprovalPending {
+                    chat_id,
+                    message_id: message.into(),
+                },
+            );
+        }
+        self.registry.publish(
+            self.owner,
+            UserEvent::RunFinished {
+                chat_id,
+                status: status.to_dto(),
+            },
+        );
     }
 
     /// Whether the run sent its last event (`done`).
@@ -437,14 +548,28 @@ impl TurnSink for RunSink {
             return;
         }
         buffer.seq += 1;
+        if buffer.seq == 1 {
+            self.registry.publish(
+                self.owner,
+                UserEvent::RunStarted {
+                    chat_id: self.chat.into(),
+                },
+            );
+        }
         let event = serializer::event(event, buffer.seq);
         buffer.done = is_done(&event);
         if buffer.done {
+            // Before the chat is free: a run that starts right after follows these events.
+            self.finished(buffer.outcome.as_ref());
             self.registry.release(self.chat, self.run);
         }
         buffer.keep(&event);
         // No receiver is not an error: the stream may have disconnected.
         let _ = buffer.sender.send(event);
+    }
+
+    fn ended(&self, outcome: &TurnOutcome) {
+        lock(&self.state).outcome = Some(outcome.clone());
     }
 }
 
@@ -959,5 +1084,120 @@ mod tests {
         let seqs: Vec<u64> = stream.map(|event| event.seq()).collect().await;
         let expected: Vec<u64> = (1..=u64::from(count) + 1).collect();
         assert_eq!(seqs, expected);
+    }
+
+    /// The next user event, or `None` when none comes within 100 ms.
+    async fn heard(stream: &mut (impl Stream<Item = UserEvent> + Unpin)) -> Option<UserEvent> {
+        tokio::time::timeout(Duration::from_millis(100), stream.next())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    fn paused(message: MessageId) -> TurnOutcome {
+        TurnOutcome {
+            message_id: Some(message),
+            status: MessageStatus::AwaitingApproval,
+            finish_reason: None,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_hears_a_run_start_pause_and_finish_before_the_next_run() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let other = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let mut events = Box::pin(registry.watch(owner).into_stream());
+        let mut theirs = Box::pin(registry.watch(other).into_stream());
+
+        let first = registry.reserve(owner, chat).unwrap();
+        assert_eq!(
+            heard(&mut events).await,
+            None,
+            "a reservation is no run yet"
+        );
+        let sink = first.sink();
+        sink.emit(text(0));
+        sink.emit(text(1));
+        let message = MessageId::generate();
+        sink.ended(&paused(message));
+        sink.emit(TurnEvent::Done);
+        // The chat is free at `done`: the next run starts at once.
+        let second = registry.reserve(owner, chat).unwrap();
+        second.sink().emit(text(2));
+        second.sink().emit(TurnEvent::Done);
+
+        let chat_id: Uuid = chat.into();
+        let expected = [
+            UserEvent::RunStarted { chat_id },
+            UserEvent::ApprovalPending {
+                chat_id,
+                message_id: message.into(),
+            },
+            UserEvent::RunFinished {
+                chat_id,
+                status: copilot_contracts::MessageStatus::AwaitingApproval,
+            },
+            UserEvent::RunStarted { chat_id },
+            UserEvent::RunFinished {
+                chat_id,
+                status: copilot_contracts::MessageStatus::Error,
+            },
+        ];
+        for event in expected {
+            assert_eq!(heard(&mut events).await, Some(event));
+        }
+        assert_eq!(heard(&mut events).await, None, "each event once");
+        assert_eq!(heard(&mut theirs).await, None, "another user hears nothing");
+    }
+
+    #[tokio::test]
+    async fn a_new_stream_hears_the_runs_already_live_first() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let reservation = registry.reserve(owner, chat).unwrap();
+        reservation.sink().emit(text(0));
+        let _theirs = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+
+        let mut events = Box::pin(registry.watch(owner).into_stream());
+        let chat_id: Uuid = chat.into();
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::RunStarted { chat_id })
+        );
+        assert_eq!(heard(&mut events).await, None, "only the owner's run");
+        registry.publish(owner, UserEvent::ChatUpdated { chat_id });
+        assert_eq!(
+            heard(&mut events).await,
+            Some(UserEvent::ChatUpdated { chat_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_falls_behind_ends_and_channels_go_with_their_streams() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let chat_id = Uuid::now_v7();
+        let stream = registry.watch(owner).into_stream();
+        for _ in 0..=USER_CHANNEL_CAPACITY {
+            registry.publish(owner, UserEvent::ChatUpdated { chat_id });
+        }
+        let events: Vec<UserEvent> = stream.collect().await;
+        assert!(events.is_empty(), "the client connects again instead");
+
+        // The stream is gone: the next event drops the user's channel.
+        assert_eq!(registry.users().len(), 1);
+        registry.publish(owner, UserEvent::ChatUpdated { chat_id });
+        assert!(registry.users().is_empty());
+        // A new stream of another user also clears channels nobody reads.
+        let kept = registry.watch(owner);
+        drop(kept);
+        let _other = registry.watch(UserId::new(Uuid::now_v7()));
+        assert_eq!(registry.users().len(), 1);
     }
 }

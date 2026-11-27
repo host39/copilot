@@ -126,7 +126,7 @@ impl ChatEngine {
     }
 
     /// Runs `turn` until it completes, pauses for an approval, fails, or `cancel` fires. Events
-    /// go to `sink`, ending with `done` on every exit. Provider, tool, and file read failures
+    /// go to `sink`, ending with `done` on every exit (after `TurnSink::ended` with the outcome). Provider, tool, and file read failures
     /// end the run with an `error` outcome and a saved `error` answer; `Err` means a message
     /// could not be saved (an `error` event is sent too). Internal errors are logged with their
     /// dotted key (`core.engine.failed`) wherever they become the generic text.
@@ -149,11 +149,12 @@ impl ChatEngine {
         };
         let result = run.drive().await;
         run.close().await;
-        if let Err(error) = &result {
-            sink.emit(TurnEvent::Error {
+        match &result {
+            Ok(outcome) => sink.ended(outcome),
+            Err(error) => sink.emit(TurnEvent::Error {
                 message: human(error),
                 code: error.code().to_owned(),
-            });
+            }),
         }
         sink.emit(TurnEvent::Done);
         result

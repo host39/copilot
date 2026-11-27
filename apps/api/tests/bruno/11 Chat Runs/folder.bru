@@ -4,9 +4,10 @@ meta {
 }
 
 docs {
-  The turn routes of `/api/chats/{id}`: reattaching (`stream`), stop, regenerate, and retry. An
-  idle chat streams nothing (`204`) and stops at once; user B (`otherToken`) gets `404` for user
-  A's chat on every one of them, never `CHAT_BUSY`. Bruno has no model provider, so its chat
-  cannot answer; the route tests on Postgres cover live runs, reattaching after a `seq`, stop,
-  regenerate, retry, edits, the shutdown drain, and recovery after a restart.
+  The turn routes of `/api/chats/{id}`: reattaching (`stream`), stop, regenerate, retry, and
+  decisions, plus `GET /api/events`. An idle chat streams nothing (`204`) and stops at once; user
+  B (`otherToken`) gets `404` for user A's chat on every one of them, never `CHAT_BUSY`. Bruno has
+  no model provider or tool server, so its chat cannot answer; the route tests on Postgres cover
+  live runs, reattaching after a `seq`, stop, regenerate, retry, edits, the shutdown drain,
+  recovery after a restart, tool calls, approvals, and the user event stream.
 }

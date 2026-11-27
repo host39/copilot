@@ -1,0 +1,23 @@
+meta {
+  name: 11-14 Events Without a Token
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/api/events
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+  res.body.code: eq UNAUTHORIZED
+}
+
+docs {
+  **Endpoint:** `GET /api/events`
+
+  **This test verifies:** the user event stream needs a signed-in caller. An open stream never
+  ends on its own within a request, so the route tests on Postgres cover the events themselves.
+}

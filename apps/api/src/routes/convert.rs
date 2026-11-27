@@ -69,6 +69,8 @@ both_ways!(
 both_ways!(core::ApprovalMode, dto::ApprovalMode, [Ask, Auto]);
 both_ways!(core::ToolMode, dto::ToolMode, [Off, Ask, Auto]);
 both_ways!(core::OnAsk, dto::OnAsk, [Deny, Pause]);
+both_ways!(core::Decision, dto::Decision, [Approve, Deny]);
+both_ways!(core::DecisionScope, dto::DecisionScope, [Once, Chat]);
 out!(core::CreatedBy, dto::CreatedBy, [User, Assistant]);
 out!(
     core::RunStatus,
