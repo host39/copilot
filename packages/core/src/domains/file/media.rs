@@ -275,29 +275,46 @@ pub fn pdf_pages(bytes: &[u8]) -> u32 {
     pages.max(1)
 }
 
+/// Object streams examined per PDF at most. A real PDF has a few dozen; the cap bounds the work
+/// a crafted file of nothing but `/ObjStm` marks can cause.
+const PDF_OBJECT_STREAMS_MAX: usize = 4_096;
+
 /// The raw data of every Flate-compressed object stream: the bytes between `stream` and
-/// `endstream` of an object whose dictionary holds `/ObjStm` and `/FlateDecode`.
+/// `endstream` of an object whose dictionary (from its `obj` keyword to `stream`) holds
+/// `/ObjStm` and `/FlateDecode`. One forward pass: each byte is searched a bounded number of
+/// times, so the cost is linear in the file's length whatever it holds.
 fn object_streams(bytes: &[u8]) -> Vec<&[u8]> {
     const MARK: &[u8] = b"/ObjStm";
+    const OBJ: &[u8] = b"obj";
     const STREAM: &[u8] = b"stream";
     const END: &[u8] = b"endstream";
     let mut streams = Vec::new();
+    // Where the current object's dictionary starts: its last `obj` keyword, never before the
+    // end of what an earlier step already read.
+    let mut object = 0;
+    // Bytes before `scanned` were already searched for `obj`.
+    let mut scanned = 0;
     let mut index = 0;
-    while let Some(offset) = find(&bytes[index..], MARK) {
-        let mark = index + offset;
-        index = mark + MARK.len();
-        let Some(keyword) = find(&bytes[index..], STREAM).map(|found| index + found) else {
+    for _ in 0..PDF_OBJECT_STREAMS_MAX {
+        let Some(offset) = find(&bytes[index..], MARK) else {
             break;
         };
-        let start = bytes[..mark]
-            .windows(3)
-            .rposition(|window| window == b"obj")
-            .unwrap_or(0);
-        let dictionary = &bytes[start..keyword];
+        let mark = index + offset;
+        if let Some(found) = rfind(&bytes[scanned..mark], OBJ) {
+            object = scanned + found;
+        }
+        let Some(keyword) = find(&bytes[mark..], STREAM).map(|found| mark + found) else {
+            break;
+        };
+        // Every mark before `stream` belongs to this dictionary: the next search starts after it.
+        index = keyword + STREAM.len();
+        scanned = index;
+        let dictionary = &bytes[object..keyword];
+        object = index;
         if find(dictionary, b"/FlateDecode").is_none() || find(dictionary, b"endobj").is_some() {
             continue;
         }
-        let mut data = keyword + STREAM.len();
+        let mut data = index;
         if bytes.get(data) == Some(&b'\r') {
             data += 1;
         }
@@ -309,6 +326,8 @@ fn object_streams(bytes: &[u8]) -> Vec<&[u8]> {
         };
         streams.push(&bytes[data..end]);
         index = end + END.len();
+        scanned = index;
+        object = index;
     }
     streams
 }
@@ -341,6 +360,12 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
 }
 
 /// PDF white-space characters.
@@ -497,6 +522,44 @@ mod tests {
         pdf.extend(std::iter::repeat_n(0xa5, 500 * 1024));
         pdf.extend_from_slice(b"\nendstream\nendobj\n");
         assert_eq!(pdf_pages(&pdf), 10);
+    }
+
+    #[test]
+    fn counts_every_object_stream_of_a_file() {
+        let mut pdf = compressed_pdf(3);
+        let second = compressed_pdf(4);
+        pdf.extend_from_slice(&second[b"%PDF-1.5\n".len()..]);
+        assert_eq!(pdf_pages(&pdf), 7);
+    }
+
+    /// Crafted files of nothing but object stream marks cost time linear in their length (the
+    /// old backwards search took minutes for these sizes).
+    #[test]
+    fn crafted_object_stream_marks_take_linear_time() {
+        let patterns: [&[u8]; 3] = [
+            b"/ObjStm stream ",
+            b"obj /FlateDecode /ObjStm stream x endstream ",
+            b"/FlateDecode /ObjStm /ObjStm obj ",
+        ];
+        for pattern in patterns {
+            let mut pdf = b"%PDF-1.5\n".to_vec();
+            while pdf.len() < 2 * 1024 * 1024 {
+                pdf.extend_from_slice(pattern);
+            }
+            let started = std::time::Instant::now();
+            let pages = pdf_pages(&pdf);
+            let took = started.elapsed();
+            assert_eq!(
+                pages as usize,
+                pdf.len() / PDF_BYTES_PER_PAGE,
+                "one page per 50 KiB"
+            );
+            assert!(
+                took < std::time::Duration::from_secs(3),
+                "{took:?} for {:?}",
+                String::from_utf8_lossy(pattern)
+            );
+        }
     }
 
     #[test]

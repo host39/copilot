@@ -4,6 +4,7 @@ pub mod runs;
 pub mod scheduler;
 pub mod streams;
 pub mod uploads;
+pub mod worker;
 
 #[cfg(test)]
 pub(crate) mod llm_server;

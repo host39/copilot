@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use copilot_core::shared::constants::MCP_LIST_MAX_PAGES;
+use copilot_core::shared::constants::{MCP_LIST_MAX_PAGES, MCP_TOOLS_MAX};
 use copilot_core::{
     DomainError, DomainResult, RemoteTool, ToolEndpoint, ToolHeaders, ToolOutput, ToolServerId,
 };
@@ -214,8 +214,8 @@ impl Connection {
         &self.version
     }
 
-    /// Every page of `tools/list`, at most `MCP_LIST_MAX_PAGES` pages and `MCP_RESPONSE_MAX_BYTES`
-    /// of tool definitions in all. The cache hint is the smallest `ttlMs` of the pages, or
+    /// Every page of `tools/list`, at most `MCP_LIST_MAX_PAGES` pages, `MCP_TOOLS_MAX` tools,
+    /// and `MCP_RESPONSE_MAX_BYTES` of tool definitions in all. The cache hint is the smallest `ttlMs` of the pages, or
     /// `None` when a page has none.
     pub(crate) async fn tools(&self) -> DomainResult<Listing> {
         let mut tools = Vec::new();
@@ -229,6 +229,10 @@ impl Connection {
                 .list_tools(Some(params))
                 .await
                 .map_err(|error| self.list_error(&error))?;
+            if tools.len() + page.tools.len() > MCP_TOOLS_MAX {
+                tracing::warn!(server_id = %self.server_id, "mcp.tools.list-too-many");
+                return Err(errors::too_many());
+            }
             for tool in page.tools {
                 bytes += serde_json::to_vec(&tool).map_or(0, |encoded| encoded.len());
                 if bytes > self.max_bytes {

@@ -1,6 +1,6 @@
 //! Which tools a turn gets: effective servers, aliases, and changed-tool detection.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::Value;
 
@@ -141,24 +141,23 @@ impl ToolChanges {
         let Some(before) = before else {
             return Self::default();
         };
-        let find = |tools: &[RemoteTool], name: &str| -> Option<(String, Value)> {
-            tools
-                .iter()
-                .find(|tool| tool.name == name)
-                .map(|tool| (tool.description.clone(), tool.input_schema.clone()))
-        };
+        // Indexed once, so the comparison is linear in the number of tools.
+        let (old, new) = (index(before), index(after));
         let mut changes = Self::default();
         for tool in after {
-            match find(before, &tool.name) {
+            match old.get(tool.name.as_str()) {
                 None => changes.added.push(tool.name.clone()),
-                Some(old) if old != (tool.description.clone(), tool.input_schema.clone()) => {
+                Some(previous)
+                    if previous.description != tool.description
+                        || previous.input_schema != tool.input_schema =>
+                {
                     changes.changed.push(tool.name.clone());
                 }
                 Some(_) => {}
             }
         }
         for tool in before {
-            if find(after, &tool.name).is_none() {
+            if !new.contains_key(tool.name.as_str()) {
                 changes.removed.push(tool.name.clone());
             }
         }
@@ -171,6 +170,13 @@ impl ToolChanges {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
     }
+}
+
+fn index(tools: &[RemoteTool]) -> HashMap<&str, &RemoteTool> {
+    tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect()
 }
 
 #[cfg(test)]
@@ -315,6 +321,27 @@ mod tests {
         let changes = ToolChanges::between(Some(&before), &reworded);
         assert_eq!(changes.changed, ["read"]);
         assert!(ToolChanges::between(Some(&before), &before).is_empty());
+    }
+
+    /// The comparison indexes both lists, so tens of thousands of tools take milliseconds
+    /// (a search per tool took over a minute at 90,000).
+    #[test]
+    fn compares_long_lists_in_linear_time() {
+        let before: Vec<RemoteTool> = (0..50_000)
+            .map(|index| tool(&format!("tool{index}"), "old"))
+            .collect();
+        let mut after = before.clone();
+        after.reverse();
+        after[0].description = "new".to_owned();
+        after.push(tool("extra", ""));
+        let started = std::time::Instant::now();
+        let changes = ToolChanges::between(Some(&before), &after[1..]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert_eq!(changes.added, ["extra"]);
+        assert_eq!(changes.removed, ["tool49999"]);
+        assert!(changes.changed.is_empty());
+        let changes = ToolChanges::between(Some(&before), &after);
+        assert_eq!(changes.changed, ["tool49999"]);
     }
 
     #[test]

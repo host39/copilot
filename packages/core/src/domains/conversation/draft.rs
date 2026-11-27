@@ -355,16 +355,49 @@ pub(crate) fn audio_format(media: Option<MediaType>) -> &'static str {
     }
 }
 
-/// A text file as data: `<file name="...">...</file>`. The name is escaped, and a closing tag
-/// inside the text is broken up so the text cannot end the block early.
+/// A text file as data: `<file name="...">...</file>`. The name is escaped, and every closing
+/// tag inside the text (any case, with spaces) is broken up so the text cannot end the block
+/// early.
 fn inline(name: &str, data: &Bytes) -> String {
     let name = name
         .replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
-    let text = String::from_utf8_lossy(data).replace("</file>", "<\\/file>");
+    let text = neutralize(&String::from_utf8_lossy(data));
     format!("<file name=\"{name}\">\n{text}\n</file>")
+}
+
+/// `text` with the slash of every `</file` (any case, white space allowed around the slash)
+/// escaped as `<\/file`.
+fn neutralize(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (index, _) in text.match_indices('<') {
+        let mut cursor = index + 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'/') {
+            continue;
+        }
+        let slash = cursor;
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        let closes = bytes
+            .get(cursor..cursor + 4)
+            .is_some_and(|word| word.eq_ignore_ascii_case(b"file"));
+        if closes {
+            out.push_str(&text[copied..slash]);
+            out.push('\\');
+            copied = slash;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 pub(crate) fn text_tokens(text: &str) -> u64 {
@@ -419,6 +452,23 @@ mod tests {
         );
         assert_eq!(text.bytes(), 300);
         assert_eq!(text.tokens(), 75);
+    }
+
+    #[test]
+    fn breaks_up_closing_tags_in_any_case_and_spacing() {
+        let cases = [
+            ("x</file>y", "x<\\/file>y"),
+            ("</FILE>", "<\\/FILE>"),
+            ("</File >", "<\\/File >"),
+            ("< / file>", "< \\/ file>"),
+            ("</\tfIlE\n>", "<\\/\tfIlE\n>"),
+            ("</files> and </fil", "<\\/files> and </fil"),
+            ("a < b </p> <file>", "a < b </p> <file>"),
+            ("\u{e9}</file>\u{e9}", "\u{e9}<\\/file>\u{e9}"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(neutralize(text), expected, "{text:?}");
+        }
     }
 
     #[test]

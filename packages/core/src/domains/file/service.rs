@@ -15,6 +15,7 @@ use crate::domains::file::ports::FileRepository;
 use crate::domains::project::ProjectRepository;
 use crate::domains::provider::ModelRepository;
 use crate::ports::clock::Clock;
+use crate::ports::worker::{InlineWorker, Worker, offload};
 use crate::shared::actor::Actor;
 use crate::shared::constants::{
     AUDIO_CLIP_MAX_SECS, DEFAULT_MAX_STORAGE_MB_PER_USER, DEFAULT_MAX_UPLOAD_MB,
@@ -55,6 +56,7 @@ pub struct FileService {
     models: Arc<dyn ModelRepository>,
     clock: Arc<dyn Clock>,
     limits: FileLimits,
+    worker: Arc<dyn Worker>,
 }
 
 impl FileService {
@@ -73,7 +75,15 @@ impl FileService {
             models,
             clock,
             limits,
+            worker: Arc::new(InlineWorker),
         }
+    }
+
+    /// Measures uploads (audio length, PDF pages, SHA-256) on `worker` instead of the caller's
+    /// task. The API passes Tokio's blocking pool; without it the work runs in place.
+    pub fn with_worker(mut self, worker: Arc<dyn Worker>) -> Self {
+        self.worker = worker;
+        self
     }
 
     /// Stores an upload after checking, in order: the owner belongs to the caller, the size
@@ -100,20 +110,31 @@ impl FileService {
             .with_context("maxUploadMb", self.limits.max_upload_mb));
         }
         let media_type = MediaType::detect(name, &bytes)?;
-        if matches!(owner, FileOwner::Chat(_)) && media_type.kind() == FileKind::Audio {
-            check_clip(media_type, &bytes)?;
-        }
+        let clip = matches!(owner, FileOwner::Chat(_)) && media_type.kind() == FileKind::Audio;
+        // Linear in the upload's size, which may be up to 1,000 MB: off the request's task.
+        let content = bytes.clone();
+        let (checked, page_count, sha256) = offload(&*self.worker, move || {
+            let checked = if clip {
+                check_clip(media_type, &content)
+            } else {
+                Ok(())
+            };
+            let pages = (media_type.kind() == FileKind::Pdf).then(|| pdf_pages(&content));
+            let sha256: [u8; 32] = Sha256::digest(&content).into();
+            (checked, pages, sha256)
+        })
+        .await;
+        checked?;
         let quota = self.limits.max_storage_mb * MEBIBYTE;
-        // Fails fast before hashing; `create` checks again under the user's lock.
+        // Fails fast before storing; `create` checks again under the user's lock.
         let used = self.files.usage(actor.user_id).await?;
         if used.saturating_add(size_bytes) > quota {
             return Err(self.storage_full());
         }
-        let page_count = (media_type.kind() == FileKind::Pdf).then(|| pdf_pages(&bytes));
         let measured = Measured {
             media_type,
             size_bytes,
-            sha256: Sha256::digest(&bytes).into(),
+            sha256,
             token_estimate: estimate(media_type, size_bytes, page_count),
             page_count,
         };

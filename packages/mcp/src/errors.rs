@@ -9,6 +9,7 @@
 
 use std::error::Error;
 
+use copilot_core::shared::constants::MCP_TOOLS_MAX;
 use copilot_core::{Blocked, DomainError, ToolServerId};
 use rmcp::ServiceError;
 use rmcp::model::ErrorData;
@@ -198,6 +199,15 @@ impl Failure {
 pub(crate) fn too_large() -> DomainError {
     DomainError::upstream(
         "The tool server sent more than Copilot accepts in one response (4 MiB).",
+        TOOL_SERVER_TOO_LARGE,
+    )
+}
+
+pub(crate) fn too_many() -> DomainError {
+    DomainError::upstream(
+        format!(
+            "The tool server lists more than {MCP_TOOLS_MAX} tools, more than Copilot accepts."
+        ),
         TOOL_SERVER_TOO_LARGE,
     )
 }
