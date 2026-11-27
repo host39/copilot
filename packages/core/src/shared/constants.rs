@@ -45,8 +45,12 @@ pub const ANSWER_SLACK: u64 = 4;
 pub const ANSWER_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
 /// Parts (text, reasoning, tool calls) of one answer.
 pub const ANSWER_MAX_PARTS: usize = 256;
-/// Spoken reply audio of one answer: five minutes of 24 kHz PCM16 (**verify** in P2.B).
-pub const AUDIO_OUT_MAX_BYTES: u64 = 300 * 24_000 * 2;
+/// Sample rate of spoken reply audio: `pcm16` is 24 kHz mono 16-bit little-endian (OpenAI
+/// Chat Completions audio output), which the saved WAV file states.
+pub const AUDIO_OUT_SAMPLE_RATE: u32 = 24_000;
+/// Spoken reply audio of one answer: five minutes of 24 kHz PCM16 (checked in P2.B against
+/// OpenAI's `pcm16` output).
+pub const AUDIO_OUT_MAX_BYTES: u64 = AUDIO_CLIP_MAX_SECS as u64 * AUDIO_OUT_SAMPLE_RATE as u64 * 2;
 /// Output token limit of a model without one: this, or a quarter of its context window when
 /// that is smaller.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
@@ -94,8 +98,10 @@ pub const CONTEXT_WARN_RATIO: f64 = 0.8;
 pub const TOKENS_PER_PDF_PAGE: u32 = 3_000;
 pub const TOKENS_PER_IMAGE: u32 = 1_600;
 pub const BYTES_PER_TOKEN: u64 = 4;
-/// Push-to-talk clip limits.
+/// Longest audio in a chat: a push-to-talk clip (the client stops recording there), any audio
+/// file uploaded to a chat (refused past it), and a spoken reply (`AUDIO_OUT_MAX_BYTES`).
 pub const AUDIO_CLIP_MAX_SECS: u32 = 300;
+/// Sample rate the client records push-to-talk clips at (16 kHz mono PCM16 WAV).
 pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
 pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
 /// A `GET /api/events` stream ends after this long and the client connects again, so a session

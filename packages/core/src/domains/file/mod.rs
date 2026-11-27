@@ -1,11 +1,14 @@
-//! `file`: project files and chat attachments (allowlist, magic bytes, quota, token estimate).
+//! `file`: project files and chat attachments (allowlist, magic bytes, quota, token estimate,
+//! audio length).
 
+mod audio;
 mod capacity;
 mod entities;
 mod media;
 mod ports;
 mod service;
 
+pub use crate::domains::file::audio::{duration_ms, wav};
 pub use crate::domains::file::capacity::{Capacity, CapacityLevel, largest};
 pub use crate::domains::file::entities::{
     FileOwner, Measured, StoredFile, StoredFileParts, file_name,
