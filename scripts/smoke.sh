@@ -239,7 +239,7 @@ connect() {
   request PATCH "/models/$model" '{"enabled":true}'
   expect 200 "enable fake-chat ($kind)"
   [[ "$(field .data.enabled)" == true ]] || fail "fake-chat should be enabled: $body"
-  pass "$kind connection: three models with their capabilities, fake-chat enabled"
+  pass "$kind connection ($preset preset): three models with their capabilities, fake-chat enabled"
 }
 
 # chat <kind>: a chat on $model; "hello", then "failed 403", then the saved messages.

@@ -909,7 +909,6 @@ mod tests {
     use crate::testing::{actor, remote_model};
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n....";
-    const WAV: &[u8] = b"RIFF\x24\x00\x00\x00WAVEfmt ";
 
     fn is_not_found(error: &DomainError, entity: &str) -> bool {
         matches!(error, DomainError::EntityNotFound { entity_name, .. } if entity_name == entity)
@@ -987,7 +986,8 @@ mod tests {
             .upload(&caller, FileOwner::Chat(chat.id()), "shot.png", png)
             .await
             .unwrap();
-        let wav = Bytes::from_static(WAV);
+        // A tenth of a second of 16 kHz push-to-talk audio.
+        let wav = crate::domains::file::wav(&[0; 3_200], 16_000);
         let clip = f
             .files
             .upload(&caller, FileOwner::Chat(chat.id()), "clip.wav", wav)
