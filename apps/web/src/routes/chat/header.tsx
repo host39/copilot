@@ -13,8 +13,10 @@ import { InstructionsForm, MoveForm, useChatSaved } from "@web/routes/chat/dialo
 import { type MenuAction, menuActions, titleSchema } from "@web/routes/chat/settings";
 import path, { link } from "@web/routes/path";
 import { projectLabel } from "@web/routes/project/forms";
+import { newScheduleLink } from "@web/routes/schedule/draft";
 import { useRef, useState } from "react";
 import {
+  LuCalendarPlus,
   LuFolderInput,
   LuFolderOpen,
   LuFolderPlus,
@@ -129,8 +131,8 @@ type ChatHeaderProps = {
 
 /**
  * The chat's top bar: the drawer button on phones, the title (tap to rename), the model picker,
- * and the overflow menu (project, chat instructions, move to project, pin, save as project or
- * save instructions to project, delete).
+ * and the overflow menu (project, chat instructions, move to project, pin, schedule this prompt,
+ * save as project or save instructions to project, delete).
  */
 export function ChatHeader({ chat, project, models, toolsOn }: ChatHeaderProps) {
   const saved = useChatSaved();
@@ -197,6 +199,12 @@ export function ChatHeader({ chat, project, models, toolsOn }: ChatHeaderProps) 
       label: chat.pinned ? "Unpin" : "Pin",
       icon: chat.pinned ? <LuPinOff /> : <LuPin />,
       onSelect: () => change.mutate({ pinned: !chat.pinned }),
+    },
+    schedule: {
+      key: "schedule",
+      label: "Schedule this prompt...",
+      icon: <LuCalendarPlus />,
+      onSelect: () => navigate(newScheduleLink({ chatId: chat.id })),
     },
     "save-as-project": {
       key: "save-as-project",

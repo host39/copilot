@@ -4,7 +4,9 @@
 //
 // The transport is injectable: web builds use the browser's `fetch`; native builds install the
 // `fetch` of `@tauri-apps/plugin-http` at startup (no CORS, mixed content, or Android cleartext
-// limits), and tests install a fake.
+// limits), and tests install a fake. `fetch` cannot report the bytes an upload sent, so a request
+// that asks for upload progress goes through `XMLHttpRequest` in browsers (`Transport.upload`);
+// native builds have none and send it with their `fetch`, without byte progress.
 
 import {
   type ErrorResponse,
@@ -20,8 +22,16 @@ import type { z } from "zod";
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Bytes an upload sent so far, of `total`. */
+export type UploadProgress = { loaded: number; total: number };
+
 export type Transport = {
   fetch: Fetch;
+  /**
+   * Builds the request an upload with progress goes through (`XMLHttpRequest`); `null` sends
+   * uploads with `fetch`, without byte progress.
+   */
+  upload: (() => XMLHttpRequest) | null;
   /** The server URL without a trailing slash; `""` for the page's own origin. */
   server: () => string | undefined;
   token: () => string | null;
@@ -29,8 +39,13 @@ export type Transport = {
   signedOut: () => void;
 };
 
+function browserUpload(): (() => XMLHttpRequest) | null {
+  return typeof XMLHttpRequest === "function" ? () => new XMLHttpRequest() : null;
+}
+
 const browserTransport: Transport = {
   fetch: (input, init) => globalThis.fetch(input, init),
+  upload: browserUpload(),
   server: serverUrl,
   token: getToken,
   signedOut: clearToken,
@@ -94,6 +109,8 @@ export type RequestOptions = {
   /** Another server URL to call (the Connect screen's check). It never gets the token. */
   server?: string;
   accept?: string;
+  /** Hears the bytes the body sent, where the transport can tell (`Transport.upload`). */
+  onUploadProgress?: (progress: UploadProgress) => void;
 };
 
 /** A random version 4 UUID, also outside secure contexts (plain `http` on a LAN), where `crypto.randomUUID` is missing. */
@@ -137,6 +154,91 @@ async function readError(response: Response): Promise<ApiError> {
 
 type Prepared = { url: string; init: RequestInit; token: string | null; id: string };
 
+/** Whether a response with `status` has no body (`new Response` refuses one). */
+function bodiless(status: number): boolean {
+  return status === 204 || status === 205 || status === 304;
+}
+
+/** The headers of `getAllResponseHeaders()`, one `name: value` per line. */
+export function responseHeaders(text: string): Headers {
+  const headers = new Headers();
+  for (const line of text.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon > 0) {
+      try {
+        headers.append(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+      } catch {
+        // A header `Headers` refuses carries nothing the client reads.
+      }
+    }
+  }
+  return headers;
+}
+
+/**
+ * `fetch` over `XMLHttpRequest`, which reports the bytes the body sent. Answers a `Response` as
+ * `fetch` does, rejects with a `TypeError` when the server cannot be reached and with an
+ * `AbortError` once `init.signal` aborts.
+ */
+export function sendWithProgress(
+  request: XMLHttpRequest,
+  url: string,
+  init: RequestInit,
+  onProgress: (progress: UploadProgress) => void
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const signal = init.signal;
+    const aborted = () => new DOMException("The request was cancelled.", "AbortError");
+    if (signal?.aborted) {
+      reject(aborted());
+      return;
+    }
+    request.open(init.method ?? "GET", url);
+    new Headers(init.headers).forEach((value, name) => {
+      request.setRequestHeader(name, value);
+    });
+    const stop = () => request.abort();
+    signal?.addEventListener("abort", stop, { once: true });
+    const finish = () => signal?.removeEventListener("abort", stop);
+
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress({ loaded: event.loaded, total: event.total });
+    };
+    request.onload = () => {
+      finish();
+      const status = request.status;
+      if (status < 200 || status > 599) {
+        reject(new TypeError("The request failed."));
+        return;
+      }
+      resolve(
+        new Response(bodiless(status) ? null : request.responseText, {
+          status,
+          statusText: request.statusText,
+          headers: responseHeaders(request.getAllResponseHeaders()),
+        })
+      );
+    };
+    request.onerror = () => {
+      finish();
+      reject(new TypeError("The request failed."));
+    };
+    request.onabort = () => {
+      finish();
+      reject(aborted());
+    };
+    request.send((init.body ?? null) as XMLHttpRequestBodyInit | null);
+  });
+}
+
+/** How a request goes out: with upload progress where it asks for it and the transport can. */
+function sender(options: RequestOptions): Fetch {
+  const progress = options.onUploadProgress;
+  const upload = transport.upload;
+  if (!progress || !upload) return transport.fetch;
+  return (url, init = {}) => sendWithProgress(upload(), url, init, progress);
+}
+
 /** The URL, headers, and body of a request. The token goes only to the configured server. */
 function prepare(path: string, options: RequestOptions): Prepared {
   const configured = transport.server();
@@ -174,7 +276,7 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
 
   let response: Response;
   try {
-    response = await transport.fetch(url, init);
+    response = await sender(options)(url, init);
   } catch (error) {
     if (isAbort(error)) throw error;
     log("warn", "web.api.request.unreachable", { path, requestId: id });

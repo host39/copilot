@@ -17,7 +17,12 @@ import { QueryState } from "@web/components/Settings/QueryState";
 import { useSubmit } from "@web/hooks/useSubmit";
 import path from "@web/routes/path";
 import { identitySchema, NAME_MAX_CHARS, projectLabel } from "@web/routes/project/forms";
-import { InstructionsPanel, ModelPanel, ToolsPanel } from "@web/routes/project/panels";
+import {
+  InstructionsPanel,
+  ModelPanel,
+  SchedulesPanel,
+  ToolsPanel,
+} from "@web/routes/project/panels";
 import { ago } from "@web/routes/settings/format";
 import { type ReactNode, useId, useState } from "react";
 import { LuArrowLeft, LuPencil, LuPin, LuPinOff, LuTrash2 } from "react-icons/lu";
@@ -210,7 +215,8 @@ const TABS: readonly [Tab, string][] = [
 
 /**
  * A project: its name and icon, a composer that starts a chat in it, its chats, and a side panel
- * (a tab on phones) with instructions, files and the capacity bar, the default model, and tools.
+ * (a tab on phones) with instructions, files and the capacity bar, the default model, tools, and
+ * schedules.
  */
 export function ProjectDetails({ id }: { id: string }) {
   const project = useQuery({
@@ -276,6 +282,9 @@ export function ProjectDetails({ id }: { id: string }) {
                 </Panel>
                 <Panel title="Tools">
                   <ToolsPanel project={data} />
+                </Panel>
+                <Panel title="Schedules">
+                  <SchedulesPanel project={data} />
                 </Panel>
               </aside>
             </div>

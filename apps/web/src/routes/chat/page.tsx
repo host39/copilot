@@ -18,6 +18,7 @@ import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
 import { type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
 import { type Attached, type Phase, useTurn } from "@web/routes/chat/turn";
 import path from "@web/routes/path";
+import { scheduleContext } from "@web/routes/schedule/rules";
 import { shortTokens } from "@web/routes/settings/provider/models";
 import { type RefObject, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -270,6 +271,7 @@ function ChatView({ chatId }: { chatId: string }) {
               actions={actions}
               titles={turn.run?.titles}
               servers={names}
+              schedule={scheduleContext(model, project.data, servers.data)}
             />
           </QueryState>
         </div>

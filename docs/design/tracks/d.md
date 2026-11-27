@@ -42,4 +42,4 @@ None.
 
 ## Interface-Change Requests
 
-- `apps/web/src/api/client.ts` (frozen): an upload progress callback in `RequestOptions`, sent through an `XMLHttpRequest` transport in browsers. Until then `api/routes/files.ts` builds browser uploads with `XMLHttpRequest` itself (the configured server, the bearer token, a request id, the same `ApiError`, and the sign-out on a rejected token), and native builds upload through the client's transport without byte progress. With the change, `files.ts` keeps only the call.
+- Resolved in P3.3d: `apps/web/src/api/client.ts` (frozen): an upload progress callback in `RequestOptions`, sent through an `XMLHttpRequest` transport in browsers. Until then `api/routes/files.ts` builds browser uploads with `XMLHttpRequest` itself (the configured server, the bearer token, a request id, the same `ApiError`, and the sign-out on a rejected token), and native builds upload through the client's transport without byte progress. With the change, `files.ts` keeps only the call. Done: `RequestOptions.onUploadProgress` sends through `Transport.upload` (an `XMLHttpRequest` in browsers, `null` in native builds), and `files.ts` keeps only the call.

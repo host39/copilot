@@ -262,12 +262,20 @@ describe("chat settings", () => {
   });
 
   test("the menu offers save as project alone, and save instructions in a project", () => {
-    expect(menuActions(chat)).toEqual(["instructions", "move", "pin", "save-as-project", "delete"]);
+    expect(menuActions(chat)).toEqual([
+      "instructions",
+      "move",
+      "pin",
+      "schedule",
+      "save-as-project",
+      "delete",
+    ]);
     expect(menuActions({ projectId: PROJECT, instructions: "Be brief." })).toEqual([
       "project",
       "instructions",
       "move",
       "pin",
+      "schedule",
       "save-instructions",
       "delete",
     ]);

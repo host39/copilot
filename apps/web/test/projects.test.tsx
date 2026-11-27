@@ -11,14 +11,12 @@ import type {
 } from "@copilot/contracts";
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ApiError, resetTransport, setTransport } from "@web/api/client";
+import { ApiError, resetTransport, responseHeaders, setTransport } from "@web/api/client";
 import {
   deleteFile,
   fetchFileContent,
   fetchProjectFiles,
   moveFile,
-  readUpload,
-  setUploadRequest,
   type UploadProgress,
   updateFile,
   uploadFile,
@@ -198,7 +196,6 @@ afterEach(() => {
   calls = [];
   clearToken();
   resetTransport();
-  setUploadRequest(undefined);
 });
 
 describe("the project request helpers", () => {
@@ -283,7 +280,7 @@ describe("the file request helpers", () => {
   });
 
   test("without XMLHttpRequest an upload goes through the client as one `file` part", async () => {
-    setUploadRequest(null);
+    setTransport({ upload: null });
     serve(() => json({ data: file("notes.md", 3) }, 201));
     const seen: UploadProgress[] = [];
     const saved = await uploadFile({ projectId: PROJECT }, new Blob(["# Notes"]), "notes.md", {
@@ -300,7 +297,7 @@ describe("the file request helpers", () => {
   });
 
   test("chat attachments go to the chat's route", async () => {
-    setUploadRequest(null);
+    setTransport({ upload: null });
     serve(() => json({ data: file("a.png", 1600, { projectId: null, chatId: OTHER }) }, 201));
     await uploadFile({ chatId: OTHER }, new Blob(["x"]), "a.png");
     expect(calls[0]?.url).toBe(`/api/chats/${OTHER}/files`);
@@ -318,11 +315,13 @@ class FakeRequest {
   static last: FakeRequest | undefined;
   method = "";
   url = "";
+  /** Header names in lower case, as `Headers` hands them over. */
   headers: Record<string, string> = {};
   body: unknown;
   status = 0;
+  statusText = "";
   responseText = "";
-  answerHeaders: Record<string, string> = {};
+  answerHeaders = "";
   upload: { onprogress: ProgressHandler | null } = { onprogress: null };
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -333,10 +332,10 @@ class FakeRequest {
     this.url = url;
   }
   setRequestHeader(name: string, value: string) {
-    this.headers[name] = value;
+    this.headers[name.toLowerCase()] = value;
   }
-  getResponseHeader(name: string) {
-    return this.answerHeaders[name] ?? null;
+  getAllResponseHeaders() {
+    return this.answerHeaders;
   }
   send(body: unknown) {
     this.body = body;
@@ -347,15 +346,20 @@ class FakeRequest {
   }
   respond(status: number, body: unknown, headers: Record<string, string> = {}) {
     this.status = status;
-    this.responseText = JSON.stringify(body);
-    this.answerHeaders = headers;
+    this.responseText = typeof body === "string" ? body : JSON.stringify(body);
+    this.answerHeaders = Object.entries(headers)
+      .map(([name, value]) => `${name}: ${value}\r\n`)
+      .join("");
     this.onload?.();
   }
 }
 
+/** A progress listener, so uploads take the `XMLHttpRequest` path. */
+const onProgress = () => undefined;
+
 function fakeRequests(): void {
   FakeRequest.last = undefined;
-  setUploadRequest(() => new FakeRequest() as unknown as XMLHttpRequest);
+  setTransport({ upload: () => new FakeRequest() as unknown as XMLHttpRequest });
 }
 
 function current(): FakeRequest {
@@ -375,9 +379,10 @@ describe("uploads with progress", () => {
     const request = current();
     expect(request.method).toBe("POST");
     expect(request.url).toBe(`/api/projects/${PROJECT}/files`);
-    expect(request.headers.Authorization).toBe("Bearer token");
-    expect(request.headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(request.headers.Accept).toBe("application/json");
+    expect(request.headers.authorization).toBe("Bearer token");
+    expect(request.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(request.headers.accept).toBe("application/json");
+    expect(request.headers["content-type"]).toBeUndefined();
     expect((request.body as FormData).get("file")).toBeInstanceOf(Blob);
 
     request.upload.onprogress?.({ lengthComputable: true, loaded: 4, total: 10 });
@@ -390,9 +395,17 @@ describe("uploads with progress", () => {
     ]);
   });
 
+  test("a request without progress never takes the upload path", async () => {
+    fakeRequests();
+    serve(() => json({ data: file("a.txt", 3) }));
+    await updateFile(FILE, { name: "a.txt" });
+    expect(FakeRequest.last).toBeUndefined();
+    expect(calls).toHaveLength(1);
+  });
+
   test("a rejected upload throws the server's message and field", async () => {
     fakeRequests();
-    const pending = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.exe");
+    const pending = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.exe", { onProgress });
     current().respond(
       400,
       { error: "This file type is not supported.", code: "VALIDATION_ERROR", field: "file" },
@@ -411,7 +424,7 @@ describe("uploads with progress", () => {
   test("a rejected token signs out, as other requests do", async () => {
     fakeRequests();
     setToken("token");
-    const pending = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt");
+    const pending = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", { onProgress });
     current().respond(401, { error: "Sign in again.", code: "UNAUTHORIZED" });
     await pending.catch(() => undefined);
     expect(getToken()).toBeNull();
@@ -419,7 +432,7 @@ describe("uploads with progress", () => {
 
   test("network failures and aborts read like the client's", async () => {
     fakeRequests();
-    const failing = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt");
+    const failing = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", { onProgress });
     current().onerror?.();
     expect(await failing.catch((failure: unknown) => failure)).toMatchObject({
       status: 0,
@@ -429,24 +442,43 @@ describe("uploads with progress", () => {
     const controller = new AbortController();
     const aborted = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", {
       signal: controller.signal,
+      onProgress,
     });
     controller.abort();
     expect(await aborted.catch((failure: unknown) => (failure as Error).name)).toBe("AbortError");
+
+    const before = new AbortController();
+    before.abort();
+    const early = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", {
+      signal: before.signal,
+      onProgress,
+    });
+    expect(await early.catch((failure: unknown) => (failure as Error).name)).toBe("AbortError");
   });
 
-  test("an answer the schema does not know is an invalid response", () => {
-    const answer = readUpload(201, "{}", () => null, "id-1");
-    expect(answer).toMatchObject({ code: "INVALID_RESPONSE", requestId: "id-1" });
-    const plain = readUpload(
-      502,
-      "Bad gateway",
-      (name) => (name === "Retry-After" ? "5" : null),
-      "id"
-    );
-    expect(plain).toMatchObject({
+  test("answers the schema does not know, and plain-text failures, read like the client's", async () => {
+    fakeRequests();
+    const odd = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", { onProgress });
+    current().respond(201, {}, { "X-Request-Id": "id-1" });
+    expect(await odd.catch((failure: unknown) => failure)).toMatchObject({
+      code: "INVALID_RESPONSE",
+      requestId: "id-1",
+    });
+
+    const plain = uploadFile({ projectId: PROJECT }, new Blob(["x"]), "a.txt", { onProgress });
+    current().respond(502, "Bad gateway", { "Retry-After": "5" });
+    expect(await plain.catch((failure: unknown) => failure)).toMatchObject({
       message: "The server answered with status 502.",
       retryAfterSecs: 5,
     });
+  });
+
+  test("response headers parse line by line, skipping what `Headers` refuses", () => {
+    const headers = responseHeaders(
+      "Content-Type: application/json\r\nX-Request-Id: a:b\r\nbad line\r\n"
+    );
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("x-request-id")).toBe("a:b");
   });
 });
 
