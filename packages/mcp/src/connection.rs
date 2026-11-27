@@ -1,13 +1,15 @@
-//! One rmcp client connection to one tool server: the dual-era lifecycle with era memory, the
-//! paged tool list with its caps, and tool calls with the unknown-tool refresh.
+//! One rmcp client connection to one tool server, over Streamable HTTP or a stdio server's
+//! process: the dual-era lifecycle with era memory, the paged tool list with its caps, and tool
+//! calls with the unknown-tool refresh.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use copilot_core::shared::constants::{MCP_LIST_MAX_PAGES, MCP_TOOLS_MAX};
 use copilot_core::{
-    DomainError, DomainResult, RemoteTool, Secret, ToolEndpoint, ToolHeaders, ToolOutput,
-    ToolServerId,
+    DomainError, DomainResult, RemoteTool, Secret, StdioLaunch, Target, ToolEndpoint, ToolHeaders,
+    ToolOutput, ToolServerId,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{
@@ -15,14 +17,15 @@ use rmcp::model::{
     Implementation, PaginatedRequestParams, ProtocolVersion,
 };
 use rmcp::service::{ClientInitializeError, RunningService};
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{IntoTransport, StreamableHttpClientTransport};
 use rmcp::{ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, RoleClient, ServiceError};
 use serde_json::{Map, Value};
 
 use crate::convert;
 use crate::errors::{self, Credentials, Failure};
 use crate::host::Shared;
+use crate::stdio::{self, Process};
 
 /// The modern revision: stateless, no `initialize`, `server/discover` up front.
 const MODERN: ProtocolVersion = ProtocolVersion::V_2026_07_28;
@@ -78,6 +81,8 @@ impl Lifecycle {
 enum Attempt {
     Failed(Box<ClientInitializeError>),
     Elapsed,
+    /// A stdio server's process was not started (the gate refused it, or it could not run).
+    Stopped(DomainError),
 }
 
 impl Attempt {
@@ -85,6 +90,27 @@ impl Attempt {
         match self {
             Self::Failed(error) => Failure::connect(error),
             Self::Elapsed => Failure::Timeout,
+            Self::Stopped(_) => Failure::Other,
+        }
+    }
+
+    /// Whether another lifecycle might work (see [`Failure::era_mismatch`]); never after a
+    /// process was refused or could not start.
+    fn era_mismatch(&self) -> bool {
+        !matches!(self, Self::Stopped(_)) && self.failure().era_mismatch()
+    }
+
+    /// The error of a stdio server's failed start or handshake.
+    fn stdio(self) -> DomainError {
+        let failure = self.failure();
+        match self {
+            Self::Stopped(error) => error,
+            Self::Elapsed => stdio::handshake_failed(true, false, false),
+            Self::Failed(_) => stdio::handshake_failed(
+                false,
+                failure == Failure::Protocol,
+                failure == Failure::Version,
+            ),
         }
     }
 
@@ -120,13 +146,20 @@ pub(crate) struct Connection {
     token: Option<Secret>,
     /// `MCP_RESPONSE_MAX_BYTES`: also the cap on a whole tool list.
     max_bytes: usize,
+    /// A stdio server's process, stopped by [`Connection::close`] and killed when dropped.
+    process: Option<Process>,
 }
 
 impl Connection {
     /// Connects with the endpoint's credentials. A server signed in with OAuth gets the current
     /// access token on every request; when it answers `401`, the token is refreshed once
     /// (`AccessTokens::rejected`) and the connection tried again.
+    ///
+    /// A stdio server's process starts here (after its gate), once per lifecycle attempt.
     pub(crate) async fn open(shared: &Shared, endpoint: &ToolEndpoint) -> DomainResult<Self> {
+        if let Target::Stdio(launch) = &endpoint.target {
+            return Self::stdio(shared, endpoint, launch).await;
+        }
         let credentials = Credentials::of(endpoint);
         let report = |failure: Failure| failure.report(endpoint.server_id, credentials);
         let Some(tokens) = &endpoint.tokens else {
@@ -156,10 +189,8 @@ impl Connection {
             .map_err(|failure| failure.report(endpoint.server_id, Credentials::SignIn))
     }
 
-    /// Connects with the revision remembered for the server (this process's memory first, then
-    /// the endpoint's stored `protocol_version`), or probes both eras when none is known. A
-    /// remembered revision that the server no longer speaks falls back to the probe, and a probe
-    /// that finds only legacy revisions behind `server/discover` falls back to `initialize`.
+    /// Connects over Streamable HTTP with the revision remembered for the server (see
+    /// [`negotiate`]).
     async fn connect(
         shared: &Shared,
         endpoint: &ToolEndpoint,
@@ -167,86 +198,30 @@ impl Connection {
     ) -> Result<Self, Failure> {
         let server_id = endpoint.server_id;
         let credentials = Credentials::of(endpoint);
+        let Some(url) = endpoint.url() else {
+            return Err(Failure::Other);
+        };
         let http = shared
             .clients
-            .pick(endpoint.url.url(), endpoint.network)
+            .pick(url.url(), endpoint.network)
             .map_err(Failure::Blocked)?;
         let headers = headers(endpoint, token.as_ref())?;
-        let url = endpoint.url.url().as_str();
-        let remembered = shared
-            .eras
-            .get(server_id, url)
-            .or_else(|| endpoint.protocol_version.as_deref().and_then(known_version));
-        let first = Lifecycle::remembered(remembered);
+        let url = url.url().as_str();
         let attempt = |lifecycle: Lifecycle| {
             let config = StreamableHttpClientTransportConfig::with_uri(url)
                 .custom_headers(headers.clone())
                 .max_json_response_size(shared.limits.response_max_bytes)
                 .max_sse_event_size(shared.limits.response_max_bytes);
             let transport = StreamableHttpClientTransport::with_client(http.clone(), config);
-            let info = ClientConfig::new(
-                ClientCapabilities::default(),
-                Implementation::new("copilot", env!("CARGO_PKG_VERSION")),
-            );
-            let info = match lifecycle {
-                Lifecycle::Legacy => info.with_protocol_version(LEGACY),
-                _ => info,
-            };
-            let connect = shared.limits.connect;
             async move {
-                match tokio::time::timeout(
-                    connect,
-                    info.serve_with_lifecycle(transport, lifecycle.mode()),
-                )
-                .await
-                {
-                    Ok(Ok(client)) => Ok(client),
-                    Ok(Err(error)) => Err(Attempt::Failed(Box::new(error))),
-                    Err(_) => Err(Attempt::Elapsed),
-                }
+                handshake(lifecycle, transport, shared.limits.connect)
+                    .await
+                    .map(|client| (client, None))
             }
         };
-
-        let mut result = attempt(first.clone()).await;
-        if let Err(failed) = &result
-            && first != Lifecycle::Auto
-            && failed.failure().era_mismatch()
-        {
-            tracing::info!(
-                server_id = %server_id,
-                remembered = first.name(),
-                "mcp.connect.era-changed"
-            );
-            result = attempt(Lifecycle::Auto).await;
-        }
-        if let Err(failed) = &result
-            && first != Lifecycle::Legacy
-            && failed.legacy_offered()
-        {
-            result = attempt(Lifecycle::Legacy).await;
-        }
-        let client = match result {
-            Ok(client) => client,
-            Err(failed) => {
-                shared.eras.forget(server_id, url);
-                return Err(failed.failure());
-            }
-        };
-        // Core keeps the tool list; rmcp's own response cache would serve stale lists to the
-        // unknown-tool refresh.
-        client
-            .set_response_cache_config(ClientCacheConfig::disabled())
-            .await;
-        let version = client
-            .peer_info()
-            .map(|info| info.protocol_version.clone())
-            .unwrap_or(LEGACY);
-        shared.eras.remember(server_id, url, version.clone());
-        tracing::debug!(
-            server_id = %server_id,
-            protocol_version = %version,
-            "mcp.connect.opened"
-        );
+        let (client, process, version) = negotiate(shared, endpoint, url, attempt)
+            .await
+            .map_err(|failed| failed.failure())?;
         Ok(Self {
             client,
             server_id,
@@ -254,6 +229,52 @@ impl Connection {
             credentials,
             token,
             max_bytes: shared.limits.response_max_bytes,
+            process,
+        })
+    }
+
+    /// Starts a stdio server's process and connects over its stdin and stdout. Each lifecycle
+    /// attempt is a new process, and each start passes the gate again; a process that does not
+    /// finish the handshake within `Limits::stdio_start` is killed (dropping the transport).
+    async fn stdio(
+        shared: &Shared,
+        endpoint: &ToolEndpoint,
+        launch: &StdioLaunch,
+    ) -> DomainResult<Self> {
+        let server_id = endpoint.server_id;
+        let started = Instant::now();
+        let max_bytes = shared.limits.response_max_bytes;
+        let attempt = |lifecycle: Lifecycle| async move {
+            let (pipes, process) =
+                stdio::spawn(shared.stdio.as_deref(), server_id, launch, max_bytes)
+                    .await
+                    .map_err(Attempt::Stopped)?;
+            // A failed or late handshake drops `process`, which kills it.
+            let client = handshake(lifecycle, pipes, shared.limits.stdio_start).await?;
+            Ok((client, Some(process)))
+        };
+        let key = format!("stdio:{}", launch.command);
+        let (client, process, version) = negotiate(shared, endpoint, &key, attempt)
+            .await
+            .map_err(|failed| {
+                if !matches!(failed, Attempt::Stopped(_)) {
+                    tracing::warn!(
+                        server_id = %server_id,
+                        failure = %failed.failure().kind(),
+                        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        "mcp.stdio.handshake-failed"
+                    );
+                }
+                failed.stdio()
+            })?;
+        Ok(Self {
+            client,
+            server_id,
+            version,
+            credentials: Credentials::None,
+            token: None,
+            max_bytes,
+            process,
         })
     }
 
@@ -399,10 +420,14 @@ impl Connection {
         self.client.is_transport_closed()
     }
 
-    /// Ends the connection (a legacy session also sends its `DELETE`), waiting at most `limit`.
+    /// Ends the connection (a legacy session also sends its `DELETE`), waiting at most `limit`;
+    /// a stdio server's process is stopped after its stdin closes.
     pub(crate) async fn close(mut self, limit: Duration) {
         if let Err(error) = self.client.close_with_timeout(limit).await {
             tracing::debug!(server_id = %self.server_id, error = %error, "mcp.connect.close-failed");
+        }
+        if let Some(process) = self.process.take() {
+            process.stop().await;
         }
     }
 
@@ -426,6 +451,99 @@ impl Connection {
             ServiceError::McpError(data) => errors::list_refused(self.server_id, data),
             error => Failure::request(error).report(self.server_id, self.credentials),
         }
+    }
+}
+
+/// Runs `attempt` with the revision remembered for the server under `key` (this process's
+/// memory first, then the endpoint's stored `protocol_version`), or probes both eras when none is
+/// known. A remembered revision that the server no longer speaks falls back to the probe, and a
+/// probe that finds only legacy revisions behind `server/discover` falls back to `initialize`.
+async fn negotiate<F, Fut, X>(
+    shared: &Shared,
+    endpoint: &ToolEndpoint,
+    key: &str,
+    mut attempt: F,
+) -> Result<(Client, X, ProtocolVersion), Attempt>
+where
+    F: FnMut(Lifecycle) -> Fut,
+    Fut: Future<Output = Result<(Client, X), Attempt>>,
+{
+    let server_id = endpoint.server_id;
+    let remembered = shared
+        .eras
+        .get(server_id, key)
+        .or_else(|| endpoint.protocol_version.as_deref().and_then(known_version));
+    let first = Lifecycle::remembered(remembered);
+    let mut result = attempt(first.clone()).await;
+    if let Err(failed) = &result
+        && first != Lifecycle::Auto
+        && failed.era_mismatch()
+    {
+        tracing::info!(
+            server_id = %server_id,
+            remembered = first.name(),
+            "mcp.connect.era-changed"
+        );
+        result = attempt(Lifecycle::Auto).await;
+    }
+    if let Err(failed) = &result
+        && first != Lifecycle::Legacy
+        && failed.legacy_offered()
+    {
+        result = attempt(Lifecycle::Legacy).await;
+    }
+    let (client, extra) = match result {
+        Ok(opened) => opened,
+        Err(failed) => {
+            shared.eras.forget(server_id, key);
+            return Err(failed);
+        }
+    };
+    // Core keeps the tool list; rmcp's own response cache would serve stale lists to the
+    // unknown-tool refresh.
+    client
+        .set_response_cache_config(ClientCacheConfig::disabled())
+        .await;
+    let version = client
+        .peer_info()
+        .map(|info| info.protocol_version.clone())
+        .unwrap_or(LEGACY);
+    shared.eras.remember(server_id, key, version.clone());
+    tracing::debug!(
+        server_id = %server_id,
+        protocol_version = %version,
+        "mcp.connect.opened"
+    );
+    Ok((client, extra, version))
+}
+
+/// One MCP handshake in `lifecycle` over `transport`, within `limit`.
+async fn handshake<T, E, A>(
+    lifecycle: Lifecycle,
+    transport: T,
+    limit: Duration,
+) -> Result<Client, Attempt>
+where
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let info = ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("copilot", env!("CARGO_PKG_VERSION")),
+    );
+    let info = match lifecycle {
+        Lifecycle::Legacy => info.with_protocol_version(LEGACY),
+        _ => info,
+    };
+    match tokio::time::timeout(
+        limit,
+        info.serve_with_lifecycle(transport, lifecycle.mode()),
+    )
+    .await
+    {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(error)) => Err(Attempt::Failed(Box::new(error))),
+        Err(_) => Err(Attempt::Elapsed),
     }
 }
 

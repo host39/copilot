@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use copilot_core::shared::constants::{MCP_RESPONSE_MAX_BYTES, MCP_TOOLS_MAX};
 use copilot_core::{
-    BaseUrl, DomainError, NetworkScope, Secret, TOOL_TIMEOUT, ToolContent, ToolEndpoint,
+    BaseUrl, DomainError, NetworkScope, Secret, TOOL_TIMEOUT, Target, ToolContent, ToolEndpoint,
     ToolHeaders, ToolHost, ToolServerId,
 };
 use copilot_mcp::{
@@ -37,7 +37,7 @@ fn endpoint(url: &str, network: NetworkScope) -> ToolEndpoint {
     ToolEndpoint {
         tokens: None,
         server_id: ToolServerId::generate(),
-        url: BaseUrl::restore(url).expect("a URL"),
+        target: Target::Http(BaseUrl::restore(url).expect("a URL")),
         headers: None,
         protocol_version: None,
         network,
@@ -527,11 +527,11 @@ async fn refuses_private_and_metadata_addresses_through_the_hardened_client() {
     ];
     for refused in cases {
         let error = host().list(&refused).await.unwrap_err();
-        assert_eq!(error.code(), TOOL_SERVER_BLOCKED, "{}", refused.url);
+        assert_eq!(error.code(), TOOL_SERVER_BLOCKED, "{:?}", refused.url());
         let error = call(&host(), &refused, "echo", json!({}))
             .await
             .unwrap_err();
-        assert_eq!(error.code(), TOOL_SERVER_BLOCKED, "{}", refused.url);
+        assert_eq!(error.code(), TOOL_SERVER_BLOCKED, "{:?}", refused.url());
     }
     assert!(
         server.seen().methods.is_empty(),

@@ -1,6 +1,7 @@
 //! MCP client over Streamable HTTP through the official `rmcp` SDK, for both the stateless
 //! 2026-07-28 revision and older servers with `initialize` and `Mcp-Session-Id` sessions
-//! (2025-11-25 and earlier). [`McpHost`] implements the `ToolHost` port of `copilot-core`, which
+//! (2025-11-25 and earlier), and over stdio for administrators' programs (`stdio`, rmcp's
+//! child-process transport). [`McpHost`] implements the `ToolHost` port of `copilot-core`, which
 //! roadmap step P1.3 froze.
 //!
 //! Behavior (`docs/design/copilot.md`, Tools and Outbound Requests; `docs/research/mcp.md`):
@@ -26,6 +27,9 @@
 //! - **Caps.** Every JSON response and SSE event is capped at `MCP_RESPONSE_MAX_BYTES` (rmcp
 //!   rejects a larger one instead of buffering it); core cuts result text to
 //!   `MCP_RESULT_MAX_BYTES`.
+//! - **stdio.** A stdio server's process starts on its first use in a run (or for a listing),
+//!   after core's gate, with only its listed environment, in its own directory under
+//!   `MCP_STDIO_DIR`, and ends with the run's session (or the listing); see `stdio`.
 //!
 //! Rules:
 //!
@@ -46,6 +50,7 @@ mod errors;
 mod host;
 mod oauth;
 mod session;
+mod stdio;
 
 pub use crate::errors::{
     TOOL_SERVER_AUTH, TOOL_SERVER_BLOCKED, TOOL_SERVER_FAILED, TOOL_SERVER_HEADERS,
@@ -54,3 +59,4 @@ pub use crate::errors::{
 };
 pub use crate::host::{Limits, McpHost};
 pub use crate::oauth::McpAuth;
+pub use crate::stdio::TOOL_SERVER_START;

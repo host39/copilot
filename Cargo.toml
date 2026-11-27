@@ -58,6 +58,10 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no
 # MCP client over Streamable HTTP only: the default features are server-side, and rmcp's `reqwest`
 # feature would enable reqwest's aws-lc-rs provider.
 rmcp = { version = "3.12.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# rmcp's child-process transport is built on it; named directly for `ProcessGroup` (a stdio tool
+# server's process and its children end together). No crate beyond what rmcp's
+# `transport-child-process` feature brings.
+process-wrap = { version = "10.0.2", default-features = false, features = ["tokio1", "process-group", "kill-on-drop"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

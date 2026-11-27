@@ -14,7 +14,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use copilot_core::{BaseUrl, LogLevel, NetworkScope, ToolEndpoint, ToolHost, ToolServerId};
+use copilot_core::{BaseUrl, LogLevel, NetworkScope, Target, ToolEndpoint, ToolHost, ToolServerId};
 use copilot_mcp::{Limits, McpHost};
 use copilot_security::{Purpose, clients};
 use serde_json::json;
@@ -58,7 +58,7 @@ fn endpoint(url: &str) -> ToolEndpoint {
     ToolEndpoint {
         tokens: None,
         server_id: ToolServerId::generate(),
-        url: BaseUrl::restore(url).expect("a URL"),
+        target: Target::Http(BaseUrl::restore(url).expect("a URL")),
         headers: None,
         protocol_version: None,
         network: NetworkScope::Private,

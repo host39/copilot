@@ -1,6 +1,6 @@
 [package]
 name = "copilot-mcp"
-description = "MCP client over Streamable HTTP (rmcp), dual-era, on the injected outbound client."
+description = "MCP client over Streamable HTTP (rmcp), dual-era, on the injected outbound client, and over stdio for administrators' programs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,11 +14,15 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 copilot-core = { workspace = true }
 futures-util = { workspace = true }
+# A stdio server's process group (killed together with the program's own children).
+process-wrap = { workspace = true }
 reqwest = { workspace = true }
-rmcp = { workspace = true }
+# `transport-child-process`: stdio tool servers (rmcp's `TokioChildProcess`, on `process-wrap`).
+rmcp = { workspace = true, features = ["transport-child-process"] }
 serde_json = { workspace = true }
-# `sync`: the session's connections live behind an async mutex.
-tokio = { workspace = true, features = ["sync"] }
+# `sync`: the session's connections live behind an async mutex. `process` and `io-util`: a stdio
+# server's process and its stderr.
+tokio = { workspace = true, features = ["sync", "process", "io-util"] }
 tracing = { workspace = true }
 # OAuth metadata, registration, and token URLs (sign-in).
 url = { workspace = true }
@@ -27,7 +31,7 @@ url = { workspace = true }
 # The in-process MCP server of the tests: rmcp's own Streamable HTTP server (both eras), served
 # by axum on loopback. Dev only: `make boundaries` checks normal dependencies.
 axum = { workspace = true }
-rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "transport-io"] }
 # The tests connect through the real hardened clients, as the composition root injects them.
 copilot-security = { workspace = true }
 # `tests/logs.rs` checks what reaches the log through the filter the logger installs.
@@ -35,6 +39,12 @@ copilot-logger = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 # A scripted authorization server for the sign-in tests (`tests/oauth.rs`).
 wiremock = { workspace = true }
+
+# `tests/stdio.rs` is its own stdio MCP server: run with `serve`, the test binary answers MCP on
+# its stdin and stdout, so the tests spawn a real child process without any other program.
+[[test]]
+name = "stdio"
+harness = false
 
 [lints]
 workspace = true

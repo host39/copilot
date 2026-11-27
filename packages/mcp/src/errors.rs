@@ -145,7 +145,7 @@ impl Failure {
     }
 
     /// A short name for logs.
-    fn kind(self) -> &'static str {
+    pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Blocked(_) => "blocked",
             Self::Auth => "auth",

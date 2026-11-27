@@ -1,15 +1,17 @@
 //! [`McpHost`], the `ToolHost` adapter, with its limits and era memory.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use copilot_core::shared::constants::{
-    MCP_CLOSE_TIMEOUT_SECS, MCP_CONNECT_TIMEOUT_SECS, MCP_LIST_TIMEOUT_SECS, MCP_RESPONSE_MAX_BYTES,
+    MCP_CLOSE_TIMEOUT_SECS, MCP_CONNECT_TIMEOUT_SECS, MCP_LIST_TIMEOUT_SECS,
+    MCP_RESPONSE_MAX_BYTES, MCP_STDIO_START_TIMEOUT_SECS,
 };
 use copilot_core::{
-    DomainResult, Outbound, ToolEndpoint, ToolHost, ToolListing, ToolServerId, ToolSession,
+    DomainResult, Outbound, Target, ToolEndpoint, ToolHost, ToolListing, ToolServerId, ToolSession,
 };
 use reqwest::Client;
 use rmcp::model::ProtocolVersion;
@@ -22,14 +24,17 @@ use crate::session::McpSession;
 const ERAS_MAX: usize = 4096;
 
 /// The adapter's time and size limits. [`Limits::default`] holds the production values (core's
-/// `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`, and
-/// `MCP_RESPONSE_MAX_BYTES`); tests shorten the times.
+/// `MCP_CONNECT_TIMEOUT_SECS`, `MCP_LIST_TIMEOUT_SECS`, `MCP_CLOSE_TIMEOUT_SECS`,
+/// `MCP_STDIO_START_TIMEOUT_SECS`, and `MCP_RESPONSE_MAX_BYTES`); tests shorten the times.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     /// One connection attempt, lifecycle included.
     pub connect: Duration,
-    /// A whole `tools/list`, connecting included.
+    /// A whole `tools/list`, connecting included (a stdio server's start comes on top).
     pub list: Duration,
+    /// A stdio server's process: from its start to the end of the MCP handshake. Past it the
+    /// process is killed.
+    pub stdio_start: Duration,
     /// Closing a connection.
     pub close: Duration,
     /// The largest JSON response or SSE event, and the largest tool list in all
@@ -42,6 +47,7 @@ impl Default for Limits {
         Self {
             connect: Duration::from_secs(MCP_CONNECT_TIMEOUT_SECS),
             list: Duration::from_secs(MCP_LIST_TIMEOUT_SECS),
+            stdio_start: Duration::from_secs(MCP_STDIO_START_TIMEOUT_SECS),
             close: Duration::from_secs(MCP_CLOSE_TIMEOUT_SECS),
             response_max_bytes: MCP_RESPONSE_MAX_BYTES,
         }
@@ -53,10 +59,13 @@ pub(crate) struct Shared {
     pub(crate) clients: Outbound<Client>,
     pub(crate) eras: Eras,
     pub(crate) limits: Limits,
+    /// `MCP_STDIO_DIR`: where stdio servers' working directories live; `None` refuses them.
+    pub(crate) stdio: Option<PathBuf>,
 }
 
 /// Implements `ToolHost` over Streamable HTTP with rmcp, on the hardened clients the
-/// composition root injects (`copilot_security::clients(Purpose::Tools)`).
+/// composition root injects (`copilot_security::clients(Purpose::Tools)`), and over stdio for
+/// the programs of stdio servers ([`McpHost::with_stdio`]).
 #[derive(Clone)]
 pub struct McpHost {
     shared: Arc<Shared>,
@@ -73,11 +82,29 @@ impl McpHost {
                 clients,
                 eras: Eras::default(),
                 limits,
+                stdio: None,
             }),
         }
     }
 
-    /// The revision this process last negotiated with the server at `url`, if any.
+    /// Runs stdio servers in their directories under `dir` (`MCP_STDIO_DIR`, an absolute path);
+    /// without it every stdio server is refused. Whether a server may start at all is core's
+    /// gate in its endpoint, asked before every start.
+    #[must_use]
+    pub fn with_stdio(self, dir: PathBuf) -> Self {
+        let shared = &self.shared;
+        Self {
+            shared: Arc::new(Shared {
+                clients: shared.clients.clone(),
+                eras: Eras::default(),
+                limits: shared.limits,
+                stdio: Some(dir),
+            }),
+        }
+    }
+
+    /// The revision this process last negotiated with the server at `url` (`stdio:<command>`
+    /// for a stdio server), if any.
     pub fn remembered(&self, server_id: ToolServerId, url: &str) -> Option<String> {
         self.shared
             .eras
@@ -88,10 +115,15 @@ impl McpHost {
 
 #[async_trait]
 impl ToolHost for McpHost {
-    /// Connects, reads every page of `tools/list`, and closes, within `Limits::list`.
+    /// Connects, reads every page of `tools/list`, and closes, within `Limits::list` (plus
+    /// `Limits::stdio_start` for a stdio server, whose process ends with the listing).
     async fn list(&self, endpoint: &ToolEndpoint) -> DomainResult<ToolListing> {
         let started = Instant::now();
         let shared = &self.shared;
+        let limit = match endpoint.target {
+            Target::Http(_) => shared.limits.list,
+            Target::Stdio(_) => shared.limits.list + shared.limits.stdio_start,
+        };
         let listing = async {
             let connection = Connection::open(shared, endpoint).await?;
             let listing = connection.tools().await;
@@ -103,11 +135,9 @@ impl ToolHost for McpHost {
                 ttl: listing.ttl,
             })
         };
-        let listing = tokio::time::timeout(shared.limits.list, listing)
-            .await
-            .map_err(|_| {
-                Failure::Timeout.report(endpoint.server_id, Credentials::of(endpoint))
-            })??;
+        let listing = tokio::time::timeout(limit, listing).await.map_err(|_| {
+            Failure::Timeout.report(endpoint.server_id, Credentials::of(endpoint))
+        })??;
         tracing::info!(
             server_id = %endpoint.server_id,
             tools = listing.tools.len(),
