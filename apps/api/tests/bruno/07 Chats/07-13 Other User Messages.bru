@@ -1,0 +1,26 @@
+meta {
+  name: 07-13 Other User Messages
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{chatId}}/messages
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}/messages` as user B
+
+  **This test verifies:** user B cannot read user A's messages.
+}

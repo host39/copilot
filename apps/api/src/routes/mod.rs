@@ -145,10 +145,16 @@ mod tests {
         ("DELETE", "/api/files/{id}"),
         ("POST", "/api/files/{id}/move"),
         ("GET", "/api/files/{id}/content"),
+        ("GET", "/api/chats"),
         ("POST", "/api/chats"),
         ("GET", "/api/chats/{id}"),
+        ("PATCH", "/api/chats/{id}"),
+        ("DELETE", "/api/chats/{id}"),
+        ("POST", "/api/chats/{id}/read"),
         ("GET", "/api/chats/{id}/messages"),
         ("POST", "/api/chats/{id}/messages"),
+        ("POST", "/api/chats/{id}/save-as-project"),
+        ("POST", "/api/chats/{id}/save-instructions"),
     ];
 
     fn written(method: &Method, uri: &str) -> bool {

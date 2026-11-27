@@ -1,0 +1,25 @@
+meta {
+  name: 07-26 Delete Chat
+  type: http
+  seq: 27
+}
+
+delete {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/chats/{id}`
+
+  **This test verifies:** the owner deletes the chat.
+}

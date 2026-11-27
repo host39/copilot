@@ -1,0 +1,27 @@
+meta {
+  name: 07-08 Invalid Cursor
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/chats?cursor=not-a-cursor
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq cursor
+}
+
+docs {
+  **Endpoint:** `GET /api/chats?cursor=not-a-cursor`
+
+  **This test verifies:** a cursor the server did not write is a `400` on the `cursor` field.
+}

@@ -1,0 +1,26 @@
+meta {
+  name: 07-22 Instructions Cleared
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{baseUrl}}/api/chats/{{chatId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.instructions: isEmpty
+}
+
+docs {
+  **Endpoint:** `GET /api/chats/{id}`
+
+  **This test verifies:** the chat's instructions were cleared, so nothing is sent twice.
+}

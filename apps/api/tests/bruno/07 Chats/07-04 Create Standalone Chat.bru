@@ -1,0 +1,39 @@
+meta {
+  name: 07-04 Create Standalone Chat
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/chats
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "instructions": "Standalone notes."
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("standaloneChatId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.projectId: isNull
+}
+
+docs {
+  **Endpoint:** `POST /api/chats`
+
+  **This test verifies:** a standalone chat (`standaloneChatId`) for the paging and
+  save-as-project checks.
+}

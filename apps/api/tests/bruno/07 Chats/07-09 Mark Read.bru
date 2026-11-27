@@ -1,0 +1,25 @@
+meta {
+  name: 07-09 Mark Read
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/read
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/read`
+
+  **This test verifies:** the owner marks the chat read.
+}

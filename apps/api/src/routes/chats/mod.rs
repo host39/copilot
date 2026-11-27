@@ -1,9 +1,11 @@
 //! `/api/chats`: chats, messages, turns (server-sent `ChatStreamEvent`s), approvals, and read
-//! state (`ChatService`, `ChatEngine`, `RunRegistry`). The walking skeleton (P1.9) writes
-//! `create`, `get`, `messages`, and `send`; roadmap step P2.A writes the other non-streaming
-//! handlers, and P3.1 the other streaming routes, stop, and reattaching. Attachments are in
-//! `routes::files`.
+//! state (`ChatService`, `ChatEngine`, `RunRegistry`). The walking skeleton (P1.9) wrote
+//! `create`, `get`, `messages`, and `send`, and roadmap step P2.A the other non-streaming
+//! handlers; P3.1 writes the other streaming routes, stop, and reattaching. Attachments are in
+//! `routes::files`. Deleting a chat stops its live run first, so no run writes into a chat that
+//! is gone.
 
+pub mod cursor;
 pub mod serializer;
 #[cfg(test)]
 mod tests;
@@ -19,12 +21,14 @@ use axum::response::{IntoResponse, Response};
 use copilot_contracts::{
     ChatListQuery, ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest,
     DecisionsRequest, DetailsResponse, ErrorResponse, ListResponse, MessageResponse, PageResponse,
-    ProjectResponse, SendMessageRequest, UpdateChatRequest,
+    ProjectResponse, SendMessageRequest, ToolOverride, UpdateChatRequest,
 };
-use copilot_core::shared::constants::SSE_KEEP_ALIVE_SECS;
+use copilot_core::shared::constants::{
+    DEFAULT_PAGE_SIZE, SHUTDOWN_DRAIN_SECS, SSE_KEEP_ALIVE_SECS,
+};
 use copilot_core::{
-    ChatId, FileId, MessageId, ModelId, NewChat, PreparedTurn, ProjectId, ServerOverride,
-    ToolServerId, TurnEvent, TurnInput, TurnSink,
+    ChatId, ChatQuery, ChatUpdate, FileId, MessageId, ModelId, NewChat, PreparedTurn, ProjectId,
+    ScheduleId, ServerOverride, ToolServerId, TurnEvent, TurnInput, TurnSink,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use futures_util::StreamExt;
@@ -35,8 +39,8 @@ use crate::config::AppState;
 use crate::helpers::auth::Caller;
 use crate::helpers::runs::Reservation;
 use crate::routes::convert::ToCore;
-use crate::routes::path::Id;
-use crate::routes::pending;
+use crate::routes::path::{Id, Params};
+use crate::routes::{pending, projects};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -95,6 +99,16 @@ fn run(state: &AppState, reservation: Reservation, turn: PreparedTurn) -> Respon
         .into_response()
 }
 
+/// A chat's tool server overrides as core reads them.
+fn overrides(rows: Vec<ToolOverride>) -> Vec<ServerOverride> {
+    rows.into_iter()
+        .map(|row| ServerOverride {
+            server_id: ToolServerId::new(row.server_id),
+            enabled: row.enabled,
+        })
+        .collect()
+}
+
 /// One event as `data: <json>`.
 fn sse(event: &ChatStreamEvent) -> Event {
     Event::default()
@@ -111,11 +125,34 @@ fn sse(event: &ChatStreamEvent) -> Event {
     params(ChatListQuery),
     responses(
         (status = OK, description = "One page of the caller's chats, most recently updated first", body = PageResponse<ChatSummaryResponse>),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = BAD_REQUEST, description = "A query parameter or the cursor is not valid", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such project or schedule", body = ErrorResponse)
     )
 )]
-pub async fn list(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn list(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Params(query): Params<ChatListQuery>,
+) -> Result<axum::Json<PageResponse<ChatSummaryResponse>>, HttpError> {
+    let cursor = query.cursor.as_deref().map(cursor::decode).transpose()?;
+    let page = state
+        .chats
+        .list(
+            &caller,
+            ChatQuery {
+                project: query.project_id.map(ProjectId::new),
+                schedule: query.schedule_id.map(ScheduleId::new),
+                pinned: query.pinned,
+                scheduled: query.scheduled,
+                cursor,
+                limit: query.limit.unwrap_or(DEFAULT_PAGE_SIZE),
+            },
+        )
+        .await?;
+    Ok(axum::Json(PageResponse {
+        items: page.items.iter().map(serializer::summary).collect(),
+        next: page.next.map(cursor::encode),
+    }))
 }
 
 #[utoipa::path(
@@ -144,15 +181,7 @@ pub async fn create(
         builtin_tools: body
             .builtin_tools
             .map(|tools| tools.into_iter().map(ToCore::to_core).collect()),
-        tool_overrides: body
-            .tool_overrides
-            .unwrap_or_default()
-            .into_iter()
-            .map(|row| ServerOverride {
-                server_id: ToolServerId::new(row.server_id),
-                enabled: row.enabled,
-            })
-            .collect(),
+        tool_overrides: overrides(body.tool_overrides.unwrap_or_default()),
         voice_replies: body.voice_replies.unwrap_or(false),
     };
     let chat = state.chats.create(&caller, input).await?;
@@ -193,11 +222,36 @@ pub async fn get(
     request_body = UpdateChatRequest,
     responses(
         (status = OK, description = "The saved chat", body = DetailsResponse<ChatResponse>),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = BAD_REQUEST, description = "A field is not valid", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat, project, model, or tool server", body = ErrorResponse)
     )
 )]
-pub async fn update(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn update(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+    JsonBody(body): JsonBody<UpdateChatRequest>,
+) -> Result<axum::Json<DetailsResponse<ChatResponse>>, HttpError> {
+    let changes = ChatUpdate {
+        title: body.title,
+        project_id: body.project_id.map(|id| id.map(ProjectId::new)),
+        model_id: body.model_id.map(|id| id.map(ModelId::new)),
+        instructions: body.instructions,
+        reasoning: body.reasoning.map(|level| level.map(ToCore::to_core)),
+        builtin_tools: body
+            .builtin_tools
+            .map(|tools| tools.map(|tools| tools.into_iter().map(ToCore::to_core).collect())),
+        tool_overrides: body.tool_overrides.map(overrides),
+        pinned: body.pinned,
+        voice_replies: body.voice_replies,
+    };
+    let chat = state
+        .chats
+        .update(&caller, ChatId::new(id), changes)
+        .await?;
+    Ok(axum::Json(DetailsResponse {
+        data: serializer::chat(&chat),
+    }))
 }
 
 #[utoipa::path(
@@ -208,12 +262,27 @@ pub async fn update(Caller(_caller): Caller) -> HttpError {
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
-        (status = NO_CONTENT, description = "Deleted with its messages and attachments"),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = NO_CONTENT, description = "Deleted with its messages and attachments; a running answer stops first"),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse)
     )
 )]
-pub async fn delete(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn delete(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<StatusCode, HttpError> {
+    let chat = ChatId::new(id);
+    // The caller's chat first: another user's chat is a 404 and its run is never touched.
+    state.chats.get(&caller, chat).await?;
+    if !state
+        .runs
+        .stop(chat, Duration::from_secs(SHUTDOWN_DRAIN_SECS))
+        .await
+    {
+        tracing::warn!(chat_id = %chat, "api.chats.delete.run-live");
+    }
+    state.chats.delete(&caller, chat).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -225,11 +294,16 @@ pub async fn delete(Caller(_caller): Caller) -> HttpError {
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
         (status = NO_CONTENT, description = "Marked as read"),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse)
     )
 )]
-pub async fn read(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn read(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<StatusCode, HttpError> {
+    state.chats.mark_read(&caller, ChatId::new(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -384,11 +458,22 @@ pub async fn stop(Caller(_caller): Caller) -> HttpError {
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
         (status = OK, description = "The new project the chat moved into", body = DetailsResponse<ProjectResponse>),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The chat is already in a project (`CHAT_IN_PROJECT`)", body = ErrorResponse)
     )
 )]
-pub async fn save_as_project(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn save_as_project(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<axum::Json<DetailsResponse<ProjectResponse>>, HttpError> {
+    let project = state
+        .chats
+        .save_as_project(&caller, ChatId::new(id))
+        .await?;
+    Ok(axum::Json(DetailsResponse {
+        data: projects::response(&project),
+    }))
 }
 
 #[utoipa::path(
@@ -400,9 +485,21 @@ pub async fn save_as_project(Caller(_caller): Caller) -> HttpError {
     params(("id" = Uuid, Path, description = "The chat's id")),
     responses(
         (status = OK, description = "The project that now has the chat's instructions", body = DetailsResponse<ProjectResponse>),
-        (status = NOT_IMPLEMENTED, description = "Not available yet", body = ErrorResponse)
+        (status = BAD_REQUEST, description = "The chat has no instructions to save", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "The chat is not in a project (`CHAT_NOT_IN_PROJECT`)", body = ErrorResponse)
     )
 )]
-pub async fn save_instructions(Caller(_caller): Caller) -> HttpError {
-    pending()
+pub async fn save_instructions(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+) -> Result<axum::Json<DetailsResponse<ProjectResponse>>, HttpError> {
+    let project = state
+        .chats
+        .save_instructions(&caller, ChatId::new(id))
+        .await?;
+    Ok(axum::Json(DetailsResponse {
+        data: projects::response(&project),
+    }))
 }

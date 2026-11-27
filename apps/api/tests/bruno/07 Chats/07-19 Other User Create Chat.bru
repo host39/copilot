@@ -1,0 +1,35 @@
+meta {
+  name: 07-19 Other User Create Chat
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/api/chats
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {}
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("otherChatId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+docs {
+  **Endpoint:** `POST /api/chats` as user B
+
+  **This test verifies:** user B's own chat (`otherChatId`).
+}

@@ -1,0 +1,27 @@
+meta {
+  name: 07-21 Save Instructions
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/api/chats/{{chatId}}/save-instructions
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.id: eq {{chatProjectId}}
+  res.body.data.instructions: eq "Bruno secret plan."
+}
+
+docs {
+  **Endpoint:** `POST /api/chats/{id}/save-instructions`
+
+  **This test verifies:** the chat's instructions move into its project's (which were empty).
+}

@@ -1,0 +1,34 @@
+meta {
+  name: 07-18 Other User List Chats
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/api/chats
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+tests {
+  test("never lists user A's chats", function () {
+    const ids = res.body.items.map((chat) => chat.id);
+    expect(ids).to.not.include(bru.getVar("chatId"));
+    expect(ids).to.not.include(bru.getVar("standaloneChatId"));
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/chats` as user B
+
+  **This test verifies:** user B's list holds none of user A's chats.
+}

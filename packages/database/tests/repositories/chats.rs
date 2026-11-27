@@ -1,13 +1,15 @@
 use chrono::{DateTime, Utc};
 use copilot_core::{
-    Approval, ApprovedTool, BuiltinTool, CallId, Chat, ChatRepository, ContextHash, FileId,
-    FinishReason, Message, MessageParts, MessageRepository, MessageStatus, Part, ReasoningLevel,
-    Rendering, ResultContent, ServerOverride, SnapshotFile, SnapshotTool, ToolAlias, ToolCallPart,
+    Approval, ApprovedTool, BuiltinTool, CallId, Chat, ChatCursor, ChatId, ChatQuery,
+    ChatRepository, ContextHash, FileId, FinishReason, Message, MessageParts, MessageRepository,
+    MessageStatus, Part, Project, ProjectRepository, ReasoningLevel, Rendering, ResultContent,
+    ScheduleId, ServerOverride, SnapshotFile, SnapshotTool, ToolAlias, ToolCallPart,
     ToolResultPart, ToolStatus, TurnContext, TurnContextRepository, Usage, UserId,
 };
 use copilot_database::{DbPool, PgStore};
 use serde_json::json;
 
+use crate::schedules::schedule;
 use crate::{NOW, at, model, server, store, updated_at, user};
 
 async fn chat(store: &PgStore, owner: UserId) -> Chat {
@@ -333,5 +335,317 @@ async fn snapshots_are_saved_once_per_hash(pool: DbPool) {
             .await
             .unwrap(),
         None
+    );
+}
+
+/// A user message with `text` in `chat`, written at `at(seconds)`.
+async fn say(store: &PgStore, owner: UserId, chat: ChatId, text: &str, seconds: i64) -> Message {
+    let message = Message::user(
+        owner,
+        chat,
+        vec![Part::Text {
+            text: text.to_owned(),
+        }],
+        at(seconds),
+    );
+    store.append(owner, &message).await.unwrap();
+    message
+}
+
+/// The ids of a page, in order.
+fn ids(page: &copilot_core::Page<copilot_core::ChatSummary>) -> Vec<ChatId> {
+    page.items.iter().map(|row| row.chat.id()).collect()
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn the_chat_list_pages_by_update_time_and_filters(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let model = model(&store, owner).await;
+    let project = Project::create(owner, "Research", at(0)).unwrap();
+    ProjectRepository::insert(&store, &project).await.unwrap();
+    let daily = ScheduleId::new(schedule(&store, owner, model.id().uuid(), true).await);
+
+    // Oldest first: standalone, pinned in the project, a schedule run, and two chats written at
+    // the same instant (the id breaks the tie).
+    let plain = chat(&store, owner).await;
+    say(&store, owner, plain.id(), "first", 1).await;
+    let pinned = Chat::create(owner, at(0))
+        .with_project(Some(project.id()))
+        .with_pinned(true);
+    ChatRepository::insert(&store, &pinned).await.unwrap();
+    say(&store, owner, pinned.id(), "second", 2).await;
+    let run = Chat::scheduled(owner, daily, "Daily · 1 Jan".to_owned(), at(3));
+    ChatRepository::insert(&store, &run).await.unwrap();
+    let tied = [chat(&store, owner).await, chat(&store, owner).await];
+    for chat in &tied {
+        say(&store, owner, chat.id(), "tied", 4).await;
+    }
+    let foreign = chat(&store, other).await;
+    say(&store, other, foreign.id(), "theirs", 9).await;
+
+    let mut newest_first: Vec<ChatId> = tied.iter().map(Chat::id).collect();
+    newest_first.sort_by_key(|id| std::cmp::Reverse(id.uuid()));
+    newest_first.extend([run.id(), pinned.id(), plain.id()]);
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = ChatRepository::list(
+            &store,
+            owner,
+            ChatQuery {
+                cursor,
+                limit: 2,
+                ..ChatQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(page.items.len() <= 2);
+        seen.extend(ids(&page));
+        match page.next {
+            Some(next) => {
+                let last = page.items.last().unwrap();
+                assert_eq!(
+                    next,
+                    ChatCursor {
+                        updated_at: last.chat.updated_at(),
+                        id: last.chat.id(),
+                    }
+                );
+                cursor = Some(next);
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen, newest_first, "every chat once, newest first");
+
+    let exact = ChatRepository::list(
+        &store,
+        owner,
+        ChatQuery {
+            limit: 5,
+            ..ChatQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(exact.items.len(), 5);
+    assert_eq!(exact.next, None, "a full last page has no next");
+
+    let filtered = |query: ChatQuery| {
+        let store = store.clone();
+        async move { ids(&ChatRepository::list(&store, owner, query).await.unwrap()) }
+    };
+    assert_eq!(
+        filtered(ChatQuery {
+            project: Some(project.id()),
+            ..ChatQuery::default()
+        })
+        .await,
+        vec![pinned.id()]
+    );
+    assert_eq!(
+        filtered(ChatQuery {
+            pinned: Some(true),
+            ..ChatQuery::default()
+        })
+        .await,
+        vec![pinned.id()]
+    );
+    assert_eq!(
+        filtered(ChatQuery {
+            schedule: Some(daily),
+            ..ChatQuery::default()
+        })
+        .await,
+        vec![run.id()]
+    );
+    assert_eq!(
+        filtered(ChatQuery {
+            scheduled: Some(true),
+            ..ChatQuery::default()
+        })
+        .await,
+        vec![run.id()]
+    );
+    let recent = filtered(ChatQuery {
+        scheduled: Some(false),
+        pinned: Some(false),
+        ..ChatQuery::default()
+    })
+    .await;
+    assert_eq!(recent.len(), 3, "the filters combine: {recent:?}");
+    assert!(!recent.contains(&run.id()) && !recent.contains(&pinned.id()));
+    assert!(
+        filtered(ChatQuery {
+            project: Some(project.id()),
+            scheduled: Some(true),
+            ..ChatQuery::default()
+        })
+        .await
+        .is_empty()
+    );
+    assert_eq!(
+        ids(&ChatRepository::list(&store, other, ChatQuery::default())
+            .await
+            .unwrap()),
+        vec![foreign.id()],
+        "only the caller's chats"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn list_rows_flag_unread_chats_and_pending_approvals(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let model = model(&store, owner).await;
+    let row = |chat: ChatId| {
+        let store = store.clone();
+        async move {
+            ChatRepository::list(&store, owner, ChatQuery::default())
+                .await
+                .unwrap()
+                .items
+                .into_iter()
+                .find(|row| row.chat.id() == chat)
+                .expect("listed")
+        }
+    };
+
+    let opened = chat(&store, owner).await;
+    let flags = row(opened.id()).await;
+    assert!(!flags.unread, "a new chat is read at creation");
+    assert!(!flags.awaiting_approval);
+    say(&store, owner, opened.id(), "Hello", 5).await;
+    assert!(row(opened.id()).await.unread, "changed since it was opened");
+    ChatRepository::mark_read(&store, owner, opened.id(), at(5))
+        .await
+        .unwrap();
+    assert!(!row(opened.id()).await.unread, "read at the last change");
+
+    let unopened = Chat::restore(copilot_core::ChatParts {
+        last_read_at: None,
+        ..Chat::create(owner, at(1)).to_parts()
+    });
+    ChatRepository::insert(&store, &unopened).await.unwrap();
+    assert!(row(unopened.id()).await.unread, "never opened");
+
+    let waiting = Message::restore(MessageParts {
+        status: MessageStatus::AwaitingApproval,
+        finish_reason: Some(FinishReason::ToolCalls),
+        ..Message::assistant(owner, opened.id(), model.id(), model.provider_id(), at(6)).to_parts()
+    });
+    store.append(owner, &waiting).await.unwrap();
+    assert!(row(opened.id()).await.awaiting_approval);
+    let tool = Message::tool(owner, opened.id(), Vec::new(), at(7));
+    store.append(owner, &tool).await.unwrap();
+    assert!(
+        row(opened.id()).await.awaiting_approval,
+        "a tool message is not an answer"
+    );
+    let answered = Message::restore(MessageParts {
+        status: MessageStatus::Complete,
+        ..Message::assistant(owner, opened.id(), model.id(), model.provider_id(), at(8)).to_parts()
+    });
+    store.append(owner, &answered).await.unwrap();
+    assert!(
+        !row(opened.id()).await.awaiting_approval,
+        "only the latest answer counts"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn tail_changes_delete_later_messages_in_one_chat(pool: DbPool) {
+    let store = store(pool).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let neighbour = chat(&store, owner).await;
+    let chat = chat(&store, owner).await;
+    let first = say(&store, owner, chat.id(), "one", 1).await;
+    let second = say(&store, owner, chat.id(), "two", 2).await;
+    say(&store, owner, chat.id(), "three", 3).await;
+    let kept = say(&store, owner, neighbour.id(), "elsewhere", 4).await;
+
+    assert_eq!(
+        store
+            .delete_after(other, chat.id(), first.id())
+            .await
+            .unwrap(),
+        0,
+        "another user's call deletes nothing"
+    );
+    assert_eq!(
+        store
+            .delete_after(owner, chat.id(), kept.id())
+            .await
+            .unwrap(),
+        0,
+        "a message of another chat matches nothing"
+    );
+    assert_eq!(
+        store
+            .delete_after(owner, chat.id(), second.id())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.history(owner, chat.id()).await.unwrap(),
+        vec![first.clone(), second.clone()]
+    );
+    assert_eq!(
+        updated_at(&store, owner, chat.id()).await,
+        at(NOW),
+        "a delete moves the chat on the store's clock"
+    );
+
+    let edited = Message::user(
+        owner,
+        chat.id(),
+        vec![Part::Text {
+            text: "two, edited".to_owned(),
+        }],
+        at(NOW + 1),
+    );
+    store
+        .replace_tail(owner, chat.id(), second.id(), &edited)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.history(owner, chat.id()).await.unwrap(),
+        vec![first.clone(), edited.clone()]
+    );
+    assert_eq!(updated_at(&store, owner, chat.id()).await, at(NOW + 1));
+    assert_eq!(
+        store.history(owner, neighbour.id()).await.unwrap(),
+        vec![kept],
+        "other chats keep their messages"
+    );
+
+    let foreign = Message::user(
+        other,
+        chat.id(),
+        vec![Part::Text {
+            text: "mine".to_owned(),
+        }],
+        at(NOW + 2),
+    );
+    assert!(
+        store
+            .replace_tail(other, chat.id(), first.id(), &foreign)
+            .await
+            .is_err(),
+        "the chat belongs to someone else"
+    );
+    assert_eq!(
+        store.history(owner, chat.id()).await.unwrap(),
+        vec![first, edited],
+        "the failed replace rolled back its delete"
     );
 }
