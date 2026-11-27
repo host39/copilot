@@ -11,13 +11,15 @@
 # image in image.yml.
 set -euo pipefail
 
-# Budgets in bytes. Measured at P6.1: server 30,867,112 and migrate 7,181,744 (CI's release
-# profile), first load 152.8 kB gzip, and the image 44.5 MB as `docker image inspect` reports it
-# on the runner.
-SERVER_MAX=$((36 * 1024 * 1024))
-MIGRATE_MAX=$((9 * 1024 * 1024))
+# Budgets in bytes, tightened at P6.3 (docs/footprint.md): server 22,271,536 and migrate
+# 5,209,888 (the stripped release profile CI builds), first load 152,771 gzip (unchanged since
+# P6.1, so its budget stays), and the image 19,028,360 as `docker image inspect` reports it on
+# the runner, where it equals the compressed layers (other Docker setups report other numbers
+# for the same image; see docs/footprint.md).
+SERVER_MAX=$((24 * 1024 * 1024))
+MIGRATE_MAX=$((6 * 1024 * 1024))
 WEB_FIRST_LOAD_MAX=$((170 * 1000))
-IMAGE_MAX=$((55 * 1000 * 1000))
+IMAGE_MAX=$((22 * 1000 * 1000))
 
 rows=()
 failed=0

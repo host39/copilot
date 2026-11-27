@@ -121,7 +121,7 @@ server {
 }
 ```
 
-Copilot sends `X-Accel-Buffering: no` and `Cache-Control: no-cache` on its streams, and a keep-alive comment every few seconds; `proxy_buffering off` covers everything else. nginx refuses bodies over 1 MB by default, hence `client_max_body_size`. Keep request buffering on, so a slow client uploads to nginx and holds no Copilot upload slot meanwhile.
+Copilot sends `X-Accel-Buffering: no` and `Cache-Control: no-cache` on its streams, and a keep-alive comment every 15 seconds; `proxy_buffering off` covers everything else. nginx refuses bodies over 1 MB by default, hence `client_max_body_size`. Keep request buffering on, so a slow client uploads to nginx and holds no Copilot upload slot meanwhile.
 
 ## Trusted Proxies
 

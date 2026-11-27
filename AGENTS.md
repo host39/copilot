@@ -75,6 +75,8 @@ Identity comes from lib-rustauth (`host39/lib-rustauth`, a Cargo git dependency)
 - Contracts and TypeScript bindings: [docs/adr/004-contracts-and-type-sharing.md](./docs/adr/004-contracts-and-type-sharing.md)
 - Migrations and seed: [docs/adr/002-database-migrations-and-seed.md](./docs/adr/002-database-migrations-and-seed.md)
 - Environment variables: [docs/env.md](./docs/env.md)
+- Self-hosting (compose, proxy, upgrades, backups): [docs/self-hosting.md](./docs/self-hosting.md)
+- Footprint and its CI budgets: [docs/footprint.md](./docs/footprint.md), `scripts/footprint.sh`
 - Dependency boundaries: [boundaries.config.mjs](./boundaries.config.mjs)
 
 ## AI Assistants
