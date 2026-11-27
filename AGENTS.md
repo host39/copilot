@@ -50,7 +50,7 @@ After bumping `@biomejs/biome` in the catalog, run `pnpm biome migrate --write` 
 | `packages/middleware` | CORS, error handler, request id, request logger, `JsonBody` extractor (authentication comes from lib-rustauth's guard) |
 | `packages/logger` | tracing subscriber setup |
 | `packages/providers` | `copilot-providers`: OpenAI-compatible and Anthropic wire protocols over reqwest (implements `LlmGateway`) |
-| `packages/mcp` | `copilot-mcp`: MCP client over Streamable HTTP with rmcp (implements `ToolHost`) |
+| `packages/mcp` | `copilot-mcp`: MCP client over Streamable HTTP with rmcp (implements `ToolHost`) and the OAuth requests of a tool server sign-in (implements `ToolAuth`) |
 | `packages/security` | `copilot-security`: AES-256-GCM sealing (`SecretCipher`) and the hardened outbound reqwest client builder |
 | `tools/fake-llm` | Dev only: a scriptable fake model server (OpenAI-compatible and Anthropic) with an MCP server at `/mcp`; no Copilot crate depends on it and it depends on none (`make boundaries`), so it never reaches the image |
 

@@ -31,6 +31,8 @@ Values are trimmed, and a blank value counts as unset. Invalid or missing variab
 | `ALLOW_PRIVATE_NETWORK` | No | `admins` | `none`, `admins`, or `all`: whose provider connections and tool servers may reach private and loopback addresses (RFC 1918, loopback, unique local `fc00::/7`, CGNAT `100.64.0.0/10`). `admins`: those an administrator owns. Plain `http` URLs are allowed only to such addresses. Link-local and cloud metadata addresses are always blocked. See [Private Network](./self-hosting.md#private-network-and-ollama) |
 | `MAX_UPLOAD_MB` | No | `25` | Per-file upload limit, 1 to 1000 (file bytes live in one Postgres value, at most 1 GB) |
 | `MAX_STORAGE_MB_PER_USER` | No | `1024` | Total file storage per user, 1 to 1048576 |
+| `PUBLIC_URL` | No | none | The origin people reach the server at, for tool server sign-in with OAuth (the callback `<PUBLIC_URL>/api/oauth/callback` and the page it returns to, `<PUBLIC_URL>/oauth/done`): `https://host[:port]`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for development, without a path, query, or credentials. Unset: sign-in is off (`SIGN_IN_UNAVAILABLE`), and the sign-in routes answer `404`. See [Tool Server Sign-In](./self-hosting.md#tool-server-sign-in-oauth) |
+| `OAUTH_CLIENT_METADATA` | No | `true` | `true` or `false`: whether an `https` `PUBLIC_URL` serves `<PUBLIC_URL>/api/oauth/client` as Copilot's client id to authorization servers that accept Client ID Metadata Documents. `false` when they cannot reach this server (an install on a private network): Copilot then registers dynamically, or uses a client id entered for the server |
 | `WEB_DIR` | No | none | Directory of the built web bundle (it must hold `index.html`). The server then serves it for every `GET` outside `/api` and `/health`, with `index.html` for client routes and the `.br` or `.gz` copy when one exists and the browser accepts it; the image sets `/app/web` |
 
 ## Database
@@ -86,7 +88,7 @@ lib-rustauth reads these itself (`AuthConfig::parse`); one startup error names e
 
 ## Authentication
 
-Authentication comes from lib-rustauth and has no bypass setting. Its routes live under `/api/auth/*` and `/api/admin/users*`, and its guard answers `401` on every other `/api` route without a valid `Authorization: Bearer <token>`. Public: `GET /api/auth/setup`, `POST /api/auth/register`, `POST /api/auth/login`, `/api/doc`, `/api/ui`, `/health`, `/health/ready`, and the web bundle outside `/api`.
+Authentication comes from lib-rustauth and has no bypass setting. Its routes live under `/api/auth/*` and `/api/admin/users*`, and its guard answers `401` on every other `/api` route without a valid `Authorization: Bearer <token>`. Public: `GET /api/auth/setup`, `POST /api/auth/register`, `POST /api/auth/login`, `/api/doc`, `/api/ui`, `/health`, `/health/ready`, the tool server sign-in's `GET /api/oauth/callback` and `GET /api/oauth/client` (with `PUBLIC_URL`), and the web bundle outside `/api`.
 
 The server starts only when lib-rustauth's `auth` migrations are applied (`migrate` runs them before Copilot's); otherwise it stops with `api.server.start.failed api.auth.start.failed: Auth schema is out of date: run migrations`. While no account exists, the first registration needs the setup token, and that account becomes the administrator.
 
@@ -103,6 +105,7 @@ The server starts only when lib-rustauth's `auth` migrations are applied (`migra
 | `COPILOT_SUBNET`, `COPILOT_GATEWAY` | No | `172.31.239.0/24`, `172.31.239.1` | The compose network; change both (and `AUTH_TRUSTED_PROXIES`) when the subnet overlaps one of the host's networks |
 | `AUTH_TRUSTED_PROXIES` | No | `172.31.239.1` | The compose network's gateway, which is where Docker's port proxy connects from |
 | `ALLOW_PRIVATE_NETWORK`, `AUTH_REGISTRATION_OPEN`, `AUTH_SETUP_TOKEN`, `LOG_LEVEL` | No | `admins`, `false`, generated, `info` | Passed through |
+| `PUBLIC_URL`, `OAUTH_CLIENT_METADATA` | No | unset, `true` | Passed through (tool server sign-in) |
 
 The compose file fixes `ENVIRONMENT=production`, `DB_SSL=false` (Postgres never leaves the compose network), and the database name and roles.
 

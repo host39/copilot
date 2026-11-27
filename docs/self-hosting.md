@@ -55,6 +55,8 @@ Compose reads `deploy/.env` (and the shell, which wins) for the variables it pas
 | `AUTH_TRUSTED_PROXIES` | the compose gateway | See [Trusted Proxies](#trusted-proxies) |
 | `COPILOT_SUBNET`, `COPILOT_GATEWAY` | `172.31.239.0/24`, `172.31.239.1` | When the subnet overlaps one of the host's networks |
 | `LOG_LEVEL` | `info` | `debug` while chasing a problem |
+| `PUBLIC_URL` | unset (sign-in off) | The address people open Copilot at (`https://copilot.example.com`), for [tool server sign-in](#tool-server-sign-in-oauth) |
+| `OAUTH_CLIENT_METADATA` | `true` | `false` when authorization servers cannot reach your server (see [Tool Server Sign-In](#tool-server-sign-in-oauth)) |
 | `COPILOT_IMAGE` | `copilot:local` (built from the checkout) | The published image of a release, `ghcr.io/host39/copilot:<version>` |
 
 The compose file fixes `ENVIRONMENT=production` (JSON logs) and `DB_SSL=false` (Postgres never leaves the compose network). Upload limits (`MAX_UPLOAD_MB`, `MAX_STORAGE_MB_PER_USER`) and every other variable are in [env.md](./env.md); to set one the compose file does not pass, add it to the `copilot` service's `environment` in a `deploy/compose.override.yml` and start with `-f deploy/compose.yml -f deploy/compose.override.yml`.
@@ -218,6 +220,21 @@ Then, as the administrator, add a tool server in Settings, Tool servers with the
 - **Start-up.** `npx -y` and `uvx` download the server when the bridge starts, so the container needs internet access then. For an offline or pinned setup, build a small image that installs the server and runs the bridge.
 - **Other bridges.** Any stdio to Streamable HTTP bridge works the same way, for example [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) (`--host 0.0.0.0 --port 8000 --allowed-host mcp-memory:8000`, followed by the server's command; its log lists the Streamable HTTP endpoint to register). The flags above follow each project's README; check them against the version you pin.
 
+## Tool Server Sign-In (OAuth)
+
+Some remote MCP servers take no static token: they ask you to sign in at their sign-in page (OAuth). Copilot handles that sign-in on the server, so it needs to know the address you reach it at:
+
+1. Set `PUBLIC_URL` in `deploy/.env` to the address of your reverse proxy, without a path: `PUBLIC_URL=https://copilot.example.com`. It must be `https`, or plain `http` on `localhost` for development; anything else stops the server at start (`api.config.env.invalid PUBLIC_URL`). Restart with `docker compose -f deploy/compose.yml up -d`.
+2. In Settings, Tool servers, add the server with **Sign in** as its authentication, open it, and press **Sign in**. The sign-in page opens (in the system browser from the Linux and Android apps); after you allow access there, it comes back to `<PUBLIC_URL>/api/oauth/callback`, which stores the tokens sealed under `SECRET_KEY` and shows a "Signed in" page. The app updates by itself.
+
+What travels where:
+
+- The browser goes to the authorization server and back to `PUBLIC_URL`, so `PUBLIC_URL` must be reachable from the device you sign in on. The callback needs no session and works once, for 10 minutes.
+- Copilot itself fetches the MCP server's metadata, registers itself, and exchanges and refreshes tokens, through the same outbound rules as the MCP server's URL ([Private Network](#private-network-and-ollama)): a sign-in server on a private address needs an account that may reach one.
+- **Client ids.** Copilot uses, in this order: a client id you entered for the server (for sign-in servers that want you to register an app with them first, with its secret when they gave you one); its own client document at `<PUBLIC_URL>/api/oauth/client`, when the sign-in server accepts such documents and `PUBLIC_URL` is `https`; dynamic registration, when the sign-in server offers it. A sign-in server that fetches the client document must reach `PUBLIC_URL`: for an install only your own devices can reach (a home network, a VPN), set `OAUTH_CLIENT_METADATA=false` so Copilot registers instead, or enter a client id.
+- Tokens are refreshed before they expire and when the MCP server refuses one. When the sign-in server refuses the refresh, the server shows **Needs sign-in**; sign in again there.
+- The proxy needs nothing new: `/api/oauth/callback` and `/oauth/done` are ordinary routes on the same origin.
+
 ## Upgrades
 
 Install and upgrade are the same `up`: `migrate` runs first and the server starts only after it succeeded. Migrations go forward only, each in its own transaction, lib-rustauth's (schema `auth`, history `auth._sqlx_migrations`) before Copilot's (history `public._sqlx_migrations`). The order:
@@ -317,7 +334,7 @@ Each line's `message` is a stable dotted key (`api.server.listening`, `middlewar
 | --- | --- |
 | `GET /health` | Liveness |
 | `GET /health/ready` | Readiness (`503` while Postgres is unreachable) |
-| `/api/*` | The API: lib-rustauth's `/api/auth/*` and `/api/admin/users*`, Copilot's routes, `/api/doc` (OpenAPI) and `/api/ui` (Swagger UI) |
+| `/api/*` | The API: lib-rustauth's `/api/auth/*` and `/api/admin/users*`, Copilot's routes, `/api/doc` (OpenAPI) and `/api/ui` (Swagger UI); public besides the sign-in routes: `/api/oauth/callback` and `/api/oauth/client` (with `PUBLIC_URL`) |
 | Any other `GET` | The web app (`WEB_DIR`), with `index.html` for client routes, the web Content-Security-Policy, and a year-long cache on the hashed files under `/static/` |
 
 On `SIGTERM` the server stops accepting connections, gives answers being written 5 seconds to finish and up to 10 more to save what they have, ends open streams, finishes in-flight requests, then closes the pool. A run cut off by a crash is marked interrupted at the next start, so Retry can answer it.

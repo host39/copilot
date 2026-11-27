@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-11-27): built as decided through roadmap Phase 6, with the changes recorded below (Gemini, the fake model server, voice, and the native shells). The owner's review of the spec and this ADR (roadmap P0.3) is still open; anything it changes comes as an amendment here or a new ADR.
+Accepted (2026-11-27): built as decided through roadmap Phase 6, with the changes recorded below (Gemini, the fake model server, voice, and the native shells), and amended for the Phase 7 steps (the OpenAI Responses API in P7.1, MCP OAuth sign-in in P7.2). The owner's review of the spec and this ADR (roadmap P0.3) is still open; anything it changes comes as an amendment here or a new ADR.
 
 ## Context
 
@@ -59,8 +59,20 @@ Added in P7.1 (2026-11-27), after v0.1, so OpenAI's newest models get tool calli
 ### Tools Through MCP
 
 - Tools come from remote MCP servers over Streamable HTTP through the official `rmcp` client, dual-era (2026-07-28 and 2025 servers). Copilot runs every tool call itself, for every provider; it does not use provider-hosted MCP connectors.
-- stdio servers and MCP OAuth are out of v1. A stdio server runs in its own container behind a bridge and is registered by URL.
+- stdio servers are out of v1: a stdio server runs in its own container behind a bridge and is registered by URL. MCP OAuth was out of v1 and came in P7.2 (below).
 - New servers default to `ask`; modes can be set per tool. Approvals are **persisted** on the message (`awaiting_approval`) and the run ends, so any device can answer and a restart loses nothing.
+
+### MCP OAuth Sign-In
+
+Added in P7.2 (2026-11-27), after v0.1, for remote MCP servers that require OAuth, per the MCP authorization specification, revision `2026-07-28` (checked on modelcontextprotocol.io the same day). The flow, the checks, and the residual risk are in the spec's "Tool Server Sign-In"; the decisions with their reasons are in [tracks/p7-2.md](../design/tracks/p7-2.md).
+
+- **A per-server auth mode.** `tool_servers.auth_mode` is `none`, `headers`, or `oauth`, and each mode's credentials exist only in that mode (a `CHECK` holds it), so a token never lingers after a switch.
+- **The flow lives server side.** The redirect URI is the API (`<PUBLIC_URL>/api/oauth/callback`), not the device, so the web app, the Linux app, and Android all open one URL in a browser and tokens never reach a client. The PKCE verifier and the recorded issuer wait sealed in `oauth_flows` (the `state` only as its SHA-256) for 10 minutes and are used once. Tokens are sealed into the server's row together with everything a refresh needs.
+- **Hand-written OAuth requests, not rmcp's `auth` feature.** rmcp's `AuthorizationManager` owns the flow state and credentials in its own stores and takes one HTTP client; Copilot's flow spans two requests and a restart, keeps state in Postgres sealed per row, and picks a hardened client per URL and network scope for every request (the SSRF rules and `ALLOW_PRIVATE_NETWORK` apply to every URL a server hands back). The feature would also have added 14 crates to the server's graph, among them second copies of `base64`, `rand`, `sha2`, and `thiserror`. The four OAuth requests sit in `copilot-mcp` behind core's `ToolAuth` port; no `aws-lc-rs`.
+- **Refresh in core, used by the adapter.** `ToolEndpoint::tokens` hands the MCP adapter an `AccessTokens` source: core refreshes an expiring token first, and the adapter asks for a fresh one once after a `401` and reconnects. A refresh the authorization server rejects marks the server as needing sign-in; a network failure does not.
+- **`PUBLIC_URL`** (https, or http on loopback) turns sign-in on; `OAUTH_CLIENT_METADATA` lets an https install offer its Client ID Metadata Document, which the specification prefers to dynamic registration.
+- **Why:** servers that only offer OAuth (many hosted MCP servers) become usable without static tokens, with no client-side token storage and no new dependency.
+- **Accepted risk:** the callback is public, so a user of the same instance could have another user complete a flow the first one started; see the spec's residual risk.
 
 ### Detached Runs With a Run Registry
 
@@ -128,7 +140,7 @@ Added in P7.1 (2026-11-27), after v0.1, so OpenAI's newest models get tool calli
 
 ### Neutral
 
-- The OpenAI Responses API, MCP OAuth, stdio servers, live voice, and key rotation tooling are deferred, and the data model leaves room for each.
+- stdio servers, live voice, and key rotation tooling are deferred, and the data model leaves room for each. The OpenAI Responses API came in P7.1 and MCP OAuth sign-in in P7.2.
 
 ## Alternatives Considered
 

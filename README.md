@@ -24,13 +24,13 @@ It is deliberately small: the server only **forwards** requests to model provide
 - **Chats that keep going.** Streamed answers with reasoning, stop, regenerate, retry, edit and resend, and Continue. An answer keeps streaming when you close the tab, and any of your devices can open it mid-stream. Search across every chat, unread dots, and Markdown with code copy.
 - **Projects instead of agents.** A project is a reusable context: instructions (the system prompt), files, a default model and reasoning level, tools, and schedules. Every chat in it inherits them. A prompt-only "agent" is a project without files; Save as project turns a good chat into one.
 - **Files.** Images, PDFs, text and code, and audio, attached to a chat or shared by a project, sent to the models that can read them (with a capacity bar against the model's context window).
-- **MCP tools.** Remote MCP servers over Streamable HTTP, with Off, Ask, or Auto per tool, approval cards (Approve, Approve for this chat, Deny with a reason), and a fresh review whenever a server changes its tools.
+- **MCP tools.** Remote MCP servers over Streamable HTTP, with a bearer token, custom headers, or an OAuth sign-in ([`PUBLIC_URL`](./docs/self-hosting.md#tool-server-sign-in-oauth)), Off, Ask, or Auto per tool, approval cards (Approve, Approve for this chat, Deny with a reason), and a fresh review whenever a server changes its tools.
 - **Schedules.** Run a prompt on a cron rule in your time zone; each run opens a new chat. The assistant can propose a schedule with the built-in schedule tools, but only you approve it, and the system clock (never the model) decides when it runs.
 - **Voice where the model has it.** Push to talk for models that take audio (OpenAI's audio models, Gemini, OpenRouter models that list audio input, compatible servers), and spoken replies for models that return audio. Claude models have no audio API, so they get no voice controls; nothing is transcribed or synthesized on the side.
 - **Accounts.** The first account is the administrator; registration is closed by default and the administrator adds people. Sessions, lockout after wrong passwords, and per-address limits come from [lib-rustauth](#identity-lib-rustauth). Nobody sees anyone else's chats, files, keys, or tools.
 - **Apps.** An installable web app, a Linux app (`.deb` and AppImage), and an Android app (APK), all the same interface.
 
-Not in this version: retrieval with vector search, running code inside Copilot, stdio MCP servers (run one [behind a bridge](./docs/self-hosting.md#local-stdio-mcp-servers) instead), MCP OAuth, branching conversations, live voice, and shared provider connections ([non-goals](./docs/design/copilot.md#non-goals-for-v1)).
+Not in this version: retrieval with vector search, running code inside Copilot, stdio MCP servers (run one [behind a bridge](./docs/self-hosting.md#local-stdio-mcp-servers) instead), branching conversations, live voice, and shared provider connections ([non-goals](./docs/design/copilot.md#non-goals-for-v1)).
 
 ## Quick Start
 
@@ -184,7 +184,7 @@ One process per install holds the runs in flight, the approvals, the scheduler, 
 | `packages/core` | `copilot-core` | Domain entities, services, ports, the conversation engine, `DomainError` |
 | `packages/database` | `copilot-database` | Postgres pool, migrations, repositories, the `migrate` and `seed` binaries |
 | `packages/providers` | `copilot-providers` | OpenAI-compatible and Anthropic wire protocols (implements `LlmGateway`) |
-| `packages/mcp` | `copilot-mcp` | MCP client over Streamable HTTP with rmcp (implements `ToolHost`) |
+| `packages/mcp` | `copilot-mcp` | MCP client over Streamable HTTP with rmcp (implements `ToolHost`) and the OAuth requests of a tool server sign-in (implements `ToolAuth`) |
 | `packages/security` | `copilot-security` | Secret sealing and the hardened outbound HTTP clients (address policy, no redirects, caps) |
 | `packages/contracts` | `copilot-contracts` + `@copilot/contracts` | Shared DTOs: OpenAPI schemas, generated TypeScript types, Zod schemas |
 | `packages/middleware` | `copilot-middleware` | CORS, error mapping, request ids, request logging |
