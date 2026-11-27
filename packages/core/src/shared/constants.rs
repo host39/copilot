@@ -98,6 +98,14 @@ pub const SSE_KEEP_ALIVE_SECS: u64 = 15;
 /// A `GET /api/events` stream ends after this long and the client connects again, so a session
 /// signed out elsewhere stops receiving events within this time.
 pub const EVENTS_STREAM_MAX_SECS: u64 = 900;
+/// Run streams (the turn routes and `GET /api/chats/{id}/stream`) and `GET /api/events` streams
+/// a user may have open at once; opening one more ends the user's oldest.
+pub const CHAT_STREAMS_PER_USER: usize = 16;
+pub const EVENT_STREAMS_PER_USER: usize = 8;
+/// What a run's replay buffer may hold across all its answers: their text, the 4 bytes that mark
+/// where each merged delta ended, and the other events. Past it the run is stopped, so a provider
+/// that streams tiny deltas through a long tool loop cannot grow one run without bound.
+pub const RUN_BUFFER_MAX_BYTES: usize = 32 * 1_024 * 1_024;
 /// On shutdown, live runs get this long to finish on their own; then they are cancelled and get
 /// up to `SHUTDOWN_DRAIN_SECS` more to save their partial answers. Stopping a run (or deleting
 /// its chat or project) waits up to `SHUTDOWN_DRAIN_SECS` for it to save too.

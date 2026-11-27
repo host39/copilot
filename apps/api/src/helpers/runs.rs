@@ -10,7 +10,14 @@
 //! `seq`, so it grows with the answer's text (which the engine caps), not with the number of
 //! deltas; a replay may skip `seq` values but never text. Each merged event also keeps where
 //! each of its deltas ended (4 bytes per delta), so a stream can start after any `seq` the run
-//! sent without repeating or skipping text ([`RunRegistry::attach`]).
+//! sent without repeating or skipping text ([`RunRegistry::attach`]). A run whose buffer passes
+//! `RUN_BUFFER_MAX_BYTES` is stopped.
+//!
+//! Streams read the shared buffer in place, one event at a time, and send a long merged delta
+//! in pieces of about `REPLAY_CHUNK_BYTES` that end where one of its deltas ended (each with
+//! that delta's `seq`), so an attached stream never holds a copy of the buffer. A user has at
+//! most `CHAT_STREAMS_PER_USER` run streams and `EVENT_STREAMS_PER_USER` event streams open;
+//! one more ends the user's oldest ([`Streams`]).
 //!
 //! Disconnecting a stream never cancels the run; [`RunRegistry::stop`] and shutdown do (each run
 //! gets a child of the root shutdown token). [`RunRegistry::drain`] stops new runs, gives the
@@ -41,7 +48,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use copilot_contracts::{ChatStreamEvent, UserEvent};
-use copilot_core::shared::constants::{MAX_ACTIVE_RUNS_PER_USER, MAX_SCHEDULED_RUNS};
+use copilot_core::shared::constants::{
+    CHAT_STREAMS_PER_USER, EVENT_STREAMS_PER_USER, MAX_ACTIVE_RUNS_PER_USER, MAX_SCHEDULED_RUNS,
+    RUN_BUFFER_MAX_BYTES,
+};
 use copilot_core::{
     ChatId, DomainError, DomainResult, MessageStatus, TurnEvent, TurnOutcome, TurnSink, UserId,
 };
@@ -52,6 +62,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::helpers::streams::{Streams, Ticket};
 use crate::routes::chats::serializer;
 use crate::routes::convert::ToDto;
 
@@ -60,6 +71,11 @@ const CHANNEL_CAPACITY: usize = 256;
 /// User events a slow `GET /api/events` stream may fall behind before it ends (the client
 /// connects again and reads the chat list afresh).
 const USER_CHANNEL_CAPACITY: usize = 64;
+/// How much of a merged delta a replay sends at once, at least (it ends where one of the
+/// merged deltas ended).
+const REPLAY_CHUNK_BYTES: usize = 64 * 1_024;
+/// What keeping an event costs beyond its text, for `RUN_BUFFER_MAX_BYTES`.
+const EVENT_BYTES: usize = 64;
 /// The error code of a chat that is already answering.
 pub const CHAT_BUSY: &str = "CHAT_BUSY";
 /// The error code of a user with `MAX_ACTIVE_RUNS_PER_USER` runs.
@@ -77,8 +93,10 @@ pub struct RunRegistry {
     max_per_user: usize,
     /// How many runs are live, for [`RunRegistry::drain`].
     live: watch::Sender<usize>,
-    /// The `GET /api/events` channels of the users with a stream open.
-    users: Mutex<HashMap<UserId, broadcast::Sender<UserEvent>>>,
+    /// The open `GET /api/events` streams, with each user's event channel.
+    watchers: Arc<Streams<broadcast::Sender<UserEvent>>>,
+    /// The open run streams.
+    streams: Arc<Streams<()>>,
     /// The scheduled-run slots (`MAX_SCHEDULED_RUNS`).
     scheduled: Arc<Semaphore>,
 }
@@ -116,7 +134,8 @@ impl RunRegistry {
             shutdown,
             max_per_user,
             live: watch::Sender::new(0),
-            users: Mutex::new(HashMap::new()),
+            watchers: Arc::new(Streams::new(EVENT_STREAMS_PER_USER)),
+            streams: Arc::new(Streams::new(CHAT_STREAMS_PER_USER)),
             scheduled: Arc::new(Semaphore::new(MAX_SCHEDULED_RUNS)),
         }
     }
@@ -185,7 +204,13 @@ impl RunRegistry {
     ) -> Reservation {
         let run = Uuid::now_v7();
         let cancel = self.shutdown.child_token();
-        let sink = Arc::new(RunSink::new(Arc::clone(self), owner, chat, run));
+        let sink = Arc::new(RunSink::new(
+            Arc::clone(self),
+            owner,
+            chat,
+            run,
+            cancel.clone(),
+        ));
         runs.entries.insert(
             chat,
             Entry {
@@ -215,11 +240,20 @@ impl RunRegistry {
     pub fn attach(&self, chat: ChatId, after: u64) -> Option<Subscription> {
         // The buffer is locked after the registry lock is released: the sink takes them the
         // other way round when `done` releases the slot.
-        let state = Arc::clone(&self.lock().entries.get(&chat)?.state);
+        let (owner, state) = {
+            let runs = self.lock();
+            let entry = runs.entries.get(&chat)?;
+            (entry.owner, Arc::clone(&entry.state))
+        };
         if !lock(&state).started {
             return None;
         }
-        Some(subscribe(&state, after))
+        Some(subscribe(&state, after, self.ticket(owner)))
+    }
+
+    /// A place for a run stream of `owner` (see [`Streams`]).
+    fn ticket(&self, owner: UserId) -> Ticket<()> {
+        self.streams.open(owner, || (), |()| ()).0
     }
 
     /// The chats of `owner` that are answering now.
@@ -303,27 +337,22 @@ impl RunRegistry {
 
     /// Sends `event` to every `GET /api/events` stream `user` has open (none is fine).
     pub fn publish(&self, user: UserId, event: UserEvent) {
-        let mut users = self.users();
-        if let Some(sender) = users.get(&user)
-            && sender.send(event).is_err()
-        {
-            // Every stream of the user has ended.
-            users.remove(&user);
-        }
+        self.watchers.shared(user, |sender| {
+            // No receiver is not an error: the last stream may be ending.
+            let _ = sender.send(event);
+        });
     }
 
     /// The user events of `owner`: `run.started` for each chat answering now, then every event
     /// published from the call on. The stream ends when it falls more than
-    /// `USER_CHANNEL_CAPACITY` events behind; the client then connects again.
+    /// `USER_CHANNEL_CAPACITY` events behind (the client then connects again), or when the
+    /// owner opens more than `EVENT_STREAMS_PER_USER` (the oldest ends).
     pub fn watch(&self, owner: UserId) -> UserEvents {
-        let receiver = {
-            let mut users = self.users();
-            users.retain(|_, sender| sender.receiver_count() > 0);
-            users
-                .entry(owner)
-                .or_insert_with(|| broadcast::channel(USER_CHANNEL_CAPACITY).0)
-                .subscribe()
-        };
+        let (ticket, receiver) = self.watchers.open(
+            owner,
+            || broadcast::channel(USER_CHANNEL_CAPACITY).0,
+            broadcast::Sender::subscribe,
+        );
         // Listed after subscribing, so a run that starts meanwhile is never missed (at worst
         // its `run.started` comes twice).
         let running = self
@@ -333,7 +362,11 @@ impl RunRegistry {
                 chat_id: chat.into(),
             })
             .collect();
-        UserEvents { running, receiver }
+        UserEvents {
+            running,
+            receiver,
+            ticket,
+        }
     }
 
     /// The chats of `owner` whose runs started and have not sent `done`.
@@ -358,10 +391,6 @@ impl RunRegistry {
 
     fn lock(&self) -> MutexGuard<'_, Runs> {
         self.runs.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn users(&self) -> MutexGuard<'_, HashMap<UserId, broadcast::Sender<UserEvent>>> {
-        self.users.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -394,16 +423,26 @@ pub struct Slot {
 pub struct UserEvents {
     running: VecDeque<UserEvent>,
     receiver: broadcast::Receiver<UserEvent>,
+    ticket: Ticket<broadcast::Sender<UserEvent>>,
 }
 
 impl UserEvents {
-    /// The events in order; ends when the stream fell behind.
+    /// The events in order; ends when the stream fell behind or a newer stream of the user took
+    /// its place.
     pub fn into_stream(self) -> impl Stream<Item = UserEvent> + Send {
         stream::unfold(self, |mut events| async move {
+            if events.ticket.ended().is_cancelled() {
+                return None;
+            }
             if let Some(event) = events.running.pop_front() {
                 return Some((event, events));
             }
-            match events.receiver.recv().await {
+            let received = tokio::select! {
+                biased;
+                () = events.ticket.ended().cancelled() => return None,
+                received = events.receiver.recv() => received,
+            };
+            match received {
                 Ok(event) => Some((event, events)),
                 Err(RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "api.events.lagged");
@@ -441,7 +480,8 @@ impl Reservation {
 
     /// The run's events so far, then live ones, ending with `done`.
     pub fn subscribe(&self) -> Subscription {
-        subscribe(&self.sink.state, 0)
+        let ticket = self.registry.ticket(self.sink.owner);
+        subscribe(&self.sink.state, 0, ticket)
     }
 
     /// Makes the run visible: streams may attach and the owner's event streams hear
@@ -468,6 +508,8 @@ pub struct RunSink {
     owner: UserId,
     chat: ChatId,
     run: Uuid,
+    /// The run's token: cancelled when the buffer passes `RUN_BUFFER_MAX_BYTES`.
+    cancel: CancellationToken,
 }
 
 #[derive(Debug)]
@@ -477,6 +519,10 @@ struct Buffer {
     seq: u64,
     /// The bytes of text each part has streamed so far.
     lengths: HashMap<PartKey, usize>,
+    /// Roughly what the kept events cost (see [`weight`]), for `RUN_BUFFER_MAX_BYTES`.
+    bytes: usize,
+    /// The buffer passed `RUN_BUFFER_MAX_BYTES` and the run was stopped.
+    full: bool,
     sender: broadcast::Sender<ChatStreamEvent>,
     /// The run started ([`RunSink::start`]): streams may attach, and `run.started` went out.
     started: bool,
@@ -504,6 +550,7 @@ impl Buffer {
     fn keep(&mut self, event: &ChatStreamEvent) {
         let seq = event.seq();
         let Some((key, text)) = delta(event) else {
+            self.bytes += EVENT_BYTES + weight(event);
             self.events.push(Buffered {
                 event: event.clone(),
                 start: 0,
@@ -515,6 +562,7 @@ impl Buffer {
         let length = self.lengths.entry(key).or_default();
         let start = *length;
         *length += text.len();
+        self.bytes += text.len() + size_of::<u32>();
         if let Some(last) = self.events.last_mut()
             && same_part(&last.event, event)
         {
@@ -523,6 +571,7 @@ impl Buffer {
             last.ends.push(end.saturating_add(width(text)));
             return;
         }
+        self.bytes += EVENT_BYTES;
         self.events.push(Buffered {
             event: event.clone(),
             start,
@@ -550,6 +599,25 @@ impl Buffer {
             sent.insert(key, entry.start + length);
         }
         sent
+    }
+
+    /// The index of the first event with a `seq` after `after` (a merged delta that a stream
+    /// sent part of included).
+    fn position(&self, after: u64) -> usize {
+        self.events
+            .partition_point(|entry| entry.event.seq() <= after)
+    }
+}
+
+/// Roughly what keeping an event other than a text or reasoning delta costs beyond
+/// [`EVENT_BYTES`]: its audio, or its tool call's arguments or output.
+fn weight(event: &ChatStreamEvent) -> usize {
+    match event {
+        ChatStreamEvent::AudioDelta { data, .. } => data.len(),
+        ChatStreamEvent::ToolRequested { .. } | ChatStreamEvent::ToolFinished { .. } => {
+            serde_json::to_vec(event).map_or(0, |bytes| bytes.len())
+        }
+        _ => 0,
     }
 }
 
@@ -593,14 +661,72 @@ fn merge(event: &mut ChatStreamEvent, more: &str, next: u64) {
     }
 }
 
-/// A delta without its first `skip` bytes.
-fn cut(mut event: ChatStreamEvent, skip: usize) -> ChatStreamEvent {
-    if let ChatStreamEvent::TextDelta { text, .. } | ChatStreamEvent::ReasoningDelta { text, .. } =
-        &mut event
-    {
-        *text = text.get(skip..).unwrap_or_default().to_owned();
+/// The bytes `from..end` of a delta's text, as a delta with `seq`.
+fn slice(event: &ChatStreamEvent, from: usize, end: usize, seq: u64) -> ChatStreamEvent {
+    let part = |text: &str| text.get(from..end).unwrap_or_default().to_owned();
+    match event {
+        ChatStreamEvent::TextDelta {
+            message_id,
+            index,
+            text,
+            ..
+        } => ChatStreamEvent::TextDelta {
+            seq,
+            message_id: *message_id,
+            index: *index,
+            text: part(text),
+        },
+        ChatStreamEvent::ReasoningDelta {
+            message_id,
+            index,
+            text,
+            ..
+        } => ChatStreamEvent::ReasoningDelta {
+            seq,
+            message_id: *message_id,
+            index: *index,
+            text: part(text),
+        },
+        other => other.clone(),
     }
-    event
+}
+
+/// The next piece of `entry` that a stream which sent `delivered` (and everything up to `last`)
+/// has not sent, and whether it is the entry's last piece; `None` when it sent all of it. Any
+/// event but a delta is one piece. A merged delta goes in pieces of at least
+/// `REPLAY_CHUNK_BYTES` (or what is left), each ending where one of its deltas ended and
+/// carrying that delta's `seq`.
+fn piece(
+    entry: &Buffered,
+    delivered: &HashMap<PartKey, usize>,
+    last: u64,
+) -> Option<(ChatStreamEvent, bool)> {
+    let seq = entry.event.seq();
+    if seq <= last {
+        return None;
+    }
+    let Some((key, text)) = delta(&entry.event) else {
+        return Some((entry.event.clone(), true));
+    };
+    let from = delivered
+        .get(&key)
+        .copied()
+        .unwrap_or_default()
+        .saturating_sub(entry.start);
+    if from >= text.len() {
+        return None;
+    }
+    let goal = (from + REPLAY_CHUNK_BYTES).min(text.len());
+    let index = entry.ends.partition_point(|end| (*end as usize) < goal);
+    let (end, through) = match entry.ends.get(index) {
+        Some(&end) if (end as usize) > from && (end as usize) <= text.len() => (
+            end as usize,
+            entry.first + u64::try_from(index).unwrap_or(u64::MAX),
+        ),
+        _ => (text.len(), seq),
+    };
+    let whole = end == text.len() && through == seq;
+    Some((slice(&entry.event, from, end, through.min(seq)), whole))
 }
 
 fn is_done(event: &ChatStreamEvent) -> bool {
@@ -608,13 +734,21 @@ fn is_done(event: &ChatStreamEvent) -> bool {
 }
 
 impl RunSink {
-    fn new(registry: Arc<RunRegistry>, owner: UserId, chat: ChatId, run: Uuid) -> Self {
+    fn new(
+        registry: Arc<RunRegistry>,
+        owner: UserId,
+        chat: ChatId,
+        run: Uuid,
+        cancel: CancellationToken,
+    ) -> Self {
         let (sender, _) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             state: Arc::new(Mutex::new(Buffer {
                 events: Vec::new(),
                 seq: 0,
                 lengths: HashMap::new(),
+                bytes: 0,
+                full: false,
                 sender,
                 started: false,
                 done: false,
@@ -624,6 +758,7 @@ impl RunSink {
             owner,
             chat,
             run,
+            cancel,
         }
     }
 
@@ -724,6 +859,11 @@ impl TurnSink for RunSink {
             self.registry.release(self.chat, self.run);
         }
         buffer.keep(&event);
+        if buffer.bytes > RUN_BUFFER_MAX_BYTES && !buffer.full {
+            buffer.full = true;
+            tracing::warn!(chat_id = %self.chat, bytes = buffer.bytes, "api.runs.buffer.full");
+            self.cancel.cancel();
+        }
         // No receiver is not an error: the stream may have disconnected.
         let _ = buffer.sender.send(event);
     }
@@ -737,53 +877,53 @@ fn lock(state: &Mutex<Buffer>) -> MutexGuard<'_, Buffer> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A stream of the run's events after `after` (see [`RunRegistry::attach`]).
-fn subscribe(state: &Arc<Mutex<Buffer>>, after: u64) -> Subscription {
+/// A stream of the run's events after `after` (see [`RunRegistry::attach`]), holding `ticket`.
+fn subscribe(state: &Arc<Mutex<Buffer>>, after: u64, ticket: Ticket<()>) -> Subscription {
     let buffer = lock(state);
     // A `seq` this run never sent belongs to another run: replay this one from the start.
     let after = if after > buffer.seq { 0 } else { after };
     Subscription {
-        replay: buffer.events.iter().map(Replayed::new).collect(),
         receiver: buffer.sender.subscribe(),
+        next: Some(buffer.position(after)),
+        delivered: buffer.sent(after),
         state: Arc::clone(state),
         last: after,
-        delivered: buffer.sent(after),
         finished: false,
+        ticket,
     }
 }
 
-/// One attached stream: the replay buffer first, then live events, without gaps or repeats.
+/// One attached stream: the replay buffer first, then live events, without gaps or repeats. It
+/// reads the shared buffer one piece at a time and never copies it.
 #[derive(Debug)]
 pub struct Subscription {
-    replay: VecDeque<Replayed>,
-    receiver: broadcast::Receiver<ChatStreamEvent>,
     state: Arc<Mutex<Buffer>>,
+    receiver: broadcast::Receiver<ChatStreamEvent>,
+    /// The buffered event to send next while the stream replays the buffer; `None` once it
+    /// follows live events.
+    next: Option<usize>,
     /// The `seq` of the last event sent (or that the client already had).
     last: u64,
     /// The bytes of each part's text sent so far (or that the client already had), to cut a
     /// merged delta it has partly sent.
     delivered: HashMap<PartKey, usize>,
     finished: bool,
+    /// Its place among the owner's streams: cancelled when a newer stream took it.
+    ticket: Ticket<()>,
 }
 
-/// A buffered event on its way to one stream.
-#[derive(Debug)]
-struct Replayed {
-    event: ChatStreamEvent,
-    start: usize,
-}
-
-impl Replayed {
-    fn new(entry: &Buffered) -> Self {
-        Self {
-            event: entry.event.clone(),
-            start: entry.start,
-        }
-    }
+/// What the replay buffer has for a stream.
+enum Replay {
+    Event(ChatStreamEvent),
+    /// The stream sent the whole buffer and goes on live.
+    Live,
+    /// The run is over and the stream sent (or the client had) all of it.
+    Finished,
 }
 
 impl Subscription {
-    /// The events in `seq` order, ending after `done`.
+    /// The events in `seq` order, ending after `done` (or when a newer stream of the owner took
+    /// this one's place).
     pub fn into_stream(self) -> impl Stream<Item = ChatStreamEvent> + Send {
         stream::unfold(self, |mut subscription| async move {
             let event = subscription.next().await?;
@@ -792,36 +932,31 @@ impl Subscription {
     }
 
     async fn next(&mut self) -> Option<ChatStreamEvent> {
-        if self.finished {
+        if self.finished || self.ticket.ended().is_cancelled() {
             return None;
         }
         let event = loop {
-            if let Some(entry) = self.replay.pop_front() {
-                if entry.event.seq() <= self.last {
-                    if is_done(&entry.event) {
-                        // The client already had the whole run.
+            if self.next.is_some() {
+                match self.replay() {
+                    Replay::Event(event) => break event,
+                    Replay::Finished => {
                         self.finished = true;
                         return None;
                     }
-                    continue;
+                    Replay::Live => {}
                 }
-                if let Some(event) = self.rest(entry) {
-                    break event;
-                }
-                continue;
             }
-            match self.receiver.recv().await {
+            let received = tokio::select! {
+                biased;
+                () = self.ticket.ended().cancelled() => return None,
+                received = self.receiver.recv() => received,
+            };
+            match received {
                 Ok(event) if event.seq() <= self.last => {}
                 Ok(event) => break event,
                 Err(RecvError::Lagged(_)) => {
                     // Fell behind the channel: catch up from the buffer, then go on live.
-                    let last = self.last;
-                    self.replay = lock(&self.state)
-                        .events
-                        .iter()
-                        .filter(|entry| entry.event.seq() > last)
-                        .map(Replayed::new)
-                        .collect();
+                    self.next = Some(lock(&self.state).position(self.last));
                 }
                 Err(RecvError::Closed) => return None,
             }
@@ -834,20 +969,30 @@ impl Subscription {
         Some(event)
     }
 
-    /// The part of a buffered event this stream has not sent yet (`None` when it sent it all).
-    fn rest(&self, entry: Replayed) -> Option<ChatStreamEvent> {
-        let Some((key, text)) = delta(&entry.event) else {
-            return Some(entry.event);
-        };
-        let sent = self.delivered.get(&key).copied().unwrap_or_default();
-        let skip = sent.saturating_sub(entry.start);
-        if skip == 0 {
-            Some(entry.event)
-        } else if skip < text.len() {
-            Some(cut(entry.event, skip))
-        } else {
-            None
+    /// The next piece of the replay buffer this stream has not sent, holding the buffer's lock
+    /// only while it cuts that piece.
+    fn replay(&mut self) -> Replay {
+        let buffer = lock(&self.state);
+        while let Some(index) = self.next {
+            let Some(entry) = buffer.events.get(index) else {
+                self.next = None;
+                return if buffer.done {
+                    Replay::Finished
+                } else {
+                    Replay::Live
+                };
+            };
+            match piece(entry, &self.delivered, self.last) {
+                Some((event, whole)) => {
+                    if whole {
+                        self.next = Some(index + 1);
+                    }
+                    return Replay::Event(event);
+                }
+                None => self.next = Some(index + 1),
+            }
         }
+        Replay::Live
     }
 }
 
@@ -1117,16 +1262,15 @@ mod tests {
         let message = MessageId::generate();
         let mut stream = Box::pin(reservation.subscribe().into_stream());
         let mut expected = String::new();
-        for index in 0..10 {
+        let mut seen = Vec::new();
+        // The stream keeps up with the first five deltas, which the buffer merges.
+        for index in 0..5 {
             let piece = format!("{index},");
             expected.push_str(&piece);
             sink.emit(delta(message, 0, &piece));
-        }
-        let mut seen = Vec::new();
-        for _ in 0..5 {
             seen.push(stream.next().await.expect("a live event"));
         }
-        for index in 10..(CHANNEL_CAPACITY * 2) {
+        for index in 5..(CHANNEL_CAPACITY * 2) {
             let piece = format!("{index},");
             expected.push_str(&piece);
             sink.emit(delta(message, 0, &piece));
@@ -1142,6 +1286,136 @@ mod tests {
             seen.last().map(ChatStreamEvent::seq),
             Some(CHANNEL_CAPACITY as u64 * 2 + 1)
         );
+    }
+
+    #[tokio::test]
+    async fn a_long_merged_delta_replays_in_pieces_that_end_on_its_deltas() {
+        let registry = registry(3);
+        let reservation = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+        let sink = reservation.sink();
+        let message = MessageId::generate();
+        sink.emit(TurnEvent::MessageStarted {
+            message_id: message,
+            role: Role::Assistant,
+            window_start_id: None,
+        });
+        let piece = "x".repeat(1_000);
+        let count = 200;
+        for _ in 0..count {
+            sink.emit(delta(message, 0, &piece));
+        }
+        sink.emit(TurnEvent::Done);
+        assert_eq!(sink.buffered(), 3, "started, one merged delta, done");
+
+        let late: Vec<ChatStreamEvent> = reservation.subscribe().into_stream().collect().await;
+        let pieces: Vec<(usize, u64)> = late
+            .iter()
+            .filter_map(|event| match event {
+                ChatStreamEvent::TextDelta { seq, text, .. } => Some((text.len(), *seq)),
+                _ => None,
+            })
+            .collect();
+        let mut sent = 0;
+        for (index, (length, seq)) in pieces.iter().enumerate() {
+            assert_eq!(length % piece.len(), 0, "pieces end where a delta ended");
+            if index + 1 < pieces.len() {
+                assert!(
+                    *length >= REPLAY_CHUNK_BYTES && *length < REPLAY_CHUNK_BYTES + piece.len()
+                );
+            }
+            sent += length;
+            assert_eq!(
+                *seq,
+                1 + (sent / piece.len()) as u64,
+                "each piece has the seq of its last delta"
+            );
+        }
+        assert!(pieces.len() > 1);
+        assert_eq!(sent, piece.len() * count);
+        assert_eq!(
+            late.last().map(ChatStreamEvent::seq),
+            Some(count as u64 + 2)
+        );
+
+        // After a seq inside a piece: exactly the rest, still in pieces.
+        let after = 100;
+        let rest: Vec<ChatStreamEvent> = reservation_stream(&reservation, after).collect().await;
+        let (text, seqs) = texts(&rest);
+        assert_eq!(text.len(), piece.len() * (count - (after as usize - 1)));
+        assert_eq!(seqs.last(), Some(&(count as u64 + 1)));
+        assert!(seqs.iter().all(|seq| *seq > after));
+    }
+
+    #[test]
+    fn the_buffer_counts_each_delta_end_and_a_full_buffer_stops_the_run() {
+        let registry = registry(3);
+        let reservation = registry
+            .reserve(UserId::new(Uuid::now_v7()), ChatId::generate())
+            .unwrap();
+        let sink = reservation.sink();
+        let message = MessageId::generate();
+        for _ in 0..10 {
+            sink.emit(delta(message, 0, "x"));
+        }
+        assert_eq!(
+            lock(&sink.state).bytes,
+            EVENT_BYTES + 10 * (1 + size_of::<u32>()),
+            "one event, ten bytes of text, ten ends"
+        );
+        let large = "y".repeat(1_024 * 1_024);
+        while lock(&sink.state).bytes <= RUN_BUFFER_MAX_BYTES {
+            assert!(!reservation.cancel().is_cancelled());
+            sink.emit(delta(message, 0, &large));
+        }
+        assert!(
+            reservation.cancel().is_cancelled(),
+            "a run whose buffer passes the limit is stopped"
+        );
+        // The engine saves the stopped answer and ends the run as usual.
+        sink.emit(TurnEvent::Done);
+        assert!(sink.is_done());
+    }
+
+    #[tokio::test]
+    async fn a_user_past_the_stream_limits_loses_the_oldest_stream() {
+        let registry = registry(3);
+        let owner = UserId::new(Uuid::now_v7());
+        let chat = ChatId::generate();
+        let reservation = registry.reserve(owner, chat).unwrap();
+        reservation.start();
+        let first = registry.attach(chat, 0).expect("started").into_stream();
+        let mut others: Vec<Subscription> = (1..CHAT_STREAMS_PER_USER)
+            .map(|_| registry.attach(chat, 0).expect("started"))
+            .collect();
+        assert_eq!(registry.streams.count(owner), CHAT_STREAMS_PER_USER);
+        others.push(reservation.subscribe());
+        assert_eq!(registry.streams.count(owner), CHAT_STREAMS_PER_USER);
+        let ended: Vec<ChatStreamEvent> =
+            tokio::time::timeout(Duration::from_secs(2), first.collect())
+                .await
+                .expect("the oldest run stream ends");
+        assert!(ended.is_empty());
+
+        let watched = registry.watch(owner).into_stream();
+        let _rest: Vec<UserEvents> = (1..EVENT_STREAMS_PER_USER)
+            .map(|_| registry.watch(owner))
+            .collect();
+        let mut newest = Box::pin(registry.watch(owner).into_stream());
+        assert_eq!(registry.watchers.count(owner), EVENT_STREAMS_PER_USER);
+        let heard_first: Vec<UserEvent> =
+            tokio::time::timeout(Duration::from_secs(2), watched.collect())
+                .await
+                .expect("the oldest event stream ends");
+        assert!(heard_first.is_empty(), "it ends before its listing");
+        let chat_id: Uuid = chat.into();
+        assert_eq!(
+            heard(&mut newest).await,
+            Some(UserEvent::RunStarted { chat_id })
+        );
+        drop(others);
+        assert_eq!(registry.streams.count(owner), 0);
     }
 
     /// A live run that streamed `message.started`, then `pieces` as text deltas of one part;
@@ -1198,7 +1472,8 @@ mod tests {
         reservation: &Reservation,
         after: u64,
     ) -> impl Stream<Item = ChatStreamEvent> + Send {
-        subscribe(&reservation.sink.state, after).into_stream()
+        let ticket = reservation.registry.ticket(reservation.sink.owner);
+        subscribe(&reservation.sink.state, after, ticket).into_stream()
     }
 
     #[tokio::test]
@@ -1213,7 +1488,8 @@ mod tests {
 
         let (text, seqs) = texts(&resumed.collect::<Vec<_>>().await);
         assert_eq!(text, "two three");
-        assert_eq!(seqs, vec![3, 4]);
+        // The stream reads the buffer as it sends, so the merged delta already holds "three".
+        assert_eq!(seqs, vec![4]);
         let replayed: Vec<ChatStreamEvent> = foreign.collect().await;
         assert_eq!(replayed.first().map(ChatStreamEvent::seq), Some(1));
         assert_eq!(texts(&replayed).0, "one two three");
@@ -1501,14 +1777,13 @@ mod tests {
         let events: Vec<UserEvent> = stream.collect().await;
         assert!(events.is_empty(), "the client connects again instead");
 
-        // The stream is gone: the next event drops the user's channel.
-        assert_eq!(registry.users().len(), 1);
+        // The user's channel goes with the user's last stream.
+        assert_eq!(registry.watchers.users(), 0);
         registry.publish(owner, UserEvent::ChatUpdated { chat_id });
-        assert!(registry.users().is_empty());
-        // A new stream of another user also clears channels nobody reads.
         let kept = registry.watch(owner);
-        drop(kept);
         let _other = registry.watch(UserId::new(Uuid::now_v7()));
-        assert_eq!(registry.users().len(), 1);
+        assert_eq!(registry.watchers.users(), 2);
+        drop(kept);
+        assert_eq!(registry.watchers.users(), 1);
     }
 }
