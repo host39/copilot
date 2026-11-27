@@ -11,10 +11,12 @@ import path from "@web/routes/path";
 import { CHOICES, type Choice, providerSchema } from "@web/routes/settings/providers/presets";
 import WelcomePage from "@web/routes/welcome/page";
 import {
+  AUTO_ENABLE_MAX,
   firstModel,
   initialSetup,
   keepsKey,
   landing,
+  modelsNote,
   type SetupEvent,
   type SetupState,
   saveConnection,
@@ -237,6 +239,16 @@ describe("after the setup", () => {
       ])?.displayName
     ).toBe("Beta");
     expect(firstModel([model(MODEL, "Zeta", false)])).toBeUndefined();
+  });
+
+  test("the models step points at its own switches, and says when none is on yet", () => {
+    expect(modelsNote(AUTO_ENABLE_MAX)).toContain("Every model is turned on");
+    const many = modelsNote(AUTO_ENABLE_MAX + 1);
+    expect(many).toContain("none is turned on yet");
+    expect(many).toContain("Turn on at least one below");
+    for (const count of [1, AUTO_ENABLE_MAX, AUTO_ENABLE_MAX + 1]) {
+      expect(modelsNote(count)).not.toContain("model picker");
+    }
   });
 
   test("a sign-in without a provider lands in the setup", async () => {

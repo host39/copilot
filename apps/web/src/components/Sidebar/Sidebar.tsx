@@ -46,7 +46,7 @@ function Item({
       </span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {badge ? (
-        <span className="rounded-full bg-accent px-1.5 text-xs font-medium text-on-accent">
+        <span className="count-badge">
           {badge}
           <span className="sr-only"> unread</span>
         </span>
@@ -91,7 +91,7 @@ function ProjectRow({ project }: { project: ProjectResponse }) {
         to={newChatLink(project.id)}
         aria-label={`New chat in ${project.name}`}
         title="New chat in this project"
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg"
+        className="icon-button-sm shrink-0"
       >
         <LuPlus aria-hidden />
       </Link>
@@ -114,11 +114,7 @@ function Projects() {
     <Section
       title="Projects"
       action={
-        <Link
-          to={path.projectNew}
-          aria-label="New project"
-          className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg"
-        >
+        <Link to={path.projectNew} aria-label="New project" className="icon-button-sm">
           <LuPlus aria-hidden />
         </Link>
       }

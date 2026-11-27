@@ -106,6 +106,19 @@ export async function saveConnection(
   return Object.keys(changes).length === 0 ? saved : updateProvider(saved.id, changes);
 }
 
+/**
+ * Core's `MODEL_AUTO_ENABLE_MAX`: a provider that lists at most this many models has every one
+ * turned on when it is first listed, and one that lists more has none turned on.
+ */
+export const AUTO_ENABLE_MAX = 20;
+
+/** What the models step says above the list of `count` models. */
+export function modelsNote(count: number): string {
+  return count > AUTO_ENABLE_MAX
+    ? "This provider offers many models, so none is turned on yet. Turn on at least one below to start chatting."
+    : "Every model is turned on. Turn off the ones you do not want below; you can change this later in Settings.";
+}
+
 /** The model a new chat opens with after the setup: the first one turned on, in list order. */
 export function firstModel(models: readonly ModelResponse[]): ModelResponse | undefined {
   return filterModels(models, "", "enabled")[0];

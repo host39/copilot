@@ -18,8 +18,14 @@ import {
   laterCount,
   readyDecisions,
 } from "@web/components/Chat/messages";
-import { ApprovalPanel, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
-import { conversationQuery, messageFiles, phaseNote, writingIds } from "@web/routes/chat/page";
+import { ApprovalPanel, approvalNote, ToolCard, toolLabel } from "@web/components/Chat/ToolCard";
+import {
+  conversationQuery,
+  messageFiles,
+  nearBottom,
+  phaseNote,
+  writingIds,
+} from "@web/routes/chat/page";
 import {
   apply,
   DRAFT_ID,
@@ -297,6 +303,14 @@ describe("the turn", () => {
     // A refresh that failed after the messages were read keeps showing them.
     expect(conversationQuery({ ...failed, data: [] }, false).isError).toBe(false);
   });
+
+  test("the view follows new text only while the user reads the end of the conversation", () => {
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_400, clientHeight: 600 })).toBe(true);
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_330, clientHeight: 600 })).toBe(true);
+    // Scrolled up to read or copy an earlier answer: new messages leave the view where it is.
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 1_300, clientHeight: 600 })).toBe(false);
+    expect(nearBottom({ scrollHeight: 2_000, scrollTop: 0, clientHeight: 600 })).toBe(false);
+  });
 });
 
 describe("tool cards", () => {
@@ -344,6 +358,14 @@ describe("tool cards", () => {
     expect(html.match(/>Deny</g)).toHaveLength(2);
     expect(html).toContain("Reason for denying (optional)");
     expect(html).toContain("0 of 2 decided");
+    // Screen readers hear that the answer stopped for the user.
+    expect(html).toContain('<p role="alert" class="sr-only">Tool approval needed: ');
+  });
+
+  test("the approval announcement names every tool waiting", () => {
+    expect(approvalNote([call, builtin], { titles: { [call.callId]: "Delete a file" } })).toBe(
+      `Tool approval needed: Delete a file, ${builtin.toolName}.`
+    );
   });
 });
 

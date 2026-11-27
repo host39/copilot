@@ -18,3 +18,13 @@ export function text(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value.trim() : "";
 }
+
+/** Whether `value` parses as an `http:` or `https:` URL (a server, provider, or tool address). */
+export function isHttp(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}

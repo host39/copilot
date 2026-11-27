@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { keys } from "@web/api/routes/keys";
 import { fetchProjects } from "@web/api/routes/projects";
+import { draftKey } from "@web/components/Chat/drafts";
 import { StartChat } from "@web/components/Chat/StartChat";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import { PROJECT_PARAM } from "@web/routes/home/draft";
@@ -64,6 +65,7 @@ export default function HomePage() {
           preferred={setup?.modelId}
           placeholder={project ? `Start a chat in ${project.name}` : undefined}
           extra={choose}
+          draft={draftKey({ projectId: null })}
         />
       </div>
     </section>

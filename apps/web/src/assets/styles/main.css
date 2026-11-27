@@ -111,6 +111,26 @@ body {
     @apply flex size-10 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60;
   }
 
+  /* The smaller icon button inside a row (a file's or a project's actions). */
+  .icon-button-sm {
+    @apply flex size-8 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg;
+  }
+
+  /* The magnifier inside a search field; the field leaves room with `pl-9`. */
+  .input-icon {
+    @apply pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted;
+  }
+
+  /* A small count on a navigation item (unread scheduled runs). */
+  .count-badge {
+    @apply rounded-full bg-accent px-1.5 text-xs font-medium text-on-accent;
+  }
+
+  /* The large heading of a full-page message (an error, Page Not Found). */
+  .page-heading {
+    @apply mt-2 text-2xl font-semibold tracking-tight text-fg sm:text-3xl;
+  }
+
   /* Model output rendered from Markdown (components/Chat/Markdown.tsx). */
   .markdown {
     @apply space-y-3 text-sm leading-relaxed break-words;

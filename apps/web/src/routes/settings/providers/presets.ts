@@ -10,6 +10,7 @@ import type {
 } from "@copilot/contracts";
 import { describeError } from "@web/api/errors";
 import { createProvider, refreshProvider } from "@web/api/routes/providers";
+import { isHttp } from "@web/forms";
 import { plural } from "@web/routes/settings/format";
 import { z } from "zod";
 
@@ -68,16 +69,6 @@ export function choice(kind: ProviderKind, preset: Preset): Choice {
 export const NAME_MAX_CHARS = 100;
 
 const chars = (value: string) => Array.from(value).length;
-
-/** An absolute `http` or `https` URL. */
-function isHttp(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 /** Optional text: blank reads as left out. */
 const optional = z

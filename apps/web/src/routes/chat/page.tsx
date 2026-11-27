@@ -15,10 +15,12 @@ import { fetchModels } from "@web/api/routes/models";
 import { fetchProject } from "@web/api/routes/projects";
 import { fetchToolServers } from "@web/api/routes/tool-servers";
 import { Composer, type Picked, type Upload } from "@web/components/Chat/Composer";
+import { draftKey } from "@web/components/Chat/drafts";
 import { type ListActions, MessageList } from "@web/components/Chat/MessageList";
 import { VOICE_MESSAGE } from "@web/components/Chat/messages";
 import { ToolsMenu } from "@web/components/Chat/ToolsMenu";
 import { TOOLS_OFF_NOTE, toolsWarning } from "@web/components/Chat/tools";
+import { chatTitle } from "@web/components/Chats/ChatRow";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { PageTitle } from "@web/components/Layout/PageTitle";
 import { MenuButton, useOwnHeader } from "@web/components/Layout/Shell";
@@ -27,12 +29,21 @@ import { useSpeaker } from "@web/hooks/useSpeaker";
 import { useChatSaved } from "@web/routes/chat/dialogs";
 import { ChatHeader } from "@web/routes/chat/header";
 import { contextUse, modelNotice, toolsOn } from "@web/routes/chat/settings";
-import { type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
+import { pendingCalls, type Run, timeline, type ViewMessage } from "@web/routes/chat/stream";
 import { type Attached, type Phase, useTurn } from "@web/routes/chat/turn";
 import path from "@web/routes/path";
 import { scheduleContext } from "@web/routes/schedule/rules";
 import { shortTokens } from "@web/routes/settings/provider/models";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { LuArrowDown } from "react-icons/lu";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 /** What the new chat screen hands over: the first message, sent once on arrival. */
@@ -91,10 +102,24 @@ function useMarkRead(chatId: string, seen: number) {
   }, [chatId, client, seen]);
 }
 
+/** How close to the end of the conversation (in pixels) still counts as reading the latest. */
+const BOTTOM_SLACK_PX = 80;
+
+/** Whether the scroller shows the end of the conversation (within `BOTTOM_SLACK_PX`). */
+export function nearBottom(element: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight < BOTTOM_SLACK_PX;
+}
+
 /**
- * Scrolls to the message a search result named (`hash`, once), else to the latest message
- * whenever `count` changes, and keeps the newest text in view while it streams, as long as the
- * user stays at the bottom.
+ * Scrolls to the message a search result named (`hash`, once), and otherwise follows the
+ * conversation (a new message, and the newest text while it streams) only while the user stays at
+ * the bottom: someone reading or copying an earlier answer is never pulled away. `away` says the
+ * user scrolled up (for "Jump to latest"); `latest` scrolls down and follows again, for that
+ * button and for the user's own sends.
  */
 function useScroll(
   scroller: RefObject<HTMLDivElement | null>,
@@ -104,11 +129,13 @@ function useScroll(
 ) {
   const jumped = useRef("");
   const bottom = useRef(true);
+  const [away, setAway] = useState(false);
   useEffect(() => {
     const element = scroller.current;
     if (!element) return;
     const track = () => {
-      bottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+      bottom.current = nearBottom(element);
+      setAway(!bottom.current);
     };
     element.addEventListener("scroll", track, { passive: true });
     return () => element.removeEventListener("scroll", track);
@@ -119,7 +146,7 @@ function useScroll(
     if (target) {
       jumped.current = hash;
       target.scrollIntoView({ block: "center" });
-    } else if (!hash || jumped.current === hash) {
+    } else if ((!hash || jumped.current === hash) && bottom.current) {
       scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     }
   }, [count, hash, scroller]);
@@ -128,6 +155,37 @@ function useScroll(
       scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     }
   }, [progress, scroller]);
+  const latest = useCallback(() => {
+    bottom.current = true;
+    setAway(false);
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+  }, [scroller]);
+  return { away, latest };
+}
+
+/**
+ * The tab title: the chat's title, so tabs and history entries tell chats apart, marked while an
+ * answer waits for tool approvals.
+ */
+function TabTitle({ chat, shown }: { chat: ChatResponse | undefined; shown: ViewMessage[] }) {
+  const waiting = shown.some((message) => pendingCalls(message).length > 0);
+  return <PageTitle page={chat ? chatTitle(chat) : "Chat"} attention={waiting} />;
+}
+
+/** "Jump to latest", over the end of the conversation while the user reads further up. */
+function JumpButton({ shown, onClick }: { shown: boolean; onClick: () => void }) {
+  if (!shown) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Jump to latest"
+      title="Jump to latest"
+      className="absolute bottom-3 left-1/2 flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-canvas text-fg shadow-md hover:bg-raised"
+    >
+      <LuArrowDown aria-hidden />
+    </button>
+  );
 }
 
 /** Esc stops the answer being written (desktop shortcut), unless a dialog or menu takes it. */
@@ -152,14 +210,28 @@ export function writingIds(run: Run | null, running: boolean): Set<string> {
   );
 }
 
-/** What the conversation offers while no turn runs, through the turn's actions. */
-function listActions(turn: ReturnType<typeof useTurn>): ListActions {
+/**
+ * What the conversation offers while no turn runs, through the turn's actions. Each one that
+ * starts an answer calls `follow` first, so the view follows the answer it asked for.
+ */
+function listActions(turn: ReturnType<typeof useTurn>, follow: () => void): ListActions {
   return {
-    edit: (message: ViewMessage, text: string) =>
-      turn.send(text, messageFiles(message), message.id),
-    regenerate: () => void turn.regenerate(),
-    retry: () => void turn.retry(),
-    continue: (text) => void turn.send(text),
+    edit: (message: ViewMessage, text: string) => {
+      follow();
+      return turn.send(text, messageFiles(message), message.id);
+    },
+    regenerate: () => {
+      follow();
+      void turn.regenerate();
+    },
+    retry: () => {
+      follow();
+      void turn.retry();
+    },
+    continue: (text) => {
+      follow();
+      void turn.send(text);
+    },
     decide: turn.decide,
   };
 }
@@ -297,6 +369,7 @@ function Footer({
         discard={(fileId) => void deleteFile(fileId).catch(() => undefined)}
         tools={tools}
         speak={speak}
+        draft={draftKey({ chatId })}
       />
     </div>
   );
@@ -343,13 +416,13 @@ function ChatView({ chatId }: { chatId: string }) {
   useEscapeStop(running, turn.stop);
 
   const shown = timeline(messages.data ?? [], turn.run, turn.draft);
-  useScroll(scroller, shown.length, turn.run?.seq ?? 0, location.hash.slice(1));
+  const scroll = useScroll(scroller, shown.length, turn.run?.seq ?? 0, location.hash.slice(1));
 
   const names = useMemo(
     () => new Map((servers.data ?? []).map((server) => [server.id, server.name])),
     [servers.data]
   );
-  const actions = running ? undefined : listActions(turn);
+  const actions = running ? undefined : listActions(turn, scroll.latest);
 
   const notice = data ? modelNotice(data, models.data) : null;
   const conversation = conversationQuery(messages, turn.run !== null);
@@ -358,7 +431,7 @@ function ChatView({ chatId }: { chatId: string }) {
 
   return (
     <section className="flex h-full flex-col">
-      <PageTitle page="Chat" />
+      <TabTitle chat={data} shown={shown} />
       {data ? (
         <ChatHeader
           chat={data}
@@ -371,23 +444,26 @@ function ChatView({ chatId }: { chatId: string }) {
           <MenuButton />
         </header>
       )}
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-8">
-          <QueryState query={chat} back={{ to: path.home, label: "New chat" }}>
-            <QueryState query={conversation}>
-              <MessageList
-                messages={shown}
-                writing={writingIds(turn.run, running)}
-                running={running}
-                windowStartId={turn.windowStartId}
-                actions={actions}
-                titles={turn.run?.titles}
-                servers={names}
-                schedule={scheduleContext(model, project.data, servers.data)}
-              />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-8">
+            <QueryState query={chat} back={{ to: path.home, label: "New chat" }}>
+              <QueryState query={conversation}>
+                <MessageList
+                  messages={shown}
+                  writing={writingIds(turn.run, running)}
+                  running={running}
+                  windowStartId={turn.windowStartId}
+                  actions={actions}
+                  titles={turn.run?.titles}
+                  servers={names}
+                  schedule={scheduleContext(model, project.data, servers.data)}
+                />
+              </QueryState>
             </QueryState>
-          </QueryState>
+          </div>
         </div>
+        <JumpButton shown={scroll.away} onClick={scroll.latest} />
       </div>
       {data ? (
         <Footer
@@ -397,16 +473,17 @@ function ChatView({ chatId }: { chatId: string }) {
           meter={contextUse(shown, model)}
           model={model}
           chatId={chatId}
-          send={(text, files) =>
-            turn.send(
+          send={(text, files) => {
+            scroll.latest();
+            return turn.send(
               text,
               files.flatMap((file) =>
                 file.fileId
                   ? [{ fileId: file.fileId, name: file.name, mediaType: file.mediaType }]
                   : []
               )
-            )
-          }
+            );
+          }}
           stop={() => void turn.stop()}
           tools={
             <ChatTools

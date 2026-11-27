@@ -34,7 +34,7 @@ function Runs({ schedule, unread }: { schedule: ScheduleResponse; unread: number
       <summary className="flex min-h-10 cursor-pointer items-center gap-2 px-3 text-sm">
         Runs
         {unread > 0 ? (
-          <span className="rounded-full bg-accent px-1.5 text-xs font-medium text-on-accent">
+          <span className="count-badge">
             {unread}
             <span className="sr-only"> unread</span>
           </span>

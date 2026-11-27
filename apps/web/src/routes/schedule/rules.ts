@@ -19,6 +19,7 @@ import type {
   UpdateScheduleRequest,
 } from "@copilot/contracts";
 import type { BadgeTone } from "@web/components/Badge/Badge";
+import { messageText } from "@web/components/Chat/messages";
 import { startModel } from "@web/components/ModelPicker/models";
 import { modeFor } from "@web/routes/settings/tool-server/modes";
 import { z } from "zod";
@@ -266,14 +267,6 @@ export function scheduleValues(schedule: ScheduleResponse): ScheduleValues {
   };
 }
 
-/** The text of a message's text parts. */
-function messageText(message: Pick<MessageResponse, "parts">): string {
-  return message.parts
-    .flatMap((part) => (part.type === "text" ? [part.text] : []))
-    .join("\n")
-    .trim();
-}
-
 /** The first line of `text`, cut to a schedule name's length. */
 function firstLine(text: string): string {
   const line = text.trim().split("\n")[0]?.trim() ?? "";
@@ -290,7 +283,7 @@ export function chatValues(
   timezone = deviceZone()
 ): ScheduleValues {
   const last = [...messages].reverse().find((message) => message.role === "user");
-  const prompt = last ? messageText(last) : "";
+  const prompt = last ? messageText(last.parts).trim() : "";
   return {
     ...blankValues(timezone),
     name: firstLine(chat.title) || firstLine(prompt),

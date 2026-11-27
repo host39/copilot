@@ -110,7 +110,7 @@ function UploadRow({ upload, onDismiss }: { upload: Upload; onDismiss: () => voi
             type="button"
             onClick={onDismiss}
             aria-label={`Dismiss ${upload.name}`}
-            className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg"
+            className="icon-button-sm"
           >
             <LuX aria-hidden />
           </button>

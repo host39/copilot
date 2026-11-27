@@ -11,6 +11,7 @@ import { Menu, type MenuItem } from "@web/components/Menu/Menu";
 import { ModelPicker } from "@web/components/ModelPicker/ModelPicker";
 import { InstructionsForm, MoveForm, useChatSaved } from "@web/routes/chat/dialogs";
 import { type MenuAction, menuActions, titleSchema } from "@web/routes/chat/settings";
+import { newChatLink } from "@web/routes/home/draft";
 import path, { link } from "@web/routes/path";
 import { projectLabel } from "@web/routes/project/forms";
 import { newScheduleLink } from "@web/routes/schedule/draft";
@@ -24,6 +25,7 @@ import {
   LuPinOff,
   LuSave,
   LuScrollText,
+  LuSquarePen,
   LuTrash2,
 } from "react-icons/lu";
 import { Link, useNavigate } from "react-router-dom";
@@ -249,8 +251,18 @@ export function ChatHeader({ chat, project, models, toolsOn }: ChatHeaderProps) 
           onChange={async ({ modelId, reasoning }) => {
             saved(await updateChat(chat.id, { modelId, reasoning }));
           }}
+          compact
         />
         <Menu label="Chat actions" items={menuActions(chat).map((action) => items[action])} />
+        {/* Phones and narrow windows, where the sidebar's New chat is a drawer away. */}
+        <Link
+          to={chat.projectId ? newChatLink(chat.projectId) : path.home}
+          aria-label="New chat"
+          title="New chat"
+          className="icon-button lg:hidden"
+        >
+          <LuSquarePen aria-hidden className="size-5" />
+        </Link>
       </div>
       {project ? (
         <p className="px-2 text-xs text-muted lg:pl-2">

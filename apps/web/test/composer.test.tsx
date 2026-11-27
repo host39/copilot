@@ -1,8 +1,9 @@
 // The composer: Enter per platform, attached files and the model's capabilities, uploads, when a
-// message can go, and the field with Send, Stop, and attach.
+// message can go, the field with Send, Stop, and attach, and the drafts kept per chat.
 
 import type { Capabilities } from "@copilot/contracts";
 import { describe, expect, test } from "@rstest/core";
+import { clearToken, setToken } from "@web/auth/token";
 import { Composer } from "@web/components/Chat/Composer";
 import {
   type Attachment,
@@ -13,6 +14,14 @@ import {
   unreadable,
   uploaded,
 } from "@web/components/Chat/composer";
+import {
+  DRAFTS_MAX,
+  draftKey,
+  keepComposer,
+  keepStart,
+  readComposer,
+  readStart,
+} from "@web/components/Chat/drafts";
 import { renderToString } from "react-dom/server";
 
 const enter = { key: "Enter", shiftKey: false, isComposing: false, keyCode: 13 };
@@ -169,5 +178,69 @@ describe("the composer", () => {
     const html = renderToString(<Composer onSend={send} disabled />);
     expect(html).toMatch(/<textarea[^>]*disabled/);
     expect(html).toContain('aria-label="Attach files"');
+  });
+});
+
+describe("drafts", () => {
+  const empty = { text: "", items: [], files: new Map<string, File>(), counter: 0 };
+
+  test("each chat, and each project's new chat, keeps its own draft", () => {
+    expect(draftKey({ chatId: "c1" })).toBe("chat:c1");
+    expect(draftKey({ projectId: "p1" })).toBe("new:p1");
+    expect(draftKey({ projectId: null })).toBe("new:");
+  });
+
+  test("the text and the ready files come back; files still uploading or failed do not", () => {
+    const photo = new File(["x"], "photo.png", { type: "image/png" });
+    const notes = new File(["y"], "notes.txt", { type: "text/plain" });
+    keepComposer("chat:kept", {
+      text: "Half a thought",
+      items: [
+        item({ key: "file-1", status: "ready", fileId: "f1" }),
+        item({ key: "file-2", name: "notes.txt", status: "uploading" }),
+        item({ key: "file-3", status: "failed", error: "Too large." }),
+      ],
+      files: new Map([
+        ["file-1", photo],
+        ["file-2", notes],
+      ]),
+      counter: 3,
+    });
+    const kept = readComposer("chat:kept");
+    expect(kept?.text).toBe("Half a thought");
+    expect(kept?.items.map((entry) => entry.key)).toEqual(["file-1"]);
+    expect([...(kept?.files.keys() ?? [])]).toEqual(["file-1"]);
+    expect(kept?.counter).toBe(3);
+  });
+
+  test("an emptied composer (a successful send) drops the draft", () => {
+    keepComposer("chat:sent", { ...empty, text: "Hello" });
+    keepComposer("chat:sent", empty);
+    expect(readComposer("chat:sent")).toBeUndefined();
+  });
+
+  test("a restored composer shows the kept text", () => {
+    keepComposer("chat:shown", { ...empty, text: "Where was I" });
+    const html = renderToString(<Composer onSend={async () => true} draft="chat:shown" />);
+    expect(html).toContain("Where was I");
+  });
+
+  test("only the newest drafts are kept", () => {
+    for (let index = 0; index <= DRAFTS_MAX; index += 1) {
+      keepComposer(`chat:many-${index}`, { ...empty, text: `draft ${index}` });
+    }
+    expect(readComposer("chat:many-0")).toBeUndefined();
+    expect(readComposer(`chat:many-${DRAFTS_MAX}`)?.text).toBe(`draft ${DRAFTS_MAX}`);
+  });
+
+  test("signing in or out forgets every draft", () => {
+    keepComposer("chat:private", { ...empty, text: "Secret plans" });
+    keepStart("new:", { tools: { toolOverrides: [], builtinTools: null }, speak: true });
+    setToken("token-a");
+    expect(readComposer("chat:private")).toBeUndefined();
+    expect(readStart("new:")).toBeUndefined();
+    keepComposer("chat:private", { ...empty, text: "Secret plans" });
+    clearToken();
+    expect(readComposer("chat:private")).toBeUndefined();
   });
 });

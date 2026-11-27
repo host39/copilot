@@ -1,5 +1,5 @@
 import Button from "@web/components/Button/Button";
-import { afterClose, holdWhileBusy } from "@web/components/Dialog/dialog";
+import { afterClose, holdWhileBusy, useBackdropTap } from "@web/components/Dialog/dialog";
 import { FormAlert } from "@web/components/Form/FormAlert";
 import { type ReactNode, useEffect, useId, useRef } from "react";
 
@@ -38,6 +38,9 @@ export function ConfirmDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const bodyId = useId();
+  const backdrop = useBackdropTap(() => {
+    if (!busy) onCancel();
+  });
 
   useEffect(() => {
     const element = dialog.current;
@@ -58,9 +61,8 @@ export function ConfirmDialog({
         if (next === "reopen") dialog.current?.showModal();
         else if (next === "close") onCancel();
       }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
-      }}
+      onPointerDown={backdrop.onPointerDown}
+      onClick={backdrop.onClick}
       className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-2xl border border-line bg-canvas p-0 text-fg shadow-xl backdrop:bg-black/50"
     >
       <div className="space-y-4 p-6">
