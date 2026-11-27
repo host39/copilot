@@ -78,8 +78,7 @@ impl FileService {
 
     /// Stores an upload after checking, in order: the owner belongs to the caller, the size
     /// limit, the type (extension plus magic bytes), the length of audio for a chat (at most
-    /// `AUDIO_CLIP_MAX_SECS`, when the file says how long it plays), and the caller's storage
-    /// quota. Records the SHA-256, the token estimate, and the page count of PDFs.
+    /// `AUDIO_CLIP_MAX_SECS`, and measurable), and the caller's storage quota. Records the SHA-256, the token estimate, and the page count of PDFs.
     pub async fn upload(
         &self,
         actor: &Actor,
@@ -255,19 +254,25 @@ impl FileService {
     }
 }
 
-/// Audio a chat sends to a model plays for at most `AUDIO_CLIP_MAX_SECS`. Project audio never
-/// reaches a model, so only the upload size limits it.
+/// Audio a chat sends to a model plays for at most `AUDIO_CLIP_MAX_SECS`, and a file whose
+/// length cannot be measured is refused rather than trusted. Project audio never reaches a
+/// model, so only the upload size limits it.
 fn check_clip(media: MediaType, bytes: &[u8]) -> DomainResult<()> {
     let limit = u64::from(AUDIO_CLIP_MAX_SECS) * 1_000;
-    if duration_ms(media, bytes).is_some_and(|played| played > limit) {
-        return Err(DomainError::validation(format!(
+    match duration_ms(media, bytes) {
+        Some(played) if played <= limit => Ok(()),
+        Some(_) => Err(DomainError::validation(format!(
             "Audio in a chat can be at most {} minutes long.",
             AUDIO_CLIP_MAX_SECS / 60
         ))
         .with_field("file")
-        .with_context("maxSeconds", AUDIO_CLIP_MAX_SECS));
+        .with_context("maxSeconds", AUDIO_CLIP_MAX_SECS)),
+        None => Err(DomainError::validation(
+            "We could not tell how long this audio plays. Send a PCM WAV or an MP3 file.",
+        )
+        .with_field("file")
+        .with_context("maxSeconds", AUDIO_CLIP_MAX_SECS)),
     }
-    Ok(())
 }
 
 fn not_found(id: FileId) -> DomainError {
@@ -459,6 +464,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refuses_chat_audio_that_hides_its_length() {
+        let f = fixture(FileLimits::default());
+        let caller = actor();
+        let chat = Chat::create(caller.user_id, Utc::now());
+        ChatRepository::insert(f.store.as_ref(), &chat)
+            .await
+            .unwrap();
+        let owner = FileOwner::Chat(chat.id());
+        let too_long = "Audio in a chat can be at most 5 minutes long.";
+
+        // 301 seconds of 8 kHz mono PCM16 whose header claims a byte rate 2^31 - 1.
+        let mut fast = clip(301).to_vec();
+        fast[28..32].copy_from_slice(&0x7fff_ffff_u32.to_le_bytes());
+        let error = f
+            .files
+            .upload(&caller, owner, "fast.wav", Bytes::from(fast.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "We could not tell how long this audio plays. Send a PCM WAV or an MP3 file."
+        );
+        assert!(
+            matches!(&error, DomainError::Validation { field: Some(field), .. } if field == "file")
+        );
+
+        // The same clip with a second `fmt ` chunk that claims that rate.
+        let honest = clip(301);
+        let mut twice = honest[..36].to_vec();
+        twice.extend_from_slice(&fast[12..36]);
+        twice.extend_from_slice(&honest[36..]);
+        let error = f
+            .files
+            .upload(&caller, owner, "twice.wav", Bytes::from(twice))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().starts_with("We could not tell"),
+            "{error}"
+        );
+
+        // A 301-second MP3 whose Xing frame (64 kbps, 192 bytes) claims 10 frames, then 12,541
+        // frames at 8 kbps: every frame counts.
+        let mut frame = vec![0xff, 0xf3, 0x14, 0xc0];
+        frame.resize(24, 0);
+        let mut xing = vec![0xff, 0xf3, 0x84, 0xc0];
+        xing.resize(4 + 9, 0);
+        xing.extend_from_slice(b"Xing\0\0\0\x01");
+        xing.extend_from_slice(&10_u32.to_be_bytes());
+        xing.resize(192, 0);
+        xing.extend_from_slice(&frame.repeat(12_541));
+        let error = f
+            .files
+            .upload(&caller, owner, "xing.mp3", Bytes::from(xing))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), too_long);
+
+        // An MP3 with a tag and no frame has no length: refused in a chat, kept in a project.
+        let tag = Bytes::from_static(b"ID3\x04\0\0\0\0\0\0");
+        let error = f
+            .files
+            .upload(&caller, owner, "tag.mp3", tag.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().starts_with("We could not tell"),
+            "{error}"
+        );
+        let project = new_project(&f, &caller).await;
+        f.files
+            .upload(&caller, FileOwner::Project(project), "tag.mp3", tag)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn caps_audio_for_a_chat_at_five_minutes() {
         let f = fixture(FileLimits::default());
         let caller = actor();
@@ -487,9 +569,11 @@ mod tests {
             matches!(&error, DomainError::Validation { field: Some(field), .. } if field == "file")
         );
 
-        // A constant-bitrate MP3 of 301 seconds at 8 kbps (MPEG-2, 24 kHz).
-        let mut mp3 = vec![0xff, 0xf3, 0x14, 0xc0];
-        mp3.resize(301 * 1_000, 0);
+        // A constant-bitrate MP3 of 301 seconds at 8 kbps (MPEG-2, 24 kHz, mono): 12,542 frames
+        // of 24 bytes and 24 milliseconds each.
+        let mut frame = vec![0xff, 0xf3, 0x14, 0xc0];
+        frame.resize(24, 0);
+        let mp3 = frame.repeat(12_542);
         let error = f
             .files
             .upload(&caller, owner, "talk.mp3", Bytes::from(mp3.clone()))

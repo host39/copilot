@@ -48,12 +48,12 @@ fn clip() -> Vec<u8> {
     wav(&pcm, 16_000)
 }
 
-/// Two seconds of a constant-bitrate MP3 (MPEG-1 Layer III, 128 kbps): one frame header, then
-/// silence.
+/// About two seconds of a constant-bitrate MP3 (MPEG-1 Layer III, 128 kbps, 44.1 kHz): 77
+/// frames of 417 bytes, each a header and silence.
 fn mp3() -> Vec<u8> {
-    let mut file = vec![0xff, 0xfb, 0x90, 0x00];
-    file.resize(32_000, 0);
-    file
+    let mut frame = vec![0xff, 0xfb, 0x90, 0x00];
+    frame.resize(417, 0);
+    frame.repeat(77)
 }
 
 /// Uploads `bytes` as `name` to the chat; the file's id.
@@ -437,6 +437,25 @@ async fn audio_in_a_chat_is_at_most_five_minutes(pool: DbPool) {
     assert_eq!(
         refused.body["error"],
         "Audio in a chat can be at most 5 minutes long."
+    );
+    assert_eq!(refused.body["field"], "file");
+
+    // The same clip whose header claims a far higher byte rate than its samples play at.
+    let mut forged = too_long;
+    forged[28..32].copy_from_slice(&0x7fff_ffff_u32.to_le_bytes());
+    let refused = send(
+        app.clone(),
+        multipart(
+            &format!("/api/chats/{chat}/files"),
+            &token,
+            &[("file", "forged.wav", &forged)],
+        ),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.body["error"],
+        "We could not tell how long this audio plays. Send a PCM WAV or an MP3 file."
     );
     assert_eq!(refused.body["field"], "file");
 }
