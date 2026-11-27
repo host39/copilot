@@ -220,7 +220,7 @@ pub async fn delete(
         (status = OK, description = "The run started in a new chat, unattended like a scheduled fire, and the next run stays; attach with `GET /chats/{id}/stream`", body = DetailsResponse<ScheduleRunResponse>),
         (status = BAD_REQUEST, description = "The run could not start (for example, the project's files no longer fit the model); recorded as a failed run", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such schedule", body = ErrorResponse),
-        (status = UNPROCESSABLE_ENTITY, description = "The schedule's model was removed or turned off, so the schedule paused (`MODEL_UNAVAILABLE`), two scheduled runs are running (`SCHEDULER_BUSY`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
+        (status = UNPROCESSABLE_ENTITY, description = "The schedule's model was removed or turned off, so the schedule paused (`MODEL_UNAVAILABLE`), two scheduled runs or one of the caller's are running (`SCHEDULER_BUSY`), or the server is shutting down (`SERVER_STOPPING`)", body = ErrorResponse)
     )
 )]
 pub async fn run(
@@ -232,12 +232,12 @@ pub async fn run(
         .schedules
         .run_now(&caller, ScheduleId::new(id))
         .await?;
-    let slot = state.runs.slot_or_busy()?;
+    let reservation = state.runs.reserve_now(caller.user_id, firing.chat_id)?;
     // On a task of its own: a client that disconnects never leaves a written chat without its
     // run (dropping a `JoinHandle` does not cancel its task).
     let task = tokio::spawn({
         let state = state.clone();
-        async move { scheduler::fire(&state, slot, firing).await }
+        async move { scheduler::fire(&state, reservation, firing).await }
     });
     let chat = task
         .await

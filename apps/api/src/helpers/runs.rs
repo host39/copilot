@@ -23,9 +23,12 @@
 //! gets a child of the root shutdown token). [`RunRegistry::drain`] stops new runs, gives the
 //! live ones a moment to finish, then cancels them and waits for them to save.
 //!
-//! Scheduled runs (a claimed fire or a Run now) take one of the `MAX_SCHEDULED_RUNS` slots
-//! first ([`RunRegistry::slot`]) and reserve their new chat with it
-//! ([`RunRegistry::reserve_scheduled`]): they are bounded by the slots, not by their owner's
+//! Scheduled runs take one of the `MAX_SCHEDULED_RUNS` slots: a claimed fire takes a slot first
+//! ([`RunRegistry::slot`]) and reserves its new chat with it ([`RunRegistry::reserve_scheduled`]),
+//! and a Run now does both at once ([`RunRegistry::reserve_now`]), refused while its caller
+//! holds a slot already, so one user's Run now never takes both slots and keeps other users'
+//! schedules waiting ([`RunRegistry::holders`] lets the scheduler serve them first). Scheduled
+//! runs are bounded by the slots, not by their owner's
 //! `MAX_ACTIVE_RUNS_PER_USER`, so a claimed fire never fails because its owner is chatting, and
 //! a user's chats never wait for their schedules. Otherwise they are runs like any other: one
 //! per chat, stopped and drained the same way, with the same events.
@@ -82,7 +85,8 @@ pub const CHAT_BUSY: &str = "CHAT_BUSY";
 pub const TOO_MANY_RUNS: &str = "TOO_MANY_RUNS";
 /// The error code of a run asked for while the server shuts down.
 pub const SERVER_STOPPING: &str = "SERVER_STOPPING";
-/// The error code of a Run now while `MAX_SCHEDULED_RUNS` scheduled runs are live.
+/// The error code of a Run now while `MAX_SCHEDULED_RUNS` scheduled runs are live, or while its
+/// caller has one.
 pub const SCHEDULER_BUSY: &str = "SCHEDULER_BUSY";
 
 /// The live runs, by chat. Cheap to share (`Arc`).
@@ -168,16 +172,45 @@ impl RunRegistry {
             .map(|permit| Slot { _permit: permit })
     }
 
-    /// [`RunRegistry::slot`], or the `SCHEDULER_BUSY` refusal of a Run now.
-    pub fn slot_or_busy(&self) -> DomainResult<Slot> {
-        self.slot().ok_or_else(|| {
+    /// The owners of the live scheduled runs: each holds a scheduled-run slot.
+    pub fn holders(&self) -> Vec<UserId> {
+        let mut owners: Vec<UserId> = self
+            .lock()
+            .entries
+            .values()
+            .filter(|entry| entry.scheduled)
+            .map(|entry| entry.owner)
+            .collect();
+        owners.sort_unstable_by_key(|owner| owner.uuid());
+        owners.dedup();
+        owners
+    }
+
+    /// Reserves the new `chat` of a Run now of `owner` in a free scheduled-run slot, at once.
+    /// `SCHEDULER_BUSY` while `owner` holds a slot already (a Run now or a claimed fire) or
+    /// `MAX_SCHEDULED_RUNS` scheduled runs are live.
+    pub fn reserve_now(self: &Arc<Self>, owner: UserId, chat: ChatId) -> DomainResult<Reservation> {
+        let mut runs = self.lock();
+        open(&runs, chat)?;
+        if runs
+            .entries
+            .values()
+            .any(|entry| entry.scheduled && entry.owner == owner)
+        {
+            return Err(DomainError::business_rule(
+                "One of your schedules is running. Try again when it finishes.",
+                SCHEDULER_BUSY,
+            ));
+        }
+        let slot = self.slot().ok_or_else(|| {
             DomainError::business_rule(
                 format!(
                     "{MAX_SCHEDULED_RUNS} scheduled runs are running. Try again when one finishes."
                 ),
                 SCHEDULER_BUSY,
             )
-        })
+        })?;
+        Ok(self.insert(&mut runs, owner, chat, Some(slot)))
     }
 
     /// Reserves the new `chat` of a scheduled run of `owner` in `slot`. Not counted against the
@@ -1112,7 +1145,10 @@ mod tests {
             "at most the scheduled-run slots"
         );
         assert_eq!(
-            registry.slot_or_busy().unwrap_err().code(),
+            registry
+                .reserve_now(UserId::new(Uuid::now_v7()), ChatId::generate())
+                .unwrap_err()
+                .code(),
             SCHEDULER_BUSY,
             "a Run now waits for a slot"
         );
@@ -1136,6 +1172,39 @@ mod tests {
         let _scheduled = registry
             .reserve_scheduled(slot, user, ChatId::generate())
             .unwrap();
+    }
+
+    #[test]
+    fn a_run_now_waits_while_its_caller_holds_a_scheduled_run() {
+        let registry = registry(3);
+        let alice = UserId::new(Uuid::now_v7());
+        let bob = UserId::new(Uuid::now_v7());
+        assert!(registry.holders().is_empty());
+        let first = registry.reserve_now(alice, ChatId::generate()).unwrap();
+        assert_eq!(registry.holders(), [alice]);
+        let refused = registry.reserve_now(alice, ChatId::generate()).unwrap_err();
+        assert_eq!(refused.code(), SCHEDULER_BUSY, "one slot per caller");
+        assert!(registry.slot().is_some(), "the other slot stays free");
+        let bobs = registry.reserve_now(bob, ChatId::generate()).unwrap();
+        let mut holders = vec![alice, bob];
+        holders.sort_unstable_by_key(|owner| owner.uuid());
+        assert_eq!(registry.holders(), holders);
+
+        // A claimed fire of Alice's counts too.
+        drop(first);
+        let slot = registry.slot().expect("Alice's slot is free again");
+        let _fire = registry
+            .reserve_scheduled(slot, alice, ChatId::generate())
+            .unwrap();
+        assert_eq!(
+            registry
+                .reserve_now(alice, ChatId::generate())
+                .unwrap_err()
+                .code(),
+            SCHEDULER_BUSY
+        );
+        drop(bobs);
+        assert_eq!(registry.holders(), [alice]);
     }
 
     #[tokio::test]

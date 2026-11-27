@@ -1,5 +1,7 @@
 //! In-memory `ScheduleRepository`.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -145,7 +147,12 @@ impl ScheduleRepository for MemoryStore {
         Ok(count)
     }
 
-    async fn due(&self, now: DateTime<Utc>, limit: u32) -> DomainResult<Vec<(Schedule, Actor)>> {
+    async fn due(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+        busy: &[UserId],
+    ) -> DomainResult<Vec<(Schedule, Actor)>> {
         let tables = self.tables();
         let mut due: Vec<(Schedule, Actor)> = tables
             .schedules
@@ -167,8 +174,23 @@ impl ScheduleRepository for MemoryStore {
             })
             .collect();
         due.sort_by_key(|(schedule, _)| (schedule.next_run_at(), schedule.id()));
-        due.truncate(limit as usize);
-        Ok(due)
+        // Turns: each owner's oldest first, then each owner's second, and so on; busy owners
+        // after everyone else.
+        let mut turns: HashMap<UserId, usize> = HashMap::new();
+        let mut ranked: Vec<(bool, usize, (Schedule, Actor))> = due
+            .into_iter()
+            .map(|entry| {
+                let owner = entry.0.user_id();
+                let turn = turns.entry(owner).or_default();
+                *turn += 1;
+                (busy.contains(&owner), *turn, entry)
+            })
+            .collect();
+        ranked.sort_by_key(|(busy, turn, (schedule, _))| {
+            (*busy, *turn, schedule.next_run_at(), schedule.id())
+        });
+        ranked.truncate(limit as usize);
+        Ok(ranked.into_iter().map(|(_, _, entry)| entry).collect())
     }
 
     async fn advance(

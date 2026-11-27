@@ -260,18 +260,30 @@ impl ScheduleRepository for PgStore {
         Ok(disabled)
     }
 
-    async fn due(&self, now: DateTime<Utc>, limit: u32) -> DomainResult<Vec<(Schedule, Actor)>> {
+    async fn due(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+        busy: &[UserId],
+    ) -> DomainResult<Vec<(Schedule, Actor)>> {
         // The partial index on `next_run_at` (where `enabled`) finds the candidates; owners that
         // lib-rustauth disabled are skipped, and only the `administrator` role acts as an admin.
+        // `turn` numbers each owner's due schedules, oldest first, so owners take turns; the
+        // owners in `busy` come after everyone else.
         let sql = format!(
-            "SELECT {COLUMNS}, u.role = 'administrator' AS is_admin \
-             FROM schedules s JOIN auth.users u ON u.id = s.user_id \
-             WHERE s.enabled AND s.next_run_at <= $1 AND u.disabled_at IS NULL \
-             ORDER BY s.next_run_at, s.id LIMIT $2"
+            "SELECT {COLUMNS}, s.is_admin FROM ( \
+               SELECT s.*, u.role = 'administrator' AS is_admin, \
+                 ROW_NUMBER() OVER (PARTITION BY s.user_id ORDER BY s.next_run_at, s.id) AS turn \
+               FROM schedules s JOIN auth.users u ON u.id = s.user_id \
+               WHERE s.enabled AND s.next_run_at <= $1 AND u.disabled_at IS NULL \
+             ) s \
+             ORDER BY s.user_id = ANY($3), s.turn, s.next_run_at, s.id LIMIT $2"
         );
+        let busy: Vec<Uuid> = busy.iter().map(|user| user.uuid()).collect();
         let rows: Vec<DueRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(now)
             .bind(i64::from(limit))
+            .bind(busy)
             .fetch_all(self.pool())
             .await
             .map_err(failed("database.schedules.due.failed"))?;

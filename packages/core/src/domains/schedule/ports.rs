@@ -39,11 +39,18 @@ pub trait ScheduleRepository: Send + Sync {
         model: ModelId,
         reason: &str,
     ) -> DomainResult<u64>;
-    /// System: enabled schedules with `next_run_at <= now`, oldest due first, at most `limit`,
-    /// each with its owner's `Actor`. Joins `auth.users`: owners with `disabled_at` set are
-    /// skipped, and `is_admin = (role = 'administrator')`. Takes no lock; claim each one with
+    /// System: enabled schedules with `next_run_at <= now`, at most `limit`, each with its
+    /// owner's `Actor`, in turns: every owner's oldest due schedule before any owner's second
+    /// (oldest due first within a turn), and the schedules of the owners in `busy` after all
+    /// others. Joins `auth.users`: owners with `disabled_at` set are skipped, and
+    /// `is_admin = (role = 'administrator')`. Takes no lock; claim each one with
     /// [`ScheduleRepository::advance`].
-    async fn due(&self, now: DateTime<Utc>, limit: u32) -> DomainResult<Vec<(Schedule, Actor)>>;
+    async fn due(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+        busy: &[UserId],
+    ) -> DomainResult<Vec<(Schedule, Actor)>>;
     /// System compare-and-set claim: `next_run_at = next, last_run_at = now` only while the
     /// schedule is enabled and `next_run_at = expected`. `true` when this caller claimed it.
     async fn advance(

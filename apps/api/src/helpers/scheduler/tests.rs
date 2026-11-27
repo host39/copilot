@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
+use copilot_core::PrivateNetwork;
 use copilot_database::DbPool;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -104,6 +105,53 @@ async fn quiet(state: &AppState) {
 
 fn second() -> chrono::Duration {
     chrono::Duration::seconds(1)
+}
+
+#[tokio::test]
+async fn a_run_past_the_time_limit_is_stopped_and_fails() {
+    use copilot_core::shared::constants::SCHEDULED_RUN_MAX_SECS;
+    use copilot_core::{MessageStatus, RUN_TIMED_OUT, RunOutcome, TurnOutcome};
+
+    use crate::helpers::scheduler::ended;
+
+    assert!(
+        RUN_TIMED_OUT.contains(&format!("{} minutes", SCHEDULED_RUN_MAX_SECS / 60)),
+        "the message names the limit"
+    );
+    let outcome = |status| TurnOutcome {
+        message_id: None,
+        status,
+        finish_reason: None,
+        error: None,
+    };
+    // A run that stops when it is cancelled, saving its answer as cancelled.
+    let cancel = CancellationToken::new();
+    let slow = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            cancel.cancelled().await;
+            Some(outcome(MessageStatus::Cancelled))
+        }
+    });
+    let limit = Duration::from_millis(50);
+    assert_eq!(
+        ended(slow, &cancel, limit).await,
+        RunOutcome::Failed(RUN_TIMED_OUT.to_owned())
+    );
+    assert!(cancel.is_cancelled());
+
+    let quick = tokio::spawn(async move { Some(outcome(MessageStatus::Complete)) });
+    let untouched = CancellationToken::new();
+    assert_eq!(ended(quick, &untouched, limit).await, RunOutcome::Ok);
+    assert!(
+        !untouched.is_cancelled(),
+        "a run within the limit is left alone"
+    );
+    let failed = tokio::spawn(async { None });
+    assert!(matches!(
+        ended(failed, &untouched, limit).await,
+        RunOutcome::Failed(_)
+    ));
 }
 
 #[tokio::test]
@@ -523,6 +571,84 @@ async fn a_schedule_whose_model_is_gone_pauses_instead_of_failing(pool: DbPool) 
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(refused.body["code"], "MODEL_UNAVAILABLE");
     assert_eq!(refused.body["error"], stored["lastError"]);
+}
+
+/// `POST /schedules/{id}/run` of `schedule` as `token`'s user.
+async fn run_now(app: &Router, token: &str, schedule: &Value) -> testing::TestResponse {
+    let id = schedule["id"].as_str().expect("an id");
+    send(
+        app.clone(),
+        request(
+            Method::POST,
+            &format!("/api/schedules/{id}/run"),
+            Some(token),
+            None,
+        ),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run `make test-db`"]
+async fn one_users_runs_never_keep_another_users_due_schedule_waiting(pool: DbPool) {
+    let llm = LlmServer::start().await;
+    let mut open = config();
+    // Bob is no administrator, and the scripted provider listens on loopback.
+    open.private_network = PrivateNetwork::All;
+    let app = live(pool, open).await;
+    let state = app.state.clone();
+    let app = app.router;
+    let alice = testing::register(&app, "admin").await;
+    let alices_model = testing::model_at(&app, &alice, &llm.url).await;
+    let bob = other_user(&app, &alice, "bob").await;
+    let bobs_model = testing::model_at(&app, &bob, &llm.url).await;
+    let mine = schedule(&app, &alice, &alices_model, json!({ "name": "Mine" })).await;
+    let also_mine = schedule(&app, &alice, &alices_model, json!({ "name": "Also mine" })).await;
+    let theirs = schedule(&app, &bob, &bobs_model, json!({ "name": "Theirs" })).await;
+    let writers = [llm.live(), llm.live()];
+
+    // Alice's Run now holds a slot for as long as her provider keeps answering, and a second
+    // one would take the other slot.
+    let started = run_now(&app, &alice, &mine).await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    requested(&llm, 1).await;
+    let again = run_now(&app, &alice, &also_mine).await;
+    assert_eq!(again.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(again.body["code"], "SCHEDULER_BUSY");
+    assert_eq!(
+        again.body["error"],
+        "One of your schedules is running. Try again when it finishes."
+    );
+
+    // Her other schedule and Bob's come due together: Bob's gets the free slot.
+    let scheduler = Scheduler::new(state.clone());
+    let now = due(&theirs).max(due(&also_mine)) + second();
+    assert_eq!(scheduler.tick(now).await.len(), 1, "one free slot");
+    assert_eq!(
+        runs(&app, &bob, &theirs).await.len(),
+        1,
+        "Bob's schedule ran"
+    );
+    assert!(runs(&app, &alice, &also_mine).await.is_empty());
+    requested(&llm, 2).await;
+    for writer in writers {
+        writer.text("Done.");
+        writer.finish("stop");
+    }
+    quiet(&state).await;
+
+    // Hers (Run now kept the first one due too) fire at the next tick, with both slots free.
+    let waiting = [llm.live(), llm.live()];
+    let later = now + chrono::Duration::seconds(30);
+    assert_eq!(scheduler.tick(later).await.len(), 2);
+    requested(&llm, 4).await;
+    for writer in waiting {
+        writer.text("Done.");
+        writer.finish("stop");
+    }
+    quiet(&state).await;
+    assert_eq!(runs(&app, &alice, &also_mine).await.len(), 1);
+    assert_eq!(runs(&app, &alice, &mine).await.len(), 2);
 }
 
 #[sqlx::test(migrations = false)]

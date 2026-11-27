@@ -69,6 +69,9 @@ pub const UPLOADS_PER_USER: usize = 2;
 pub const UPLOADS_AT_ONCE: usize = 4;
 /// Scheduled runs that execute at once.
 pub const MAX_SCHEDULED_RUNS: usize = 2;
+/// Longest scheduled run (a fire or a Run now): past it the run is stopped and recorded as
+/// failed, so its slot frees for other schedules.
+pub const SCHEDULED_RUN_MAX_SECS: u64 = 30 * 60;
 pub const SCHEDULER_TICK_SECS: u64 = 30;
 /// Shortest gap between two fires of a schedule.
 pub const SCHEDULE_MIN_INTERVAL_MINUTES: u32 = 15;

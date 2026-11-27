@@ -30,6 +30,60 @@ pub async fn schedule(store: &PgStore, owner: UserId, model: Uuid, enabled: bool
     id
 }
 
+/// Moves the next run of schedule `id` to `when`.
+async fn due_at(store: &PgStore, id: Uuid, when: DateTime<Utc>) {
+    sqlx::query("UPDATE schedules SET next_run_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(when)
+        .execute(store.pool())
+        .await
+        .expect("schedule moved");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn due_schedules_take_turns_between_owners_and_busy_owners_wait(pool: DbPool) {
+    let store = store(pool).await;
+    let alice = user(&store).await;
+    let bob = user(&store).await;
+    let alices_model = model(&store, alice).await.id().uuid();
+    let bobs_model = model(&store, bob).await.id().uuid();
+    // Alice's three schedules all came due before Bob's.
+    let mut alices = Vec::new();
+    for seconds in [1, 2, 3] {
+        let id = schedule(&store, alice, alices_model, true).await;
+        due_at(&store, id, at(seconds)).await;
+        alices.push(id);
+    }
+    let bobs = schedule(&store, bob, bobs_model, true).await;
+    due_at(&store, bobs, at(10)).await;
+    let order = |due: Vec<(Schedule, Actor)>| -> Vec<Uuid> {
+        due.iter()
+            .map(|(schedule, _)| schedule.id().uuid())
+            .collect()
+    };
+
+    assert_eq!(
+        order(store.due(at(20), 10, &[]).await.unwrap()),
+        [alices[0], bobs, alices[1], alices[2]],
+        "each owner's oldest before anyone's second"
+    );
+    assert_eq!(
+        order(store.due(at(20), 2, &[]).await.unwrap()),
+        [alices[0], bobs]
+    );
+    assert_eq!(
+        order(store.due(at(20), 2, &[alice]).await.unwrap()),
+        [bobs, alices[0]],
+        "an owner holding a slot waits for everyone else"
+    );
+    assert_eq!(
+        order(store.due(at(20), 10, &[alice, bob]).await.unwrap()),
+        [alices[0], bobs, alices[1], alices[2]],
+        "turns among busy owners too"
+    );
+}
+
 #[derive(Debug, PartialEq, sqlx::FromRow)]
 struct State {
     enabled: bool,
@@ -409,13 +463,13 @@ async fn due_skips_disabled_owners_and_builds_each_owners_actor(pool: DbPool) {
     let due_at = stored(&store, admin, ids[0]).await.next_run_at().unwrap();
     assert!(
         store
-            .due(due_at - chrono::Duration::seconds(1), 10)
+            .due(due_at - chrono::Duration::seconds(1), 10, &[])
             .await
             .unwrap()
             .is_empty(),
         "nothing is due before its time"
     );
-    let due = store.due(due_at, 10).await.unwrap();
+    let due = store.due(due_at, 10, &[]).await.unwrap();
     let found: Vec<_> = due
         .iter()
         .map(|(schedule, actor)| (schedule.id(), *actor))
@@ -435,7 +489,7 @@ async fn due_skips_disabled_owners_and_builds_each_owners_actor(pool: DbPool) {
         stored(&store, due[0].1.user_id, due[0].0.id()).await
     );
     assert_eq!(
-        store.due(due_at, 2).await.unwrap().len(),
+        store.due(due_at, 2, &[]).await.unwrap().len(),
         2,
         "at most the limit"
     );

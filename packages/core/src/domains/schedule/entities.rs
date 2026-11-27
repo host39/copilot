@@ -49,6 +49,8 @@ text_enum!(RunStatus { Ok => "ok", Error => "error", AwaitingApproval => "awaiti
 pub const START_FAILED: &str = "The run could not start. It will try again at the next run.";
 /// The failure a run records when it stopped with an internal error (the log has it).
 pub const RUN_FAILED: &str = "Something went wrong while answering.";
+/// The failure a run records when it ran past `SCHEDULED_RUN_MAX_SECS` and was stopped.
+pub const RUN_TIMED_OUT: &str = "The run took longer than 30 minutes and was stopped.";
 
 /// How a run ended, as the scheduler reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]

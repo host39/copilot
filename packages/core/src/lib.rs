@@ -40,9 +40,9 @@ pub use crate::domains::provider::{
 };
 pub use crate::domains::schedule::{
     CreatedBy, CronRule, Firing, MODEL_REMOVED, MODEL_TURNED_OFF, NewSchedule, OnAsk, RUN_FAILED,
-    RunOutcome, RunRecord, RunStatus, START_FAILED, Schedule, ScheduleParts, SchedulePreview,
-    SchedulePrompt, ScheduleQuery, ScheduleRepository, ScheduleService, ScheduleTool,
-    ScheduleUpdate, ToolOrigin, cancel_target,
+    RUN_TIMED_OUT, RunOutcome, RunRecord, RunStatus, START_FAILED, Schedule, ScheduleParts,
+    SchedulePreview, SchedulePrompt, ScheduleQuery, ScheduleRepository, ScheduleService,
+    ScheduleTool, ScheduleUpdate, ToolOrigin, cancel_target,
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{

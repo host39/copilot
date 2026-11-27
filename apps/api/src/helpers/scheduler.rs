@@ -5,10 +5,16 @@
 //! run at once), a tick takes the free scheduled-run slots (`MAX_SCHEDULED_RUNS` in all, shared
 //! with Run now) and claims at most that many due schedules with `ScheduleService::fire_due`: a
 //! compare-and-set of each schedule's next run, so of two schedulers on one database only one
-//! claims a fire, and missed fires collapse into one run. Each claim starts a run as the
-//! schedule's owner ([`fire`]) through the same services as a chat: the registry reserves the
-//! run's new chat, `ChatService::prepare_scheduled` writes it with the prompt, and the engine
-//! answers unattended (no schedule tools; `ask` tools follow the schedule's `on_ask`).
+//! claims a fire, and missed fires collapse into one run. Owners take turns, and owners who hold
+//! a slot already ([`RunRegistry::holders`]) come after everyone else, so one user's schedules
+//! never keep another's waiting while a slot is free. Each claim starts a run as the schedule's
+//! owner ([`fire`]) through the same services as a chat: the registry reserves the run's new
+//! chat, `ChatService::prepare_scheduled` writes it with the prompt, and the engine answers
+//! unattended (no schedule tools; `ask` tools follow the schedule's `on_ask`). A run still live
+//! after `SCHEDULED_RUN_MAX_SECS` is stopped and recorded as failed ([`RUN_TIMED_OUT`]), so no
+//! run holds its slot for long.
+//!
+//! [`RunRegistry::holders`]: crate::helpers::runs::RunRegistry::holders
 //!
 //! How the run ended is recorded in core's terms (`RunOutcome`): an answer resets the failure
 //! count, a failure raises it and the third in a row turns the schedule off, an approval keeps
@@ -21,18 +27,18 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use copilot_contracts::UserEvent;
 use copilot_core::shared::constants::{
-    MAX_SCHEDULED_RUNS, SCHEDULER_TICK_SECS, SHUTDOWN_DRAIN_SECS,
+    MAX_SCHEDULED_RUNS, SCHEDULED_RUN_MAX_SECS, SCHEDULER_TICK_SECS, SHUTDOWN_DRAIN_SECS,
 };
 use copilot_core::{
-    ChatId, DomainError, DomainResult, Firing, MODEL_UNAVAILABLE, RUN_FAILED, RunOutcome,
-    ScheduleId, ScheduledTurn, UserId,
+    ChatId, DomainError, DomainResult, Firing, MODEL_UNAVAILABLE, RUN_FAILED, RUN_TIMED_OUT,
+    RunOutcome, ScheduleId, ScheduledTurn, TurnOutcome, UserId,
 };
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AppState;
-use crate::helpers::runs::Slot;
+use crate::helpers::runs::{Reservation, Slot};
 use crate::routes::chats;
 
 /// Claims due schedules and starts their runs. Cheap to clone.
@@ -73,8 +79,20 @@ impl Scheduler {
             let schedule = firing.schedule.id();
             tracing::info!(schedule_id = %schedule, chat_id = %firing.chat_id, "api.scheduler.fired");
             // The claim moved the next run.
-            updated(&self.state, firing.actor.user_id, schedule);
-            if let Ok(chat) = fire(&self.state, slot, firing).await {
+            let owner = firing.actor.user_id;
+            updated(&self.state, owner, schedule);
+            let reservation = match self
+                .state
+                .runs
+                .reserve_scheduled(slot, owner, firing.chat_id)
+            {
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    tracing::warn!(schedule_id = %schedule, error = %error, "api.scheduler.run.skipped");
+                    continue;
+                }
+            };
+            if let Ok(chat) = fire(&self.state, reservation, firing).await {
                 started.push(chat);
             }
         }
@@ -94,7 +112,8 @@ impl Scheduler {
             return Vec::new();
         }
         let limit = u32::try_from(slots.len()).unwrap_or(u32::MAX);
-        match self.state.schedules.fire_due(now, limit).await {
+        let busy = self.state.runs.holders();
+        match self.state.schedules.fire_due(now, limit, &busy).await {
             // `fire_due` claims at most `limit`, so every claim gets a slot.
             Ok(firings) => slots.into_iter().zip(firings).collect(),
             Err(error) => {
@@ -105,25 +124,24 @@ impl Scheduler {
     }
 }
 
-/// Starts the run of `firing` (a claimed fire or a Run now) in `slot`, as the schedule's owner:
-/// reserves its new chat, writes the chat and the prompt, and runs the turn unattended on a task
-/// of its own, which records how the run ended. Returns the run's chat.
+/// Starts the run of `firing` (a claimed fire or a Run now) in its `reservation` (its new chat,
+/// reserved in a scheduled-run slot), as the schedule's owner: writes the chat and the prompt,
+/// and runs the turn unattended on a task of its own, which stops it after
+/// `SCHEDULED_RUN_MAX_SECS` and records how it ended. Returns the run's chat.
 ///
 /// A run that cannot start is recorded too and returns its error: a schedule whose model was
 /// removed or turned off pauses (`MODEL_UNAVAILABLE`, with the reason in plain words), and any
 /// other failure counts as a failed run. While the server shuts down nothing is recorded
 /// (`SERVER_STOPPING`).
-pub async fn fire(state: &AppState, slot: Slot, firing: Firing) -> DomainResult<ChatId> {
+pub async fn fire(
+    state: &AppState,
+    reservation: Reservation,
+    firing: Firing,
+) -> DomainResult<ChatId> {
     let schedule = firing.schedule.id();
     let owner = firing.actor.user_id;
     let at = firing.at;
     let chat = firing.chat_id;
-    let reservation = state
-        .runs
-        .reserve_scheduled(slot, owner, chat)
-        .inspect_err(|error| {
-            tracing::warn!(schedule_id = %schedule, error = %error, "api.scheduler.run.skipped");
-        })?;
     let turn = match state.chats.prepare_scheduled(firing).await {
         Ok(ScheduledTurn::Ready(turn)) => *turn,
         Ok(ScheduledTurn::Paused { reason, message }) => {
@@ -141,16 +159,35 @@ pub async fn fire(state: &AppState, slot: Slot, firing: Firing) -> DomainResult<
             return Err(error);
         }
     };
+    let cancel = reservation.cancel();
     let task = chats::launch(state, reservation, turn);
     let state = state.clone();
     state.tasks.clone().spawn(async move {
-        let outcome = match task.await {
-            Ok(Some(outcome)) => RunOutcome::from(&outcome),
-            Ok(None) | Err(_) => RunOutcome::Failed(RUN_FAILED.to_owned()),
-        };
+        let limit = Duration::from_secs(SCHEDULED_RUN_MAX_SECS);
+        let outcome = ended(task, &cancel, limit).await;
         record(&state, schedule, owner, outcome, at).await;
     });
     Ok(chat)
+}
+
+/// How the run of `task` ended, as the schedule records it. A run still live after `limit` is
+/// cancelled (it saves its partial answer) and fails with [`RUN_TIMED_OUT`].
+async fn ended(
+    mut task: JoinHandle<Option<TurnOutcome>>,
+    cancel: &CancellationToken,
+    limit: Duration,
+) -> RunOutcome {
+    match tokio::time::timeout(limit, &mut task).await {
+        Ok(Ok(Some(outcome))) => RunOutcome::from(&outcome),
+        Ok(Ok(None) | Err(_)) => RunOutcome::Failed(RUN_FAILED.to_owned()),
+        Err(_) => {
+            tracing::warn!(limit_secs = limit.as_secs(), "api.scheduler.run.timed-out");
+            cancel.cancel();
+            // Waits for the cancelled answer to be saved, so the record comes after it.
+            let _ = task.await;
+            RunOutcome::Failed(RUN_TIMED_OUT.to_owned())
+        }
+    }
 }
 
 /// Stores how the run of `schedule` that started at `at` ended, then tells the owner's event

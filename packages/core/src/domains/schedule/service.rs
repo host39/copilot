@@ -15,7 +15,7 @@ use crate::ports::clock::Clock;
 use crate::shared::actor::Actor;
 use crate::shared::constants::MAX_SCHEDULES_PER_USER;
 use crate::shared::errors::{DomainError, DomainResult};
-use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId};
+use crate::shared::ids::{ChatId, ModelId, ProjectId, ScheduleId, UserId};
 use crate::shared::reasoning::ReasoningLevel;
 
 /// Runs shown by a preview.
@@ -224,18 +224,26 @@ impl ScheduleService {
         })
     }
 
-    /// Claims up to `limit` due schedules (the free scheduled-run slots). Each claim is a
+    /// Claims up to `limit` due schedules (the free scheduled-run slots), taking turns between
+    /// owners: each owner's oldest due schedule before any owner's second, and the owners in
+    /// `busy` (who hold a scheduled-run slot already) only after everyone else, so one owner's
+    /// schedules never keep another's waiting while a slot is free. Each claim is a
     /// compare-and-set of `next_run_at` from the value read to the rule's next fire after `now`,
     /// so fires missed while the server was down collapse into one run, and of two schedulers
     /// only one claims a fire. Schedules of disabled users are never due. A claim that fails after
     /// others succeeded ends the round with those (logged as `core.schedules.claim.failed`), so a
     /// claimed fire is never dropped.
-    pub async fn fire_due(&self, now: DateTime<Utc>, limit: u32) -> DomainResult<Vec<Firing>> {
+    pub async fn fire_due(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+        busy: &[UserId],
+    ) -> DomainResult<Vec<Firing>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let mut firings = Vec::new();
-        for (schedule, actor) in self.schedules.due(now, limit).await? {
+        for (schedule, actor) in self.schedules.due(now, limit, busy).await? {
             let (Some(expected), Some(next)) =
                 (schedule.next_run_at(), schedule.rule().next_after(now))
             else {
@@ -771,11 +779,17 @@ mod tests {
         f.store.add_user(&caller);
         let (model, _) = model(&f, &caller).await;
         let schedule = f.service.create(&caller, daily(model)).await.unwrap();
-        assert!(f.service.fire_due(at(8, 59), 2).await.unwrap().is_empty());
+        assert!(
+            f.service
+                .fire_due(at(8, 59), 2, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // The server was down for three days: one run, then the next fire after now.
         let now = Utc.with_ymd_and_hms(2026, 1, 4, 12, 0, 0).unwrap();
-        let firings = f.service.fire_due(now, 2).await.unwrap();
+        let firings = f.service.fire_due(now, 2, &[]).await.unwrap();
         assert_eq!(firings.len(), 1);
         let firing = &firings[0];
         assert_eq!(firing.actor, caller, "the owner's actor, with is_admin");
@@ -787,7 +801,7 @@ mod tests {
         assert_eq!(stored.last_run_at(), Some(now));
 
         assert!(
-            f.service.fire_due(now, 2).await.unwrap().is_empty(),
+            f.service.fire_due(now, 2, &[]).await.unwrap().is_empty(),
             "claimed once"
         );
         let stale = f
@@ -810,17 +824,62 @@ mod tests {
         let bobs = f.service.create(&bob, daily(bob_model)).await.unwrap();
         f.store.disable_user(alice.user_id);
 
-        let firings = f.service.fire_due(at(10, 0), 5).await.unwrap();
+        let firings = f.service.fire_due(at(10, 0), 5, &[]).await.unwrap();
         assert_eq!(firings.len(), 1);
         assert_eq!(firings[0].schedule.id(), bobs.id());
         assert!(!firings[0].actor.is_admin);
-        assert!(f.service.fire_due(at(10, 0), 0).await.unwrap().is_empty());
+        assert!(
+            f.service
+                .fire_due(at(10, 0), 0, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         f.store.add_user(&alice);
-        let firings = f.service.fire_due(at(10, 0), 1).await.unwrap();
+        let firings = f.service.fire_due(at(10, 0), 1, &[]).await.unwrap();
         assert_eq!(firings.len(), 1, "at most `limit` claims");
-        assert_eq!(f.service.fire_due(at(10, 0), 1).await.unwrap().len(), 1);
-        assert!(f.service.fire_due(at(10, 0), 1).await.unwrap().is_empty());
+        assert_eq!(
+            f.service.fire_due(at(10, 0), 1, &[]).await.unwrap().len(),
+            1
+        );
+        assert!(
+            f.service
+                .fire_due(at(10, 0), 1, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn fire_due_takes_turns_between_owners_and_puts_busy_owners_last() {
+        let ids = |firings: Vec<Firing>| -> Vec<ScheduleId> {
+            firings.iter().map(|firing| firing.schedule.id()).collect()
+        };
+        for busy in [false, true] {
+            let f = fixture();
+            let alice = actor();
+            let bob = actor();
+            let (alice_model, _) = model(&f, &alice).await;
+            let (bob_model, _) = model(&f, &bob).await;
+            let first = f.service.create(&alice, daily(alice_model)).await.unwrap();
+            let second = f.service.create(&alice, daily(alice_model)).await.unwrap();
+            let bobs = f.service.create(&bob, daily(bob_model)).await.unwrap();
+            if busy {
+                // Alice holds a slot: Bob's schedule goes first, then hers in turn.
+                let claimed = f.service.fire_due(at(10, 0), 1, &[alice.user_id]).await;
+                assert_eq!(ids(claimed.unwrap()), [bobs.id()]);
+                let claimed = f.service.fire_due(at(10, 0), 2, &[alice.user_id]).await;
+                assert_eq!(ids(claimed.unwrap()), [first.id(), second.id()]);
+            } else {
+                // Alice's two came due with Bob's: one each before her second.
+                let claimed = f.service.fire_due(at(10, 0), 2, &[]).await;
+                assert_eq!(ids(claimed.unwrap()), [first.id(), bobs.id()]);
+                let claimed = f.service.fire_due(at(10, 0), 2, &[]).await;
+                assert_eq!(ids(claimed.unwrap()), [second.id()]);
+            }
+        }
     }
 
     /// Ticks every 30 seconds from `from` to `to` (as the scheduler does) and returns when each
@@ -829,7 +888,7 @@ mod tests {
         let mut fired = Vec::new();
         let mut now = from;
         while now <= to {
-            for firing in f.service.fire_due(now, 2).await.unwrap() {
+            for firing in f.service.fire_due(now, 2, &[]).await.unwrap() {
                 fired.push(firing.at);
             }
             now += Duration::seconds(30);
@@ -1234,13 +1293,17 @@ mod tests {
         let repository: &dyn ScheduleRepository = f.store.as_ref();
 
         let stale = f.service.get(&caller, schedule.id()).await.unwrap();
-        assert_eq!(f.service.fire_due(at(9, 0), 4).await.unwrap().len(), 1);
+        assert_eq!(f.service.fire_due(at(9, 0), 4, &[]).await.unwrap().len(), 1);
         repository
             .update(&stale.clone().with_name("Renamed").unwrap())
             .await
             .unwrap();
         assert!(
-            f.service.fire_due(at(9, 0), 4).await.unwrap().is_empty(),
+            f.service
+                .fire_due(at(9, 0), 4, &[])
+                .await
+                .unwrap()
+                .is_empty(),
             "the claim stands: the same fire never runs twice"
         );
         let stored = f.service.get(&caller, schedule.id()).await.unwrap();
@@ -1329,8 +1392,9 @@ mod tests {
             &self,
             now: DateTime<Utc>,
             limit: u32,
+            busy: &[UserId],
         ) -> DomainResult<Vec<(Schedule, Actor)>> {
-            self.store.due(now, limit).await
+            self.store.due(now, limit, busy).await
         }
 
         async fn advance(
@@ -1429,16 +1493,16 @@ mod tests {
             f.clock.clone(),
         );
 
-        let firings = service.fire_due(at(9, 1), 2).await.unwrap();
+        let firings = service.fire_due(at(9, 1), 2, &[]).await.unwrap();
         assert_eq!(firings.len(), 1, "the claimed fire still runs");
         assert_eq!(firings[0].schedule.id(), first.id());
-        let error = service.fire_due(at(9, 1), 2).await.unwrap_err();
+        let error = service.fire_due(at(9, 1), 2, &[]).await.unwrap_err();
         assert_eq!(error.code(), "INTERNAL_ERROR", "nothing claimed: the error");
 
         racing
             .claims
             .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
-        let firings = service.fire_due(at(9, 1), 2).await.unwrap();
+        let firings = service.fire_due(at(9, 1), 2, &[]).await.unwrap();
         assert_eq!(
             firings.len(),
             1,
