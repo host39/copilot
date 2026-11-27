@@ -21,7 +21,7 @@ The roadmap's merge order (B, C, then A, with D last) and its green CI after eac
 Carried to later serial steps; none blocks Phase 3.
 
 - Track B: `stream_options.include_usage` for the `ollama` dialect (Ollama answers save no token counts without it); a flag on `LlmRequest` saying the model has `reasoning`, so a Claude chat with no level can still ask for summarized thinking; a larger `DEFAULT_MAX_OUTPUT_TOKENS` for reasoning models without a reported limit.
-- Track C: a `TOOL_UNKNOWN` constant in core and a hook that marks a server's stored tool list stale when a call fails with it; `rmcp` logs capped at `warn` in `copilot-logger`; the adapter's time limits as core constants.
+- Track C: a `TOOL_UNKNOWN` constant in core and a hook that marks a server's stored tool list stale when a call fails with it; the adapter's time limits as core constants. (The `rmcp` logs request was done in `p2-review`: the target is silenced at every level.)
 - Track D: an upload progress callback in `apps/web/src/api/client.ts` (uploads build their own `XMLHttpRequest` until then).
 
 ## Gaps
