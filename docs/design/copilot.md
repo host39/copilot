@@ -152,7 +152,7 @@ Settings has a **Providers** page. A provider connection has a kind, a preset, a
 | `openai` | Chat Completions, `POST {base}/chat/completions`, data-only SSE | `openai`, `gemini` (base `https://generativelanguage.googleapis.com/v1beta/openai`), `openrouter`, `ollama`, `custom` (vLLM, LM Studio, llama.cpp server, Groq, Together, any compatible gateway) |
 | `anthropic` | Messages API, `POST {base}/v1/messages`, named SSE events | `anthropic`, `custom` (compatible gateways) |
 
-- **Gemini** goes through Google's OpenAI-compatible endpoint in v1. A P2.B spike verifies, against a Gemini 3 or 4 model: streaming tool calls over two turns with thought signatures carried as provider-opaque data, image and PDF parts, and `input_audio`. If the spike fails, P2.B builds a native adapter against the Interactions API with `store: false`, not against `generateContent`, which Google now calls legacy.
+- **Gemini** goes through Google's OpenAI-compatible endpoint in v1. The P2.B spike (outcome in ADR-005) found no reason for a native adapter: thought signatures travel as provider-opaque extra call fields, and images, PDFs, and `input_audio` use the OpenAI-compatible parts. It ran on fixtures shaped after Google's documentation, so the P3.4 live check runs a Gemini 3 or 4 tool loop over two turns; a `400` about a missing `thought_signature` there means building a native adapter against the Interactions API with `store: false`, not against `generateContent`, which Google now calls legacy.
 - **OpenAI Responses** is a later kind. Until then the `openai` preset locks `tool_use` off on `gpt-6*` models ("needs the Responses adapter"), and sends `reasoning_effort: none` for GPT-5.4 and later 5.x models whenever tools are in the request.
 - **Models:** after saving, Copilot lists the provider's models. The user enables the ones they want (automatic when 20 or fewer). Models the provider no longer lists become unavailable. A refresh accepts at most `MAX_MODELS_PER_PROVIDER` (2000) models with ids of at most `MODEL_ID_MAX_CHARS` (256) characters (a longer list or id fails as `PROVIDER_BAD_RESPONSE` and changes nothing; remote display names are cut to 100 characters), and writes them in a few statements, not one per model. A refresh deletes a model only when the connection would then hold more than `MAX_MODELS_PER_PROVIDER`: unavailable models that are off and named by no chat, message, project, or schedule go first, least recently updated first.
 - **Capability flags:** `vision`, `pdf`, `tools`, `audio_in`, `audio_out`, `reasoning`, plus reasoning levels. Sources, in order: provider-reported metadata (Anthropic Models API `capabilities`, OpenRouter `architecture` modalities, Gemini `outputTokenLimit`); preset defaults (PDF on for the `openai` and `openrouter` presets); otherwise text plus `tools`, everything else off until the user enables it. No curated model-family table, except the locks below.
@@ -506,7 +506,7 @@ For each assistant message in the window, core decides what the adapter replays:
 | --- | --- |
 | Current turn (the last user message onward), same `provider_id` (and, for the `gemini` preset, the same `model_id`) | Its `provider_state` verbatim, whatever the context hash; provider state from another connection cannot be read there, so a decision after a model switch rebuilds the paused answer |
 | Earlier message, `provider_state` present, same `provider_id` (and, for the `gemini` preset, the same `model_id`), same `context_hash` as this request | `provider_state` verbatim (Anthropic content blocks in order, including `thinking` and `redacted_thinking`; OpenAI-compatible reasoning fields under the same key and `reasoning_details`; per-tool-call extra fields), with `provider_call_id` |
-| Any other complete message | Rebuilt from neutral parts; reasoning dropped; tool call ids `call_<copilot uuid without dashes>` (only `[A-Za-z0-9_]`; **verify** against Anthropic's `tool_use` id pattern) |
+| Any other complete message | Rebuilt from neutral parts; reasoning dropped; tool call ids `call_<copilot uuid without dashes>` (only `[A-Za-z0-9_]`, which fits Anthropic's `tool_use` id pattern `^[a-zA-Z0-9_-]+$`) |
 | `cancelled` or `error` message | Complete text parts only; never `provider_state`; tool calls whose arguments never finished are dropped (they need no result) |
 | `refused` message | Left out of the request (kept for display) |
 
@@ -564,11 +564,11 @@ Dialects come from the preset (no stored JSON):
 
 | Preset | Token limit field | System prompt | Notes |
 | --- | --- | --- | --- |
-| `anthropic` (kind `anthropic`) | `max_tokens` (required) | `system` | `anthropic-version: 2026-10-21`; `thinking: {type: "adaptive", display: "summarized"}` when supported, else none; never `temperature`, `top_p`, `top_k` |
+| `anthropic` (kind `anthropic`) | `max_tokens` (required) | `system` | `anthropic-version: 2026-10-21`; never `temperature`, `top_p`, `top_k`, `tool_choice`, or `budget_tokens`; a request ending with an answer (prefill) is refused before sending |
 | `openai` | `max_completion_tokens` | `developer` role | `stream_options: {include_usage: true}`; tool and reasoning rules from [Providers and Models](#providers-and-models) |
-| `openrouter` | `max_tokens` | `system` | Replays `reasoning_details` unchanged |
+| `openrouter` | `max_tokens` | `system` | Reasoning level as `reasoning: {effort}`; replays `reasoning_details` unchanged |
 | `ollama` | `max_tokens` | `system` | Never sends `tool_choice`; images as base64 data only |
-| `gemini` | `max_tokens` | `system` | Through the OpenAI-compatible endpoint; per-tool-call extra fields (thought signatures) kept as provider state (**verify** in the P2.B spike) |
+| `gemini` | `max_tokens` | `system` | Through the OpenAI-compatible endpoint; per-tool-call extra fields (thought signatures) kept as provider state and replayed; an answer rebuilt without them (after a model switch) gets Google's stand-in signature `skip_thought_signature_validator` on the first call of each step |
 | `custom` | `max_tokens` | `system` | Accepts reasoning under `reasoning` or `reasoning_content` |
 
 | Topic | OpenAI-compatible | Anthropic |
@@ -577,13 +577,20 @@ Dialects come from the preset (no stored JSON):
 | Tool specs | `{type: "function", function: {name, description, parameters, strict: false}}` | `{name, description, input_schema}` |
 | Tool results | One `role: tool` message per result, text only (images become a placeholder) | One user message with `tool_result` blocks first (text, image, document), `is_error` from status; adjacent same-role entries merged |
 | Images | Base64 data URL | Base64 `image` block (jpeg, png, gif, webp only) |
-| PDF | `file` part with `file_data` as a `data:application/pdf;base64,` URL (`openai` and `openrouter` presets) | `document` block, in user messages only |
-| Audio | `input_audio` (wav) | Not supported (locked) |
-| Reasoning level | `reasoning_effort` (`none` when forced) | Adaptive thinking, or thinking off for `off` |
-| Usage | Final usage chunk (may be missing) | `message_start` plus cumulative `message_delta` |
-| Caching | Implicit | `cache_control` on the last preamble block and on the last message |
+| PDF | `file` part with `file_data` as a `data:application/pdf;base64,` URL, on every preset that core sends one to (core sends PDFs only to models with `pdf`, on by default for the `openai` and `openrouter` presets) | `document` block titled with the file name, in user messages only |
+| Audio | `input_audio` (wav, mp3; other formats `PROVIDER_UNSUPPORTED`) | Not supported (locked) |
+| Reasoning level | `reasoning_effort` (`none` for `off`; OpenRouter's `reasoning: {effort}`) | No level sends no `thinking` (the model default); `off` sends `{type: "disabled"}`; `low`, `medium`, `high` send `{type: "adaptive", display: "summarized"}` with `output_config.effort` |
+| Usage | Final usage chunk (may be missing) | `message_start` plus cumulative `message_delta`; `input_tokens` counts cache reads and writes, no `reasoning_tokens` |
+| Caching | Implicit | `cache_control` on the system block, the last block of the first user message (it starts with the file preamble), and the last block of the request; thinking blocks are never marked |
 
-Errors map to human messages: provider 401 or 403 gives `PROVIDER_AUTH` "Key rejected: open provider settings."; 429 gives `PROVIDER_RATE_LIMITED` with the wait time when the provider sends one.
+Errors map to human messages: provider 401 or 403 gives `PROVIDER_AUTH` "Key rejected: open provider settings."; 429 gives `PROVIDER_RATE_LIMITED` with the wait time when the provider sends one; 413 reads "The request is too large for this provider." and 529 (or an Anthropic `overloaded_error` event) "The provider is overloaded. Try again in a moment." Failure logs carry the provider's request id, never its body.
+
+Further adapter decisions (P2.B, details in `docs/design/tracks/b.md`):
+
+- Replayed reasoning text goes back under the key it came under on every OpenAI-compatible dialect (`reasoning` wins when a chunk carries both). Some servers may reject unknown assistant fields (**verify** at P3.4); if they do, plain-text replay narrows to the current turn or to the `ollama` and `openrouter` dialects.
+- Tool schemas that are not objects, or lack `type` or `properties`, are completed to `{type: "object", properties: {}}`, on both protocols.
+- Assistant text parts are joined with a blank line when rebuilt. `<think>` tags inside `content` are not split out, and the deprecated `function_call` delta is not read.
+- An Anthropic refusal without an explanation gets "The model declined to answer.", so `message.finished` never carries an empty explanation.
 
 ## Stream Events
 
@@ -1060,8 +1067,8 @@ Each job uses the smallest GitHub-hosted runner that can finish it (`docs/resear
 
 | Job | Runner | When |
 | --- | --- | --- |
-| Biome, markdownlint, `tsc`, web build, TS tests, path filters | `ubuntu-slim` | Every push |
-| Rust fmt, Clippy, tests, `make boundaries`, DB tests (`#[sqlx::test]`, rustauth's migrations then Copilot's) with a Postgres service, contracts drift, Bruno | `ubuntu-latest` | Every push |
+| Biome, markdownlint, `tsc`, web build, TS tests (including the contract conformance test, which parses the committed fixtures with the Zod schemas), path filters | `ubuntu-slim` | Every push |
+| Rust fmt, Clippy, tests, `make boundaries`, DB tests (`#[sqlx::test]`, rustauth's migrations then Copilot's) with a Postgres service, contracts drift (bindings and conformance fixtures), Bruno | `ubuntu-latest` | Every push |
 | Linux Tauri bundle | `ubuntu-24.04` (pinned for a lower glibc floor) | Tags, manual dispatch, changes under `apps/native` |
 | Android APK | `ubuntu-latest` | Tags, manual dispatch, changes under `apps/native` |
 | macOS, iOS, Windows bundles (later) | `macos-latest`, `windows-latest` | Tags only |
