@@ -246,6 +246,7 @@ Make the API client's `fetch` injectable. In native builds use `fetch` from `@ta
 - WebKitGTK `enable-media-stream`: "Enable or disable support for MediaStream on pages", default **FALSE**. Source: <https://webkitgtk.org/reference/webkit2gtk/stable/property.Settings.enable-media-stream.html>.
 - wry 0.58.2 enables WebGL and WebAudio but not media stream in its WebKitGTK settings, and only connects `permission-request` when a permission handler is set. Source: <https://raw.githubusercontent.com/tauri-apps/wry/wry-v0.58.2/src/webkitgtk/mod.rs> (lines 443 to 470, 598 to 660).
 - So on Linux the app must (a) call `webview.with_webview(...)` and set `enable-media-stream` on the inner `webkit2gtk::WebView` settings, and (b) register `on_permission_request` that returns `Allow` for `PermissionKind::Microphone` only (or `Default` to let WebKitGTK prompt). The exact `with_webview` code path is **UNVERIFIED**; a community example exists at <https://github.com/tauri-apps/tauri/discussions/8426>.
+- **Update (P5.3, checked locally on 2026-11-27 with WebKitGTK 2.52.6, Ubuntu 24.04's current package):** `enable-media-stream` defaults to **TRUE** there (the installed GIR says `default-value="TRUE"`, and a fresh web view reports it on), so the FALSE above holds only for older releases. A setting changed in Tauri's `setup` reaches the first page (turning it off there removed `navigator.mediaDevices`), while a change 1.5 seconds later does not reach the loaded page. `PermissionResponse::Default` on Linux denies (`getUserMedia({ audio })` failed with `NotAllowedError` without a handler), so `Default` does not prompt; the shell answers `Allow` for the microphone and `Deny` for the rest. With WebKitGTK's mock capture devices, the microphone-only handler granted audio and denied video and audio plus video. Details: `docs/design/tracks/p5-3.md`.
 - WebKitGTK captures audio through GStreamer, so the user's system needs GStreamer and PipeWire or PulseAudio source plugins: **UNVERIFIED** which packages the `.deb` must depend on.
 
 ## 7. Plugins: Keep the List Short
@@ -422,7 +423,7 @@ native-android:
 
 - Mixed-content behavior of a webview `fetch` from `tauri://localhost` to an `http://` LAN server on Linux (sources disagree; see Section 5).
 - `getUserMedia` on Android from `http://tauri.localhost` (expected allowed as a secure context) and the runtime permission prompt with Tauri 2.12.
-- Exact Linux `with_webview` code for `enable-media-stream`, and which GStreamer packages the `.deb` must list for capture and playback.
+- Exact Linux `with_webview` code for `enable-media-stream`, and which GStreamer packages the `.deb` must list for capture and playback. (Settled in P5.3, see section 6: the code is in `apps/native/src-tauri/src/microphone.rs`, and the `.deb` needs no package beyond `libwebkit2gtk-4.1-0`'s own dependencies; a real microphone on both bundles is part of the P5.4 device test.)
 - NDK 30 compatibility (until then, pin 29.x).
 - Real sizes: `.deb`, `.rpm`, AppImage (with and without `bundleMediaFramework`), and the arm64 APK.
 - Job durations on the chosen runners, to confirm the slim lint job stays well under 15 minutes.
