@@ -2,6 +2,8 @@
 import type { ApprovalMode } from "./ApprovalMode";
 import type { AuthMode } from "./AuthMode";
 import type { OAuthClientInput } from "./OAuthClientInput";
+import type { StdioInput } from "./StdioInput";
+import type { Transport } from "./Transport";
 
 /**
  * `POST /tool-servers`.
@@ -10,7 +12,19 @@ export type CreateToolServerRequest = { name: string,
 /**
  * 1 to 12 lowercase letters or digits; derived from the name when absent.
  */
-slug?: string, url: string, 
+slug?: string, 
+/**
+ * Default `http`; `stdio` needs `stdio` and an administrator.
+ */
+transport?: Transport, 
+/**
+ * Required for `http`; none for `stdio`.
+ */
+url?: string, 
+/**
+ * The program of a `stdio` server.
+ */
+stdio?: StdioInput, 
 /**
  * Sent as `Authorization: Bearer <token>`. Blank or absent means none.
  */

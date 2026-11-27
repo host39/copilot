@@ -21,6 +21,7 @@ import type { AuthMode } from "@contracts/generated/AuthMode";
 import type { BuiltinTool } from "@contracts/generated/BuiltinTool";
 import type { CallDecision } from "@contracts/generated/CallDecision";
 import type { Capabilities } from "@contracts/generated/Capabilities";
+import type { CapabilitiesResponse } from "@contracts/generated/CapabilitiesResponse";
 import type { Capability } from "@contracts/generated/Capability";
 import type { CapabilityLock } from "@contracts/generated/CapabilityLock";
 import type { CapabilityOverrides } from "@contracts/generated/CapabilityOverrides";
@@ -82,6 +83,9 @@ import type { SendMessageRequest } from "@contracts/generated/SendMessageRequest
 import type { ServerTool } from "@contracts/generated/ServerTool";
 import type { SettingsResponse } from "@contracts/generated/SettingsResponse";
 import type { SignInState } from "@contracts/generated/SignInState";
+import type { StdioInput } from "@contracts/generated/StdioInput";
+import type { StdioPatch } from "@contracts/generated/StdioPatch";
+import type { StdioProgram } from "@contracts/generated/StdioProgram";
 import type { StreamQuery } from "@contracts/generated/StreamQuery";
 import type { ToolChanges } from "@contracts/generated/ToolChanges";
 import type { ToolMode } from "@contracts/generated/ToolMode";
@@ -89,6 +93,7 @@ import type { ToolOverride } from "@contracts/generated/ToolOverride";
 import type { ToolServerResponse } from "@contracts/generated/ToolServerResponse";
 import type { ToolStatus } from "@contracts/generated/ToolStatus";
 import type { ToolTestResponse } from "@contracts/generated/ToolTestResponse";
+import type { Transport } from "@contracts/generated/Transport";
 import type { UpdateChatRequest } from "@contracts/generated/UpdateChatRequest";
 import type { UpdateFileRequest } from "@contracts/generated/UpdateFileRequest";
 import type { UpdateModelRequest } from "@contracts/generated/UpdateModelRequest";
@@ -499,6 +504,34 @@ export const serverToolSchema = z.object({
 
 export const authModeSchema = z.enum(["none", "headers", "oauth"]) satisfies z.ZodType<AuthMode>;
 
+export const transportSchema = z.enum(["http", "stdio"]) satisfies z.ZodType<Transport>;
+
+export const stdioProgramSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()),
+  envNames: z.array(z.string()),
+  env: keyStateSchema,
+  cwd: z.string(),
+}) satisfies z.ZodType<StdioProgram>;
+
+export const stdioInputSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
+  cwd: z.string().optional(),
+}) satisfies z.ZodType<StdioInput>;
+
+export const stdioPatchSchema = z.object({
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  cwd: z.string().optional(),
+}) satisfies z.ZodType<StdioPatch>;
+
+export const capabilitiesResponseSchema = z.object({
+  stdioServers: z.boolean(),
+}) satisfies z.ZodType<CapabilitiesResponse>;
+
 export const signInStateSchema = z.enum([
   "signed_in",
   "expired",
@@ -526,7 +559,9 @@ export const toolServerResponseSchema = z.object({
   id,
   name: z.string(),
   slug: z.string(),
-  url: z.string(),
+  transport: transportSchema,
+  url: z.string().nullable(),
+  stdio: stdioProgramSchema.nullable(),
   approval: approvalModeSchema,
   toolModes: z.record(z.string(), toolModeSchema),
   enabled: z.boolean(),
@@ -544,7 +579,9 @@ export const toolServerResponseSchema = z.object({
 export const createToolServerRequestSchema = z.object({
   name: z.string(),
   slug: z.string().optional(),
-  url: z.string(),
+  transport: transportSchema.optional(),
+  url: z.string().optional(),
+  stdio: stdioInputSchema.optional(),
   bearer: z.string().optional(),
   headers: z.record(z.string(), z.string()).default({}),
   approval: approvalModeSchema.optional(),
@@ -560,6 +597,7 @@ export const credentialsSchema = z.object({
 export const updateToolServerRequestSchema = z.object({
   name: z.string().optional(),
   url: z.string().optional(),
+  stdio: stdioPatchSchema.optional(),
   credentials: credentialsSchema.nullable().optional(),
   approval: approvalModeSchema.optional(),
   toolModes: z.record(z.string(), toolModeSchema).optional(),
@@ -1004,6 +1042,8 @@ export const toolServerBodySchema = detailsResponseSchema(toolServerResponseSche
 export const toolTestBodySchema = detailsResponseSchema(toolTestResponseSchema);
 /** `POST /tool-servers/{id}/oauth/start` */
 export const oauthStartBodySchema = detailsResponseSchema(oauthStartResponseSchema);
+/** `GET /capabilities` */
+export const capabilitiesBodySchema = detailsResponseSchema(capabilitiesResponseSchema);
 /** `GET /schedules` */
 export const scheduleListBodySchema = listResponseSchema(scheduleResponseSchema);
 /** `GET`, `PATCH /schedules/{id}`, `POST /schedules` */

@@ -3,6 +3,7 @@ import type { ApprovalMode } from "./ApprovalMode";
 import type { AuthMode } from "./AuthMode";
 import type { Credentials } from "./Credentials";
 import type { OAuthClientInput } from "./OAuthClientInput";
+import type { StdioPatch } from "./StdioPatch";
 import type { ToolMode } from "./ToolMode";
 
 /**
@@ -10,9 +11,10 @@ import type { ToolMode } from "./ToolMode";
  * the stored credentials unless `credentials` comes with it, any new URL ends an OAuth
  * sign-in, and every tool goes back to `ask` until the server is reviewed. Credentials without
  * `authMode` switch the server to `headers`; another `authMode` drops the old mode's
- * credentials.
+ * credentials. A stdio server takes `stdio` (administrators only), never a URL or
+ * credentials; a changed program is reviewed again like a new URL.
  */
-export type UpdateToolServerRequest = { name?: string, url?: string, 
+export type UpdateToolServerRequest = { name?: string, url?: string, stdio?: StdioPatch, 
 /**
  * New credentials; `null` removes the stored ones.
  */

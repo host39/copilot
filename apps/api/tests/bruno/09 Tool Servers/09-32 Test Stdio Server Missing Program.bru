@@ -1,0 +1,26 @@
+meta {
+  name: 09-32 Test Stdio Server Missing Program
+  type: http
+  seq: 33
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{stdioServerId}}/test
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 502
+  res.body.code: eq TOOL_SERVER_START
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/test` for a stdio server whose program does not exist
+
+  **This test verifies:** the test starts the program through the MCP adapter and reports a program that cannot start.
+}

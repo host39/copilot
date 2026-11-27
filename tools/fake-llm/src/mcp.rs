@@ -7,6 +7,9 @@
 //! It speaks both protocol eras (stateless 2026-07-28 requests, and sessions for older
 //! clients), answers modern requests with JSON, and accepts any `Host` (a dev tool, normally on
 //! loopback). With `FAKE_LLM_MCP_TOKEN` set it answers `401` without that bearer token.
+//!
+//! `fake-llm --stdio` serves the same tools over stdin and stdout instead ([`serve_stdio`]), as a
+//! program for Copilot's stdio tool servers (the smoke test runs it that way).
 
 use std::sync::Arc;
 
@@ -23,7 +26,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{RoleServer, ServerHandler};
+use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 
 /// The MCP routes; `token` guards them when set.
@@ -38,6 +41,14 @@ pub fn router(token: Option<String>) -> Router {
         Some(token) => router.layer(from_fn_with_state(Arc::new(token), guard)),
         None => router,
     }
+}
+
+/// Serves the tools over stdin and stdout until stdin closes. Nothing else may write to stdout,
+/// so the caller installs no log output there.
+pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
+    let service = FakeTools.serve(rmcp::transport::stdio()).await?;
+    service.waiting().await?;
+    Ok(())
 }
 
 /// Answers `401` unless the request carries `Authorization: Bearer <token>`.

@@ -73,6 +73,7 @@ both_ways!(
 );
 both_ways!(core::ApprovalMode, dto::ApprovalMode, [Ask, Auto]);
 both_ways!(core::ToolMode, dto::ToolMode, [Off, Ask, Auto]);
+both_ways!(core::Transport, dto::Transport, [Http, Stdio]);
 both_ways!(core::OnAsk, dto::OnAsk, [Deny, Pause]);
 both_ways!(core::Decision, dto::Decision, [Approve, Deny]);
 both_ways!(core::DecisionScope, dto::DecisionScope, [Once, Chat]);
@@ -269,6 +270,17 @@ mod tests {
         ] {
             assert_eq!(mode.to_dto().to_core(), mode);
             assert_eq!(serde_json::to_value(mode.to_dto()).unwrap(), mode.as_str());
+        }
+    }
+
+    #[test]
+    fn transports_keep_their_meaning_on_the_wire() {
+        for transport in [core::Transport::Http, core::Transport::Stdio] {
+            assert_eq!(transport.to_dto().to_core(), transport);
+            assert_eq!(
+                serde_json::to_value(transport.to_dto()).unwrap(),
+                transport.as_str()
+            );
         }
     }
 

@@ -1,0 +1,34 @@
+meta {
+  name: 09-30 Other User Create Stdio Server
+  type: http
+  seq: 31
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "name": "Bruno stdio",
+    "transport": "stdio",
+    "stdio": { "command": "/usr/local/bin/bruno-mcp" }
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.body.code: eq FORBIDDEN
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers` with `transport: stdio` as user B
+
+  **This test verifies:** only administrators add tool servers that run a program on the server.
+}

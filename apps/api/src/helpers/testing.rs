@@ -45,6 +45,8 @@ pub fn config() -> AppConfig {
         web_dir: None,
         public_url: None,
         client_metadata: true,
+        stdio_enabled: false,
+        stdio_dir: None,
         identity: identity_config(),
     }
 }
@@ -96,11 +98,12 @@ pub async fn live(db: DbPool, config: AppConfig) -> App {
     let identity = Identity::start(db.clone(), &identity_config())
         .await
         .expect("rustauth on Postgres");
+    let adapters = Adapters::create(&config).expect("the outbound clients build");
     assemble(AppDependencies {
         config,
         db,
         identity,
-        adapters: Adapters::create().expect("the outbound clients build"),
+        adapters,
         shutdown: CancellationToken::new(),
     })
 }

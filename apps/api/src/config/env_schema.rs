@@ -40,6 +40,12 @@ pub struct AppConfig {
     /// `OAUTH_CLIENT_METADATA`: whether an `https` `PUBLIC_URL` serves as a Client ID Metadata
     /// Document for authorization servers that support those (default `true`).
     pub client_metadata: bool,
+    /// `MCP_STDIO_ENABLED`: whether administrators may add and run stdio tool servers, programs
+    /// on this server (default `false`).
+    pub stdio_enabled: bool,
+    /// `MCP_STDIO_DIR`: the absolute path under which each stdio server gets its working
+    /// directory. Required when `MCP_STDIO_ENABLED` is on.
+    pub stdio_dir: Option<PathBuf>,
     /// lib-rustauth's `AUTH_*` variables.
     pub identity: IdentityConfig,
 }
@@ -85,6 +91,8 @@ impl AppConfig {
             None => None,
         };
         let client_metadata = parser.parse_or("OAUTH_CLIENT_METADATA", true);
+        let stdio_enabled = parser.parse_or("MCP_STDIO_ENABLED", false);
+        let stdio_dir = parser.optional("MCP_STDIO_DIR").map(PathBuf::from);
         let identity = IdentityConfig::parse(env).map_err(|fields| {
             for field in fields {
                 parser.reject(field);
@@ -102,6 +110,10 @@ impl AppConfig {
         }
         if web_dir.as_deref().is_some_and(|dir| !is_bundle(dir)) {
             parser.reject("WEB_DIR");
+        }
+        let stdio_dir_valid = stdio_dir.as_deref().is_none_or(Path::is_absolute);
+        if !stdio_dir_valid || (stdio_enabled && stdio_dir.is_none()) {
+            parser.reject("MCP_STDIO_DIR");
         }
         parser.finish("api.config.env.invalid")?;
 
@@ -121,6 +133,8 @@ impl AppConfig {
             web_dir,
             public_url,
             client_metadata,
+            stdio_enabled,
+            stdio_dir,
             identity: identity.expect("finish() fails when an AUTH_* variable is invalid"),
         })
     }
@@ -252,6 +266,37 @@ mod tests {
         assert_eq!(
             invalid(&[local, ("OAUTH_CLIENT_METADATA", "maybe")]),
             ["OAUTH_CLIENT_METADATA"]
+        );
+    }
+
+    #[test]
+    fn stdio_is_off_by_default_and_needs_an_absolute_directory() {
+        let config = AppConfig::parse(&env(&[("ENVIRONMENT", "local")])).expect("valid");
+        assert!(!config.stdio_enabled);
+        assert_eq!(config.stdio_dir, None);
+
+        let local = ("ENVIRONMENT", "local");
+        let on = AppConfig::parse(&env(&[
+            local,
+            ("MCP_STDIO_ENABLED", "true"),
+            ("MCP_STDIO_DIR", "/var/lib/copilot/mcp"),
+        ]))
+        .expect("valid");
+        assert!(on.stdio_enabled);
+        assert_eq!(on.stdio_dir, Some(PathBuf::from("/var/lib/copilot/mcp")));
+
+        assert_eq!(
+            invalid(&[local, ("MCP_STDIO_ENABLED", "true")]),
+            ["MCP_STDIO_DIR"],
+            "on without a directory"
+        );
+        assert_eq!(
+            invalid(&[local, ("MCP_STDIO_DIR", "relative/mcp")]),
+            ["MCP_STDIO_DIR"]
+        );
+        assert_eq!(
+            invalid(&[local, ("MCP_STDIO_ENABLED", "yes please")]),
+            ["MCP_STDIO_ENABLED"]
         );
     }
 

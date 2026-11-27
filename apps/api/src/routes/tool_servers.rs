@@ -1,6 +1,8 @@
 //! `/api/tool-servers`: MCP tool servers, their tool modes, tests, reviews, and OAuth sign-in
 //! (`ToolService`). Credentials go in and never come out: responses say whether they are stored
-//! and, for OAuth, the sign-in's state; tokens never appear. Deleting a server removes it from
+//! and, for OAuth, the sign-in's state; tokens never appear. A stdio server (administrators
+//! only, while `MCP_STDIO_ENABLED` is on) shows its whole program, command and arguments,
+//! untruncated, and only the names of its environment variables. Deleting a server removes it from
 //! every project and chat (and their "Approve for this chat" rows). A test connects through the
 //! MCP adapter (`copilot-mcp`), lists the tools, stores them with the negotiated revision, and
 //! reports what changed; a failure is a `502` with the adapter's code. Signing in starts here
@@ -11,12 +13,12 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use copilot_contracts::{
     CreateToolServerRequest, Credentials, DetailsResponse, ErrorResponse, ListResponse,
-    OAuthClientInput, OAuthStartResponse, OAuthStatus, ServerTool, ToolChanges, ToolServerResponse,
-    ToolTestResponse, UpdateToolServerRequest,
+    OAuthClientInput, OAuthStartResponse, OAuthStatus, ServerTool, StdioPatch, StdioProgram,
+    ToolChanges, ToolServerResponse, ToolTestResponse, UpdateToolServerRequest,
 };
 use copilot_core::{
-    ClientChange, ClientInput, CredentialChange, KeyState, NewToolServer, SignInState, ToolServer,
-    ToolServerId, ToolServerUpdate,
+    ClientChange, ClientInput, CredentialChange, KeyState, NewToolServer, SignInState, StdioInput,
+    StdioUpdate, ToolServer, ToolServerId, ToolServerUpdate,
 };
 use copilot_middleware::{HttpError, JsonBody};
 use utoipa_axum::router::OpenApiRouter;
@@ -37,11 +39,14 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(sign_out))
 }
 
-/// Whether a server's secrets are stored (and open), and its sign-in's state.
+/// Whether a server's secrets are stored (and open), its sign-in's state, and a stdio server's
+/// environment variable names.
 struct Secrets {
     credentials: KeyState,
     client_secret: KeyState,
     sign_in: Option<SignInState>,
+    env: KeyState,
+    env_names: Vec<String>,
 }
 
 /// A server as the API shows it.
@@ -51,7 +56,15 @@ fn response(server: &ToolServer, secrets: Secrets) -> ToolServerResponse {
         id: server.id().uuid(),
         name: server.name().to_owned(),
         slug: server.slug().as_str().to_owned(),
-        url: server.url().as_str().to_owned(),
+        transport: server.transport().to_dto(),
+        url: server.url().map(|url| url.as_str().to_owned()),
+        stdio: server.stdio().map(|stdio| StdioProgram {
+            command: stdio.command.clone(),
+            args: stdio.args.clone(),
+            env_names: secrets.env_names.clone(),
+            env: secrets.env.to_dto(),
+            cwd: stdio.cwd.clone(),
+        }),
         approval: server.approval().to_dto(),
         tool_modes: server
             .tool_modes()
@@ -88,7 +101,8 @@ fn response(server: &ToolServer, secrets: Secrets) -> ToolServerResponse {
     }
 }
 
-/// A server with whether its secrets are stored, without opening them (lists and writes).
+/// A server with whether its secrets are stored, without opening them (lists and writes); a
+/// stdio server's environment opens for its variable names.
 fn shown(state: &AppState, server: &ToolServer) -> ToolServerResponse {
     let secrets = Secrets {
         credentials: KeyState::stored(server.headers_sealed()),
@@ -98,8 +112,19 @@ fn shown(state: &AppState, server: &ToolServer) -> ToolServerResponse {
                 .and_then(|client| client.secret_sealed.as_deref()),
         ),
         sign_in: state.tools.sign_in_state(server),
+        env: KeyState::stored(server.stdio().and_then(|stdio| stdio.env_sealed.as_deref())),
+        env_names: state.tools.env_names(server),
     };
     response(server, secrets)
+}
+
+fn program(patch: StdioPatch) -> StdioUpdate {
+    StdioUpdate {
+        command: patch.command,
+        args: patch.args,
+        env: patch.env,
+        cwd: patch.cwd,
+    }
 }
 
 fn client(input: OAuthClientInput) -> ClientInput {
@@ -141,7 +166,9 @@ pub async fn list(
     request_body = CreateToolServerRequest,
     responses(
         (status = CREATED, description = "The new tool server, without tools until its first test", body = DetailsResponse<ToolServerResponse>),
-        (status = BAD_REQUEST, description = "A field is not valid (for example the URL, the slug, or a header)", body = ErrorResponse)
+        (status = BAD_REQUEST, description = "A field is not valid (for example the URL, the slug, a header, or a stdio program's path)", body = ErrorResponse),
+        (status = FORBIDDEN, description = "A stdio server, and the caller is not an administrator", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "A stdio server while `MCP_STDIO_ENABLED` is off (`STDIO_DISABLED`)", body = ErrorResponse)
     )
 )]
 pub async fn create(
@@ -152,7 +179,14 @@ pub async fn create(
     let input = NewToolServer {
         name: body.name,
         slug: body.slug,
-        url: body.url,
+        transport: body.transport.unwrap_or_default().to_core(),
+        stdio: body.stdio.map(|stdio| StdioInput {
+            command: stdio.command,
+            args: stdio.args,
+            env: stdio.env,
+            cwd: stdio.cwd,
+        }),
+        url: body.url.unwrap_or_default(),
         bearer: body.bearer,
         headers: body.headers,
         auth: body.auth_mode.map(ToCore::to_core),
@@ -186,6 +220,8 @@ pub async fn get(
         credentials: details.credentials,
         client_secret: details.client_secret,
         sign_in: details.sign_in,
+        env: details.env,
+        env_names: state.tools.env_names(&details.server),
     };
     Ok(axum::Json(DetailsResponse {
         data: response(&details.server, secrets),
@@ -203,7 +239,9 @@ pub async fn get(
     responses(
         (status = OK, description = "The saved tool server", body = DetailsResponse<ToolServerResponse>),
         (status = BAD_REQUEST, description = "A field is not valid, or a tool mode names a tool the server does not list", body = ErrorResponse),
-        (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse)
+        (status = FORBIDDEN, description = "A stdio server's program, and the caller is not an administrator", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "A stdio server's program while `MCP_STDIO_ENABLED` is off (`STDIO_DISABLED`)", body = ErrorResponse)
     )
 )]
 pub async fn update(
@@ -215,6 +253,7 @@ pub async fn update(
     let changes = ToolServerUpdate {
         name: body.name,
         url: body.url,
+        stdio: body.stdio.map(program),
         credentials: body.credentials.map(|credentials| match credentials {
             Some(Credentials { bearer, headers }) => CredentialChange::Set { bearer, headers },
             None => CredentialChange::Clear,
@@ -272,9 +311,10 @@ pub async fn delete(
     params(("id" = Uuid, Path, description = "The tool server's id")),
     responses(
         (status = OK, description = "Connected, listed the tools, and refreshed the cache", body = DetailsResponse<ToolTestResponse>),
+        (status = FORBIDDEN, description = "A stdio server, and the caller is not an administrator (now)", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse),
-        (status = UNPROCESSABLE_ENTITY, description = "The stored credentials no longer open (`SECRET_UNREADABLE`), or the URL changed during the test (`TOOL_SERVER_CHANGED`)", body = ErrorResponse),
-        (status = BAD_GATEWAY, description = "The server could not be reached or listed", body = ErrorResponse)
+        (status = UNPROCESSABLE_ENTITY, description = "The stored credentials no longer open (`SECRET_UNREADABLE`), the URL or program changed during the test (`TOOL_SERVER_CHANGED`), or a stdio server while `MCP_STDIO_ENABLED` is off (`STDIO_DISABLED`)", body = ErrorResponse),
+        (status = BAD_GATEWAY, description = "The server could not be reached or listed, or a stdio server's program could not start (`TOOL_SERVER_START`)", body = ErrorResponse)
     )
 )]
 pub async fn test(
@@ -1199,5 +1239,283 @@ mod tests {
         let started = call(&app, &token, Method::POST, &uri, None).await;
         assert_eq!(started.status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(started.body["code"], "SIGN_IN_UNAVAILABLE");
+    }
+
+    /// The test config with stdio on, its directory a fresh temporary one.
+    fn stdio_config() -> (crate::config::AppConfig, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "copilot-api-stdio-{}",
+            uuid::Uuid::now_v7().simple()
+        ));
+        let config = crate::config::AppConfig {
+            stdio_enabled: true,
+            stdio_dir: Some(dir.clone()),
+            ..config()
+        };
+        (config, dir)
+    }
+
+    fn stdio_body(command: &str) -> Value {
+        json!({
+            "name": "Files",
+            "transport": "stdio",
+            "stdio": {
+                "command": command,
+                "args": ["--root", "/srv/data dir"],
+                "env": { "API_KEY": "sk-TOPSECRET", "MODE": "read" },
+            },
+        })
+    }
+
+    /// A new session for an account [`other_user`] made.
+    async fn login(app: &Router, username: &str) -> String {
+        let body = json!({ "username": username, "password": "another horse battery staple" });
+        let response = send(
+            app.clone(),
+            request(Method::POST, "/api/auth/login", None, Some(body)),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        response.body["data"]["token"]
+            .as_str()
+            .expect("a session token")
+            .to_owned()
+    }
+
+    async fn capabilities(app: &Router, token: &str) -> bool {
+        let response = call(app, token, Method::GET, "/api/capabilities", None).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        response.body["data"]["stdioServers"]
+            .as_bool()
+            .expect("a flag")
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn administrators_add_stdio_servers_only_while_stdio_is_on(pool: DbPool) {
+        let off = live_app(pool.clone()).await;
+        let alice = register(&off, "alice").await;
+        assert!(!capabilities(&off, &alice).await, "off by default");
+        let refused = call(
+            &off,
+            &alice,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("/usr/local/bin/files-mcp")),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.body["code"], "STDIO_DISABLED");
+
+        let (config, dir) = stdio_config();
+        let app = live_app_with(pool.clone(), config).await;
+        let bob = other_user(&app, &alice, "bob").await;
+        assert!(capabilities(&app, &alice).await);
+        assert!(!capabilities(&app, &bob).await, "administrators only");
+        let forbidden = call(
+            &app,
+            &bob,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("/usr/local/bin/files-mcp")),
+        )
+        .await;
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+        assert_eq!(forbidden.body["code"], "FORBIDDEN");
+
+        let relative = call(
+            &app,
+            &alice,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("npx")),
+        )
+        .await;
+        assert_eq!(relative.status, StatusCode::BAD_REQUEST);
+        assert_eq!(relative.body["field"], "stdio.command");
+        let with_url = call(
+            &app,
+            &alice,
+            Method::POST,
+            "/api/tool-servers",
+            Some(json!({
+                "name": "Both",
+                "transport": "stdio",
+                "url": "https://mcp.example.com/mcp",
+                "stdio": { "command": "/bin/true" },
+            })),
+        )
+        .await;
+        assert_eq!(with_url.status, StatusCode::BAD_REQUEST);
+        assert_eq!(with_url.body["field"], "url");
+
+        let created = call(
+            &app,
+            &alice,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("/usr/local/bin/files-mcp")),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        let data = &created.body["data"];
+        assert_eq!(data["transport"], "stdio");
+        assert_eq!(data["url"], Value::Null);
+        assert_eq!(data["authMode"], "none");
+        assert_eq!(data["stdio"]["command"], "/usr/local/bin/files-mcp");
+        assert_eq!(data["stdio"]["args"], json!(["--root", "/srv/data dir"]));
+        assert_eq!(data["stdio"]["envNames"], json!(["API_KEY", "MODE"]));
+        assert_eq!(data["stdio"]["env"], "set");
+        assert_eq!(data["stdio"]["cwd"], data["id"]);
+        assert!(
+            !created.body.to_string().contains("TOPSECRET"),
+            "values never come out"
+        );
+        let id = data["id"].as_str().expect("an id").to_owned();
+        let uri = format!("/api/tool-servers/{id}");
+        let read = call(&app, &alice, Method::GET, &uri, None).await;
+        assert_eq!(read.body["data"]["stdio"], data["stdio"]);
+        let listed = call(&app, &alice, Method::GET, "/api/tool-servers", None).await;
+        assert_eq!(
+            listed.body["items"][0]["stdio"]["envNames"],
+            json!(["API_KEY", "MODE"])
+        );
+        let sealed: Vec<u8> =
+            sqlx::query_scalar("SELECT env_sealed FROM tool_servers WHERE id = $1::uuid")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .expect("sealed");
+        assert!(!String::from_utf8_lossy(&sealed).contains("TOPSECRET"));
+
+        // Another user never sees it, and nobody can give it a URL or credentials.
+        let theirs = call(&app, &bob, Method::GET, &uri, None).await;
+        assert_eq!(theirs.status, StatusCode::NOT_FOUND);
+        let url = call(
+            &app,
+            &alice,
+            Method::PATCH,
+            &uri,
+            Some(json!({ "url": "https://mcp.example.com/mcp" })),
+        )
+        .await;
+        assert_eq!(url.status, StatusCode::BAD_REQUEST);
+
+        // A changed program needs a new review.
+        let changed = call(
+            &app,
+            &alice,
+            Method::PATCH,
+            &uri,
+            Some(json!({ "stdio": { "args": ["--write"], "env": {} } })),
+        )
+        .await;
+        assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+        assert_eq!(changed.body["data"]["stdio"]["args"], json!(["--write"]));
+        assert_eq!(changed.body["data"]["stdio"]["envNames"], json!([]));
+        assert_eq!(changed.body["data"]["stdio"]["env"], "missing");
+        assert_eq!(changed.body["data"]["reviewRequired"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn stdio_servers_start_only_for_an_administrator_while_stdio_is_on(pool: DbPool) {
+        let (config, dir) = stdio_config();
+        let app = live_app_with(pool.clone(), config.clone()).await;
+        let alice = register(&app, "alice").await;
+        // Bob is an administrator too, until Alice demotes him.
+        let bob = other_user(&app, &alice, "bob").await;
+        let me = call(&app, &bob, Method::GET, "/api/auth/me", None).await;
+        let bob_id = me.body["data"]["id"].as_str().expect("an id").to_owned();
+        let promote = call(
+            &app,
+            &alice,
+            Method::PATCH,
+            &format!("/api/admin/users/{bob_id}"),
+            Some(json!({ "role": "administrator" })),
+        )
+        .await;
+        assert_eq!(promote.status, StatusCode::OK, "{}", promote.body);
+        // A role change ends the account's sessions.
+        let bob = login(&app, "bob").await;
+
+        let created = call(
+            &app,
+            &bob,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("/nonexistent/copilot-stdio-program")),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        let id = created.body["data"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_owned();
+        let test = format!("/api/tool-servers/{id}/test");
+
+        // The real adapter: the gate passes, the directory is made, the program is missing.
+        let missing = call(&app, &bob, Method::POST, &test, None).await;
+        assert_eq!(missing.status, StatusCode::BAD_GATEWAY, "{}", missing.body);
+        assert_eq!(missing.body["code"], "TOOL_SERVER_START");
+        assert!(
+            dir.join(&id).is_dir(),
+            "its own directory under MCP_STDIO_DIR"
+        );
+
+        // Demoted: nothing starts any more, and the program cannot change.
+        let demote = call(
+            &app,
+            &alice,
+            Method::PATCH,
+            &format!("/api/admin/users/{bob_id}"),
+            Some(json!({ "role": "user" })),
+        )
+        .await;
+        assert_eq!(demote.status, StatusCode::OK, "{}", demote.body);
+        let bob = login(&app, "bob").await;
+        let refused = call(&app, &bob, Method::POST, &test, None).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        let reprogram = call(
+            &app,
+            &bob,
+            Method::PATCH,
+            &format!("/api/tool-servers/{id}"),
+            Some(json!({ "stdio": { "command": "/bin/true" } })),
+        )
+        .await;
+        assert_eq!(reprogram.status, StatusCode::FORBIDDEN);
+        let rename = call(
+            &app,
+            &bob,
+            Method::PATCH,
+            &format!("/api/tool-servers/{id}"),
+            Some(json!({ "name": "Old files", "enabled": false })),
+        )
+        .await;
+        assert_eq!(rename.status, StatusCode::OK, "the owner may still tidy up");
+
+        // Stdio turned off after the server was added: still listed, never started.
+        let off = live_app_with(
+            pool,
+            crate::config::AppConfig {
+                stdio_enabled: false,
+                ..config
+            },
+        )
+        .await;
+        let alices = call(
+            &off,
+            &alice,
+            Method::POST,
+            "/api/tool-servers",
+            Some(stdio_body("/bin/true")),
+        )
+        .await;
+        assert_eq!(alices.body["code"], "STDIO_DISABLED");
+        let listed = call(&off, &bob, Method::GET, "/api/tool-servers", None).await;
+        assert_eq!(listed.body["total"], 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -4,7 +4,9 @@ import type { AuthMode } from "./AuthMode";
 import type { KeyState } from "./KeyState";
 import type { OAuthStatus } from "./OAuthStatus";
 import type { ServerTool } from "./ServerTool";
+import type { StdioProgram } from "./StdioProgram";
 import type { ToolMode } from "./ToolMode";
+import type { Transport } from "./Transport";
 
 /**
  * A tool server (lists, details, and writes).
@@ -13,7 +15,15 @@ export type ToolServerResponse = { id: string, name: string,
 /**
  * The prefix of the server's tool names sent to models (`{slug}__{tool}`); never changes.
  */
-slug: string, url: string, approval: ApprovalMode, 
+slug: string, transport: Transport, 
+/**
+ * A Streamable HTTP server's URL; `null` for a stdio server.
+ */
+url: string | null, 
+/**
+ * A stdio server's program; `null` for a Streamable HTTP server.
+ */
+stdio: StdioProgram | null, approval: ApprovalMode, 
 /**
  * Per-tool modes by original tool name.
  */

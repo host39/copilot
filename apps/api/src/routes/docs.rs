@@ -20,7 +20,7 @@ use crate::config::AppState;
     ),
     tags(
         (name = "health", description = "Liveness and readiness checks"),
-        (name = "settings", description = "The caller's personal instructions"),
+        (name = "settings", description = "The caller's personal instructions and what the server lets them do"),
         (name = "providers", description = "Provider connections and their models"),
         (name = "models", description = "Models for the picker"),
         (name = "projects", description = "Projects: instructions, files, default model, tools"),

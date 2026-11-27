@@ -29,5 +29,15 @@
     "authMode": "none",
     "oauthClient": null
   },
+  {
+    "stdio": {
+      "args": [
+        "--write"
+      ],
+      "command": "/usr/local/bin/files-mcp",
+      "cwd": "",
+      "env": {}
+    }
+  },
   {}
 ]

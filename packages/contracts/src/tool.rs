@@ -1,6 +1,7 @@
-//! `/tool-servers`: remote MCP servers. Credentials (a bearer token or custom headers, an OAuth
-//! client secret, OAuth tokens) go in and never come out; responses say whether they are stored
-//! and, for OAuth, the sign-in's state.
+//! `/tool-servers`: MCP servers, remote (Streamable HTTP) or a program on the Copilot server
+//! (stdio, administrators only). Credentials (a bearer token or custom headers, an OAuth client
+//! secret, OAuth tokens, a stdio program's environment values) go in and never come out;
+//! responses say whether they are stored and, for OAuth, the sign-in's state.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -34,6 +35,110 @@ pub enum ToolMode {
     Off,
     Ask,
     Auto,
+}
+
+/// How Copilot reaches a server. Set when the server is added; it never changes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    /// Streamable HTTP at the server's `url`.
+    #[default]
+    Http,
+    /// A program on the Copilot server that speaks MCP over its stdin and stdout. Only
+    /// administrators add and run these, and only while `MCP_STDIO_ENABLED` is on
+    /// (`GET /capabilities`).
+    Stdio,
+}
+
+/// A stdio server's program as stored. The environment's values never come out.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct StdioProgram {
+    /// The program's absolute path.
+    pub command: String,
+    /// Passed to the program as they are: no shell, no expansion.
+    pub args: Vec<String>,
+    /// The names of its environment variables, the only ones it gets.
+    pub env_names: Vec<String>,
+    /// Whether variables are stored; `unreadable` after a `SECRET_KEY` change.
+    pub env: KeyState,
+    /// Its working directory, relative to the server's `MCP_STDIO_DIR`.
+    pub cwd: String,
+}
+
+/// A stdio server's program as an administrator enters it.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct StdioInput {
+    /// The program's absolute path (it starts without `PATH`).
+    pub command: String,
+    /// Each one is one argument, kept exactly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// The program's whole environment: names of letters, digits, and `_`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// A folder under `MCP_STDIO_DIR` (plain names joined by `/`); blank or absent: the server's
+    /// id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+impl fmt::Debug for StdioInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StdioInput")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .finish()
+    }
+}
+
+/// A change to a stdio server's program: only the given fields change.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct StdioPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Replaces every variable; `{}` removes them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, String>>,
+    /// Blank: the server's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+impl fmt::Debug for StdioPatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StdioPatch")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field(
+                "env",
+                &self.env.as_ref().map(|env| env.keys().collect::<Vec<_>>()),
+            )
+            .field("cwd", &self.cwd)
+            .finish()
+    }
+}
+
+/// `GET /capabilities`: what this Copilot server lets the caller do.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilitiesResponse {
+    /// The caller may add and run stdio tool servers: `MCP_STDIO_ENABLED` is on and the caller
+    /// is an administrator.
+    pub stdio_servers: bool,
 }
 
 /// How a server's requests authenticate.
@@ -135,7 +240,11 @@ pub struct ToolServerResponse {
     pub name: String,
     /// The prefix of the server's tool names sent to models (`{slug}__{tool}`); never changes.
     pub slug: String,
-    pub url: String,
+    pub transport: Transport,
+    /// A Streamable HTTP server's URL; `null` for a stdio server.
+    pub url: Option<String>,
+    /// A stdio server's program; `null` for a Streamable HTTP server.
+    pub stdio: Option<StdioProgram>,
     pub approval: ApprovalMode,
     /// Per-tool modes by original tool name.
     pub tool_modes: BTreeMap<String, ToolMode>,
@@ -167,7 +276,15 @@ pub struct CreateToolServerRequest {
     /// 1 to 12 lowercase letters or digits; derived from the name when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
-    pub url: String,
+    /// Default `http`; `stdio` needs `stdio` and an administrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Transport>,
+    /// Required for `http`; none for `stdio`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The program of a `stdio` server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdio: Option<StdioInput>,
     /// Sent as `Authorization: Bearer <token>`. Blank or absent means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer: Option<String>,
@@ -192,7 +309,9 @@ impl fmt::Debug for CreateToolServerRequest {
             .debug_struct("CreateToolServerRequest")
             .field("name", &self.name)
             .field("slug", &self.slug)
+            .field("transport", &self.transport)
             .field("url", &self.url)
+            .field("stdio", &self.stdio)
             .field("bearer", &redacted(self.bearer.as_ref()))
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .field("approval", &self.approval)
@@ -227,7 +346,8 @@ impl fmt::Debug for Credentials {
 /// the stored credentials unless `credentials` comes with it, any new URL ends an OAuth
 /// sign-in, and every tool goes back to `ask` until the server is reviewed. Credentials without
 /// `authMode` switch the server to `headers`; another `authMode` drops the old mode's
-/// credentials.
+/// credentials. A stdio server takes `stdio` (administrators only), never a URL or
+/// credentials; a changed program is reviewed again like a new URL.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, optional_fields))]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +356,8 @@ pub struct UpdateToolServerRequest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdio: Option<StdioPatch>,
     /// New credentials; `null` removes the stored ones.
     #[serde(
         default,
@@ -318,6 +440,47 @@ mod tests {
     }
 
     #[test]
+    fn stdio_inputs_never_print_environment_values() {
+        let input = StdioInput {
+            command: "/usr/local/bin/server".to_owned(),
+            env: BTreeMap::from([("API_KEY".to_owned(), "sk-TOPSECRET".to_owned())]),
+            ..StdioInput::default()
+        };
+        let patch = StdioPatch {
+            env: Some(input.env.clone()),
+            ..StdioPatch::default()
+        };
+        let create = CreateToolServerRequest {
+            stdio: Some(input.clone()),
+            ..CreateToolServerRequest::default()
+        };
+        for printed in [
+            format!("{input:?}"),
+            format!("{patch:?}"),
+            format!("{create:?}"),
+        ] {
+            assert!(!printed.contains("TOPSECRET"), "{printed}");
+            assert!(printed.contains("API_KEY"), "{printed}");
+        }
+    }
+
+    #[test]
+    fn create_takes_a_stdio_program_without_a_url() {
+        let request: CreateToolServerRequest = serde_json::from_value(serde_json::json!({
+            "name": "Files",
+            "transport": "stdio",
+            "stdio": { "command": "/usr/local/bin/files", "args": ["--root", "/srv"] },
+        }))
+        .expect("valid body");
+        assert_eq!(request.transport, Some(Transport::Stdio));
+        assert_eq!(request.url, None);
+        let stdio = request.stdio.expect("a program");
+        assert_eq!(stdio.args, ["--root", "/srv"]);
+        assert!(stdio.env.is_empty());
+        assert_eq!(stdio.cwd, None);
+    }
+
+    #[test]
     fn create_defaults_to_no_credentials() {
         let request: CreateToolServerRequest = serde_json::from_value(serde_json::json!({
             "name": "Docs",
@@ -356,7 +519,7 @@ mod tests {
         let headers = BTreeMap::from([("X-Api-Key".to_owned(), "header-secret".to_owned())]);
         let create = CreateToolServerRequest {
             name: "Docs".to_owned(),
-            url: "https://mcp.example.com/mcp".to_owned(),
+            url: Some("https://mcp.example.com/mcp".to_owned()),
             bearer: Some("token-secret".to_owned()),
             headers: headers.clone(),
             ..CreateToolServerRequest::default()

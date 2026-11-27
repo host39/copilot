@@ -20,21 +20,22 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use copilot_contracts::{
     Approval, ApprovalMode, ApprovedTool, AuthMode, BuiltinTool, CallDecision, Capabilities,
-    Capability, CapabilityLock, CapabilityOverrides, Capacity, CapacityLevel, ChatListQuery,
-    ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest, CreateProjectRequest,
-    CreateProviderRequest, CreateScheduleRequest, CreateToolServerRequest, CreatedBy, Credentials,
-    Decision, DecisionScope, DecisionsRequest, DetailsResponse, ErrorResponse, FileResponse,
-    FinishReason, HealthResponse, KeyState, ListResponse, MessagePartDto, MessageResponse,
-    MessageStatus, ModelResponse, MoveFileRequest, OAuthClientInput, OAuthStartResponse,
-    OAuthStatus, OnAsk, PageResponse, PartKind, Preset, ProjectDetailsResponse, ProjectListQuery,
-    ProjectResponse, ProviderApi, ProviderDetailsResponse, ProviderKind, ProviderResponse,
-    ProviderUsage, ReadyResponse, ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role,
-    RunStatus, ScheduleListQuery, SchedulePreviewRequest, SchedulePreviewResponse,
-    ScheduleResponse, ScheduleRunResponse, SearchHitResponse, SearchQuery, SendMessageRequest,
-    ServerTool, SettingsResponse, SignInState, StreamQuery, ToolChanges, ToolMode, ToolOverride,
-    ToolServerResponse, ToolStatus, ToolTestResponse, UpdateChatRequest, UpdateFileRequest,
-    UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest, UpdateScheduleRequest,
-    UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
+    CapabilitiesResponse, Capability, CapabilityLock, CapabilityOverrides, Capacity, CapacityLevel,
+    ChatListQuery, ChatResponse, ChatStreamEvent, ChatSummaryResponse, CreateChatRequest,
+    CreateProjectRequest, CreateProviderRequest, CreateScheduleRequest, CreateToolServerRequest,
+    CreatedBy, Credentials, Decision, DecisionScope, DecisionsRequest, DetailsResponse,
+    ErrorResponse, FileResponse, FinishReason, HealthResponse, KeyState, ListResponse,
+    MessagePartDto, MessageResponse, MessageStatus, ModelResponse, MoveFileRequest,
+    OAuthClientInput, OAuthStartResponse, OAuthStatus, OnAsk, PageResponse, PartKind, Preset,
+    ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderApi,
+    ProviderDetailsResponse, ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse,
+    ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role, RunStatus, ScheduleListQuery,
+    SchedulePreviewRequest, SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse,
+    SearchHitResponse, SearchQuery, SendMessageRequest, ServerTool, SettingsResponse, SignInState,
+    StdioInput, StdioPatch, StdioProgram, StreamQuery, ToolChanges, ToolMode, ToolOverride,
+    ToolServerResponse, ToolStatus, ToolTestResponse, Transport, UpdateChatRequest,
+    UpdateFileRequest, UpdateModelRequest, UpdateProjectRequest, UpdateProviderRequest,
+    UpdateScheduleRequest, UpdateSettingsRequest, UpdateToolServerRequest, Usage, UserEvent,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -610,7 +611,9 @@ fn tool_server() -> ToolServerResponse {
         id: id(6),
         name: "Weather".to_owned(),
         slug: "weather".to_owned(),
-        url: "https://mcp.example.com/weather".to_owned(),
+        transport: Transport::Http,
+        url: Some("https://mcp.example.com/weather".to_owned()),
+        stdio: None,
         approval: ApprovalMode::Ask,
         tool_modes: BTreeMap::from([
             ("forecast".to_owned(), ToolMode::Auto),
@@ -691,6 +694,77 @@ fn tool_servers(fixtures: &mut Fixtures) {
         oauth: Some(signed_in.clone()),
         ..tool_server()
     };
+    let program = StdioProgram {
+        command: "/usr/local/bin/files-mcp".to_owned(),
+        args: vec!["--root".to_owned(), "/srv/data dir".to_owned()],
+        env_names: vec!["API_KEY".to_owned(), "MODE".to_owned()],
+        env: KeyState::Set,
+        cwd: "files".to_owned(),
+    };
+    let stdio = ToolServerResponse {
+        id: id(10),
+        name: "Files".to_owned(),
+        slug: "files".to_owned(),
+        transport: Transport::Stdio,
+        url: None,
+        stdio: Some(program.clone()),
+        credentials: KeyState::Missing,
+        auth_mode: AuthMode::None,
+        ..tool_server()
+    };
+    fixtures.types("Transport", &[Transport::Http, Transport::Stdio]);
+    fixtures.types(
+        "StdioProgram",
+        &[
+            program,
+            StdioProgram {
+                command: "/opt/mcp/server".to_owned(),
+                args: Vec::new(),
+                env_names: Vec::new(),
+                env: KeyState::Unreadable,
+                cwd: "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192".to_owned(),
+            },
+        ],
+    );
+    let program_input = StdioInput {
+        command: "/usr/local/bin/files-mcp".to_owned(),
+        args: vec!["--root".to_owned(), "/srv/data dir".to_owned()],
+        env: BTreeMap::from([("API_KEY".to_owned(), "key-sample".to_owned())]),
+        cwd: Some("files".to_owned()),
+    };
+    fixtures.types(
+        "StdioInput",
+        &[
+            program_input.clone(),
+            StdioInput {
+                command: "/opt/mcp/server".to_owned(),
+                ..StdioInput::default()
+            },
+        ],
+    );
+    let program_patch = StdioPatch {
+        command: Some("/usr/local/bin/files-mcp".to_owned()),
+        args: Some(vec!["--write".to_owned()]),
+        env: Some(BTreeMap::new()),
+        cwd: Some(String::new()),
+    };
+    fixtures.types(
+        "StdioPatch",
+        &[program_patch.clone(), StdioPatch::default()],
+    );
+    let capabilities = CapabilitiesResponse {
+        stdio_servers: true,
+    };
+    fixtures.types(
+        "CapabilitiesResponse",
+        &[
+            capabilities.clone(),
+            CapabilitiesResponse {
+                stdio_servers: false,
+            },
+        ],
+    );
+    fixtures.bodies("capabilities", &[DetailsResponse { data: capabilities }]);
     fixtures.types(
         "AuthMode",
         &[AuthMode::None, AuthMode::Headers, AuthMode::Oauth],
@@ -745,7 +819,12 @@ fn tool_servers(fixtures: &mut Fixtures) {
     };
     fixtures.types(
         "ToolServerResponse",
-        &[tool_server(), untested.clone(), oauth.clone()],
+        &[
+            tool_server(),
+            untested.clone(),
+            oauth.clone(),
+            stdio.clone(),
+        ],
     );
     fixtures.types(
         "ToolChanges",
@@ -766,7 +845,9 @@ fn tool_servers(fixtures: &mut Fixtures) {
             CreateToolServerRequest {
                 name: "Weather".to_owned(),
                 slug: Some("weather".to_owned()),
-                url: "https://mcp.example.com/weather".to_owned(),
+                transport: Some(Transport::Http),
+                url: Some("https://mcp.example.com/weather".to_owned()),
+                stdio: None,
                 bearer: Some("token-sample".to_owned()),
                 headers: BTreeMap::from([("X-Team".to_owned(), "blue".to_owned())]),
                 approval: Some(ApprovalMode::Auto),
@@ -775,12 +856,18 @@ fn tool_servers(fixtures: &mut Fixtures) {
             },
             CreateToolServerRequest {
                 name: "Files".to_owned(),
-                url: "https://mcp.example.com/files".to_owned(),
+                url: Some("https://mcp.example.com/files".to_owned()),
+                ..CreateToolServerRequest::default()
+            },
+            CreateToolServerRequest {
+                name: "Local files".to_owned(),
+                transport: Some(Transport::Stdio),
+                stdio: Some(program_input),
                 ..CreateToolServerRequest::default()
             },
             CreateToolServerRequest {
                 name: "Docs".to_owned(),
-                url: "https://mcp.example.com/docs".to_owned(),
+                url: Some("https://mcp.example.com/docs".to_owned()),
                 auth_mode: Some(AuthMode::Oauth),
                 oauth_client: Some(client.clone()),
                 ..CreateToolServerRequest::default()
@@ -793,6 +880,7 @@ fn tool_servers(fixtures: &mut Fixtures) {
             UpdateToolServerRequest {
                 name: Some("Weather".to_owned()),
                 url: Some("https://mcp.example.com/v2".to_owned()),
+                stdio: None,
                 credentials: Some(Some(credentials)),
                 approval: Some(ApprovalMode::Ask),
                 tool_modes: Some(BTreeMap::from([("forecast".to_owned(), ToolMode::Off)])),
@@ -814,14 +902,18 @@ fn tool_servers(fixtures: &mut Fixtures) {
                 oauth_client: Some(None),
                 ..UpdateToolServerRequest::default()
             },
+            UpdateToolServerRequest {
+                stdio: Some(program_patch),
+                ..UpdateToolServerRequest::default()
+            },
             UpdateToolServerRequest::default(),
         ],
     );
     fixtures.bodies(
         "toolServerList",
         &[ListResponse {
-            items: vec![tool_server(), untested, oauth],
-            total: 3,
+            items: vec![tool_server(), untested, oauth, stdio],
+            total: 4,
         }],
     );
     fixtures.bodies(

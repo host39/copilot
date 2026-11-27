@@ -1,0 +1,16 @@
+[
+  {
+    "args": [
+      "--root",
+      "/srv/data dir"
+    ],
+    "command": "/usr/local/bin/files-mcp",
+    "cwd": "files",
+    "env": {
+      "API_KEY": "key-sample"
+    }
+  },
+  {
+    "command": "/opt/mcp/server"
+  }
+]

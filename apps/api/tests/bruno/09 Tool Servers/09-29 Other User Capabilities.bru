@@ -1,0 +1,26 @@
+meta {
+  name: 09-29 Other User Capabilities
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/api/capabilities
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.stdioServers: eq false
+}
+
+docs {
+  **Endpoint:** `GET /api/capabilities` as user B
+
+  **This test verifies:** a plain user may not add stdio servers, even while they are on.
+}

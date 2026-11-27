@@ -11,7 +11,7 @@ use copilot_core::shared::constants::{SHUTDOWN_DRAIN_SECS, SHUTDOWN_GRACE_SECS};
 use copilot_core::{
     Accounts, BoxError, ChatEngine, ChatRepositories, ChatService, Clock, FileService, LlmGateway,
     ModelService, ProjectService, ProviderService, ScheduleService, SecretCipher, SettingsService,
-    SignInConfig, SystemClock, ToolAuth, ToolHost, ToolService,
+    SignInConfig, StdioPolicy, SystemClock, ToolAuth, ToolHost, ToolService,
 };
 use copilot_database::{DbPool, Env, PgStore};
 use copilot_logger::LoggerOptions;
@@ -63,7 +63,7 @@ impl ApiContext {
             config: config.clone(),
             db: db.clone(),
             identity,
-            adapters: Adapters::create()?,
+            adapters: Adapters::create(&config)?,
             shutdown: shutdown.clone(),
         });
         recover(&state).await?;
@@ -134,13 +134,20 @@ impl Adapters {
     /// The model providers through `copilot-providers` on the hardened provider clients
     /// (`copilot_security::clients(Purpose::Providers)`), and the MCP tool servers and their
     /// OAuth sign-in through `copilot-mcp` on the hardened tool clients
-    /// (`clients(Purpose::Tools)`).
-    pub fn create() -> Result<Self, BoxError> {
+    /// (`clients(Purpose::Tools)`), with stdio servers' directories under `MCP_STDIO_DIR` when
+    /// `MCP_STDIO_ENABLED` is on.
+    pub fn create(config: &AppConfig) -> Result<Self, BoxError> {
         let providers = copilot_security::clients(Purpose::Providers)?;
         let tools = copilot_security::clients(Purpose::Tools)?;
+        let mut host = McpHost::new(tools.clone());
+        if config.stdio_enabled
+            && let Some(dir) = &config.stdio_dir
+        {
+            host = host.with_stdio(dir.clone());
+        }
         Ok(Self {
             gateway: Arc::new(Gateway::new(providers)),
-            host: Arc::new(McpHost::new(tools.clone())),
+            host: Arc::new(host),
             auth: Arc::new(McpAuth::new(tools)),
         })
     }
@@ -231,6 +238,11 @@ pub fn wire(
     if let Some(sign_in) = sign_in(&config) {
         tools = tools.with_sign_in(adapters.auth.clone(), store, sign_in);
     }
+    // Before every start of a stdio server's process, its owner's account is read again.
+    let tools = tools.with_stdio(StdioPolicy {
+        enabled: config.stdio_enabled,
+        accounts: accounts.clone(),
+    });
     let schedules = ScheduleService::new(
         stores.schedules.clone(),
         stores.projects.clone(),

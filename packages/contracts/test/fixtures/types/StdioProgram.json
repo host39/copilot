@@ -1,0 +1,22 @@
+[
+  {
+    "args": [
+      "--root",
+      "/srv/data dir"
+    ],
+    "command": "/usr/local/bin/files-mcp",
+    "cwd": "files",
+    "env": "set",
+    "envNames": [
+      "API_KEY",
+      "MODE"
+    ]
+  },
+  {
+    "args": [],
+    "command": "/opt/mcp/server",
+    "cwd": "0196f6a4-7c1e-7d2a-9b3c-4d5e6f708192",
+    "env": "unreadable",
+    "envNames": []
+  }
+]

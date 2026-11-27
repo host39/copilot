@@ -1,0 +1,25 @@
+meta {
+  name: 09-33 Delete Stdio Server
+  type: http
+  seq: 34
+}
+
+delete {
+  url: {{baseUrl}}/api/tool-servers/{{stdioServerId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  **Endpoint:** `DELETE /api/tool-servers/{id}`
+
+  **This test verifies:** a stdio server is removed like any other.
+}

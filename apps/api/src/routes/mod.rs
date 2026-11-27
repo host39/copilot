@@ -5,8 +5,8 @@
 //! core values to their wire forms, [`path::Id`] reads `{id}`, and [`path::MessageIds`] reads
 //! `{id}` and `{messageId}`.
 
+pub mod capabilities;
 pub mod chats;
-
 pub mod docs;
 pub mod events;
 pub mod files;
@@ -44,6 +44,7 @@ pub fn router(identity: &Identity) -> OpenApiRouter<AppState> {
 pub fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .merge(settings::router())
+        .merge(capabilities::router())
         .merge(providers::router())
         .merge(models::router())
         .merge(projects::router())
@@ -130,6 +131,7 @@ mod tests {
     const WRITTEN: &[(&str, &str)] = &[
         ("GET", "/api/settings"),
         ("PATCH", "/api/settings"),
+        ("GET", "/api/capabilities"),
         ("GET", "/api/providers"),
         ("POST", "/api/providers"),
         ("GET", "/api/providers/{id}"),

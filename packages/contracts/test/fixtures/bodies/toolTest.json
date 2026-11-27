@@ -24,6 +24,7 @@
         "protocolVersion": "2025-11-25",
         "reviewRequired": false,
         "slug": "weather",
+        "stdio": null,
         "toolModes": {
           "forecast": "auto",
           "set_alert": "ask"
@@ -48,6 +49,7 @@
           }
         ],
         "toolsFetchedAt": "2026-11-26T12:07:00.123456Z",
+        "transport": "http",
         "updatedAt": "2026-11-26T12:08:00.123456Z",
         "url": "https://mcp.example.com/weather"
       }

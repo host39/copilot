@@ -1,5 +1,6 @@
 //! `fake-llm`: serves the fake model server (`make fake-llm`, port 4010 by default). Settings
-//! come from `FAKE_LLM_*` variables (`tools/fake-llm/README.md`).
+//! come from `FAKE_LLM_*` variables (`tools/fake-llm/README.md`). `fake-llm --stdio` serves only
+//! the MCP tools, over stdin and stdout, as a stdio MCP server.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -12,6 +13,13 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--stdio") {
+        // No logger: stdout carries the protocol.
+        return match fake_llm::mcp::serve_stdio().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
+    }
     let config = match Config::load() {
         Ok(config) => config,
         Err(error) => {

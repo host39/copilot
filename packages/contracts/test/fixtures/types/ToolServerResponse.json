@@ -11,6 +11,7 @@
     "protocolVersion": "2025-11-25",
     "reviewRequired": false,
     "slug": "weather",
+    "stdio": null,
     "toolModes": {
       "forecast": "auto",
       "set_alert": "ask"
@@ -35,6 +36,7 @@
       }
     ],
     "toolsFetchedAt": "2026-11-26T12:07:00.123456Z",
+    "transport": "http",
     "updatedAt": "2026-11-26T12:08:00.123456Z",
     "url": "https://mcp.example.com/weather"
   },
@@ -55,9 +57,11 @@
     "protocolVersion": null,
     "reviewRequired": true,
     "slug": "weather",
+    "stdio": null,
     "toolModes": {},
     "tools": null,
     "toolsFetchedAt": null,
+    "transport": "http",
     "updatedAt": "2026-11-26T12:08:00.123456Z",
     "url": "https://mcp.example.com/weather"
   },
@@ -78,6 +82,7 @@
     "protocolVersion": "2025-11-25",
     "reviewRequired": false,
     "slug": "weather",
+    "stdio": null,
     "toolModes": {
       "forecast": "auto",
       "set_alert": "ask"
@@ -102,7 +107,61 @@
       }
     ],
     "toolsFetchedAt": "2026-11-26T12:07:00.123456Z",
+    "transport": "http",
     "updatedAt": "2026-11-26T12:08:00.123456Z",
     "url": "https://mcp.example.com/weather"
+  },
+  {
+    "approval": "ask",
+    "authMode": "none",
+    "createdAt": "2026-11-26T12:07:00.123456Z",
+    "credentials": "missing",
+    "enabled": true,
+    "id": "019abf6c-2f6e-7a51-8c3e-00000000000a",
+    "name": "Files",
+    "oauth": null,
+    "protocolVersion": "2025-11-25",
+    "reviewRequired": false,
+    "slug": "files",
+    "stdio": {
+      "args": [
+        "--root",
+        "/srv/data dir"
+      ],
+      "command": "/usr/local/bin/files-mcp",
+      "cwd": "files",
+      "env": "set",
+      "envNames": [
+        "API_KEY",
+        "MODE"
+      ]
+    },
+    "toolModes": {
+      "forecast": "auto",
+      "set_alert": "ask"
+    },
+    "tools": [
+      {
+        "description": "The forecast for a city.",
+        "inputSchema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "name": "forecast",
+        "readOnly": true,
+        "title": "Forecast"
+      }
+    ],
+    "toolsFetchedAt": "2026-11-26T12:07:00.123456Z",
+    "transport": "stdio",
+    "updatedAt": "2026-11-26T12:08:00.123456Z",
+    "url": null
   }
 ]

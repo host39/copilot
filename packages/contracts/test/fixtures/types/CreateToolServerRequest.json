@@ -8,11 +8,27 @@
     },
     "name": "Weather",
     "slug": "weather",
+    "transport": "http",
     "url": "https://mcp.example.com/weather"
   },
   {
     "name": "Files",
     "url": "https://mcp.example.com/files"
+  },
+  {
+    "name": "Local files",
+    "stdio": {
+      "args": [
+        "--root",
+        "/srv/data dir"
+      ],
+      "command": "/usr/local/bin/files-mcp",
+      "cwd": "files",
+      "env": {
+        "API_KEY": "key-sample"
+      }
+    },
+    "transport": "stdio"
   },
   {
     "authMode": "oauth",

@@ -10,7 +10,8 @@
 #      hello" with usage), then "failed 403" (a PROVIDER_AUTH error), and read the saved
 #      messages back; a `custom` connection's "hello" completes without usage (none was asked);
 #   3. add the fake MCP server as a tool server, Test it, ask for `tool echo {...}`, approve the
-#      call, and check the result and "Tool said: ...";
+#      call, and check the result and "Tool said: ..."; then the same over stdio, with
+#      `fake-llm --stdio` as a stdio tool server that the API starts for the Test and the run;
 #   4. an `openai` preset connection on its default API, Responses: the text flow, a refusal,
 #      and an approved tool round whose encrypted reasoning the fake checks on replay;
 #   5. the same text flow over an Anthropic connection to the fake server.
@@ -140,6 +141,7 @@ env -u WEB_DIR -u CORS_ALLOWED_ORIGINS \
   DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_NAME="$DB" \
   SECRET_KEY="$SECRET_KEY_VALUE" \
   ALLOW_PRIVATE_NETWORK=all AUTH_REGISTRATION_OPEN=false AUTH_SETUP_TOKEN="$SETUP_TOKEN" \
+  MCP_STDIO_ENABLED=true MCP_STDIO_DIR="$RUN_DIR/mcp-stdio" \
   "$BIN/server" >"$RUN_DIR/api.log" 2>&1 &
 api_pid=$!
 
@@ -335,6 +337,43 @@ check "the approved call runs and the model reads its result" '
   and any(.[]; .type == "message.finished" and .status == "complete")'
 [[ "$(text)" == "Tool said: smoke check" ]] || fail "after the tool: streamed $(text)"
 pass "the answer after the tool is Tool said: smoke check"
+
+# A stdio server: the API starts `fake-llm --stdio` itself (the first account is the
+# administrator, and the server runs with MCP_STDIO_ENABLED), with nothing of its own environment.
+program="$(jq -n --arg command "$BIN/fake-llm" '{
+  name: "Fake stdio", transport: "stdio",
+  stdio: {command: $command, args: ["--stdio"], env: {FAKE_STDIO: "1"}}
+}')"
+request POST /tool-servers "$program"
+expect 201 "add the stdio tool server"
+stdio_server="$(field .data.id)"
+[[ "$(field '.data.stdio.envNames | join(",")')" == "FAKE_STDIO" ]] ||
+  fail "the stdio server should show its variable names only: $body"
+request POST "/tool-servers/$stdio_server/test"
+expect 200 "test the stdio tool server"
+[[ "$(field '[.data.server.tools[].name] | sort | join(",")')" == "add,echo" ]] ||
+  fail "the stdio server should list add and echo: $body"
+pass "stdio tool server: Test starts fake-llm --stdio and lists echo and add"
+
+request POST /chats "{\"modelId\":\"$openai_model\",\"toolOverrides\":[{\"serverId\":\"$stdio_server\",\"enabled\":true}]}"
+expect 201 "create a chat with the stdio tool server"
+stdio_chat="$(field .data.id)"
+stream "/chats/$stdio_chat/messages" '{"text":"tool echo {\"text\":\"over stdio\"}"}'
+check "stdio: tool echo asks for approval" '
+  any(.[]; .type == "tool.requested" and .toolName == "echo" and .needsApproval)
+  and any(.[]; .type == "message.finished" and .status == "awaiting_approval")'
+message="$(jq -er '.[] | select(.type == "tool.requested") | .messageId' <<<"$events")"
+call="$(jq -er '.[] | select(.type == "tool.requested") | .callId' <<<"$events")"
+stream "/chats/$stdio_chat/messages/$message/decisions" "{\"decisions\":[{\"callId\":\"$call\",\"decision\":\"approve\"}]}"
+check "stdio: the approved call runs in the program and the model reads its result" '
+  any(.[]; .type == "tool.finished" and .status == "ok"
+    and .output == [{"type": "text", "text": "over stdio"}])
+  and any(.[]; .type == "message.finished" and .status == "complete")'
+[[ "$(text)" == "Tool said: over stdio" ]] || fail "after the stdio tool: streamed $(text)"
+for key in mcp.stdio.started mcp.stdio.stopped; do
+  grep -q "$key" "$RUN_DIR/api.log" || fail "the API log should show $key"
+done
+pass "stdio: the answer after the tool is Tool said: over stdio, and the process ended with the run"
 
 # --- 4. The Responses API ---------------------------------------------------------------------
 

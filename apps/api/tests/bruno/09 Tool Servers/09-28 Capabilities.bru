@@ -1,0 +1,26 @@
+meta {
+  name: 09-28 Capabilities
+  type: http
+  seq: 29
+}
+
+get {
+  url: {{baseUrl}}/api/capabilities
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.data.stdioServers: eq true
+}
+
+docs {
+  **Endpoint:** `GET /api/capabilities`
+
+  **This test verifies:** the administrator may add stdio servers on a server started with `MCP_STDIO_ENABLED=true` (`make test-bruno` starts it that way, with `MCP_STDIO_DIR` in its run folder).
+}

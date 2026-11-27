@@ -162,7 +162,9 @@ describe("responses", () => {
         id: ID,
         name: "Docs",
         slug: "docs",
+        transport: "http",
         url: "https://mcp.example.com/mcp",
+        stdio: null,
         approval: "ask",
         toolModes: { search_docs: "off" },
         enabled: true,
@@ -179,6 +181,46 @@ describe("responses", () => {
     });
     expect(data.toolModes.search_docs).toBe("off");
     expect(data.oauth?.state).toBe("needs_sign_in");
+  });
+
+  test("stdio tool server: the program without its environment's values", () => {
+    const { data } = toolServerBodySchema.parse({
+      data: {
+        id: ID,
+        name: "Files",
+        slug: "files",
+        transport: "stdio",
+        url: null,
+        stdio: {
+          command: "/usr/local/bin/files-mcp",
+          args: ["--root", "/srv/data dir"],
+          envNames: ["API_KEY"],
+          env: "set",
+          cwd: ID,
+        },
+        approval: "ask",
+        toolModes: {},
+        enabled: true,
+        credentials: "missing",
+        authMode: "none",
+        oauth: null,
+        protocolVersion: null,
+        tools: null,
+        toolsFetchedAt: null,
+        reviewRequired: false,
+        createdAt: AT,
+        updatedAt: AT,
+      },
+    });
+    expect(data.url).toBeNull();
+    expect(data.stdio?.args).toEqual(["--root", "/srv/data dir"]);
+    const request = createToolServerRequestSchema.parse({
+      name: "Files",
+      transport: "stdio",
+      stdio: { command: "/usr/local/bin/files-mcp" },
+    });
+    expect(request.stdio?.args).toEqual([]);
+    expect(request.stdio?.env).toEqual({});
   });
 
   test("schedule paused by the scheduler", () => {
