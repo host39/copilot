@@ -691,7 +691,7 @@ async fn the_event_stream_reports_runs_approvals_and_chat_changes_to_their_owner
 
 #[sqlx::test(migrations = false)]
 #[ignore = "requires Postgres: run `make test-db`"]
-async fn a_turn_without_tools_still_answers_and_lists_no_server(pool: DbPool) {
+async fn a_server_turned_off_is_never_listed_or_offered(pool: DbPool) {
     // A chat whose tool server is turned off sends no tools and never reaches the server.
     let (app, token, model, provider) = start(pool).await;
     let (mcp, server) = docs(&app, &token, "auto").await;
