@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other checkout
 
 ## Status
 
-Complete: P3R.1 to P3R.4. `make check`, `make test-db`, and `make test-bruno` (152 requests, 375 assertions, against the throwaway database `copilot_bruno_p3r` on `PORT=3047`, dropped afterwards) pass. CI is recorded below once green.
+Complete: P3R.1 to P3R.4. `make check`, `make test-db`, and `make test-bruno` (152 requests, 375 assertions, against the throwaway database `copilot_bruno_p3r` on `PORT=3047`, dropped afterwards) pass. Last green CI: `937af79` (Code quality, run 45992712297).
 
 ## Sub-Steps
 
