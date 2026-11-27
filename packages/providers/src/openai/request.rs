@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 use crate::gateway::UNSUPPORTED;
 use crate::openai::calls::CALL_FIELDS;
 use crate::openai::replay::{REASONING, ReplayState};
+use crate::schema::object_schema;
 
 /// The request body for `request` in the target's dialect.
 pub(crate) fn body(target: &ModelTarget, request: &LlmRequest) -> DomainResult<Value> {
@@ -292,23 +293,6 @@ fn tool_spec(spec: &ToolSpec) -> Value {
             "strict": false,
         },
     })
-}
-
-/// `schema` with `type: "object"` and `properties`, as Chat Completions servers require.
-fn object_schema(schema: &Value) -> Value {
-    let mut schema = match schema {
-        Value::Object(schema) => schema.clone(),
-        _ => Map::new(),
-    };
-    schema
-        .entry("type")
-        .or_insert_with(|| Value::from("object"));
-    if schema.get("type") == Some(&Value::from("object")) {
-        schema
-            .entry("properties")
-            .or_insert_with(|| Value::Object(Map::new()));
-    }
-    Value::Object(schema)
 }
 
 fn text_part(text: &str) -> Value {

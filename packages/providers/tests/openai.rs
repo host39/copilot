@@ -465,16 +465,6 @@ async fn requests_the_protocol_cannot_carry_never_reach_the_provider() {
         error.to_string(),
         "This connection cannot send this audio format."
     );
-
-    let mut anthropic = target(&server, Preset::Anthropic);
-    anthropic.provider.kind = ProviderKind::Anthropic;
-    anthropic.dialect = Dialect::Anthropic;
-    let error = gateway()
-        .stream(&anthropic, request("Hi"))
-        .await
-        .err()
-        .expect("unsupported");
-    assert_eq!(error.code(), UNSUPPORTED);
 }
 
 #[tokio::test]

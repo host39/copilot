@@ -5,9 +5,12 @@
 //! Status: OpenAI-compatible connections stream text, reasoning (`reasoning`,
 //! `reasoning_content`, OpenRouter `reasoning_details`), tool calls, and spoken replies; send
 //! tools, tool results, images, PDFs, and `input_audio`; replay provider state per dialect; and
-//! list models with what the provider reports. The Anthropic adapter is still to come (Phase 2
-//! track B, part 2); until then Anthropic connections fail with `PROVIDER_UNSUPPORTED` before
-//! anything is sent, as does any part the protocol cannot carry.
+//! list models with what the provider reports. Anthropic connections stream text, adaptive
+//! thinking (summarized), and tool calls; send tools, tool results, images, and PDFs with cache
+//! breakpoints; replay the answer's content blocks (thinking signatures and `redacted_thinking`
+//! included); report refusals with their `stop_details`; and list models with their reported
+//! capabilities. A part the protocol cannot carry fails with `PROVIDER_UNSUPPORTED` before
+//! anything is sent.
 //!
 //! Rules (see "Adapter Rules" in `docs/design/copilot.md`):
 //!
@@ -23,9 +26,11 @@
 //! - No `axum`, `sqlx`, `utoipa`, contracts, database, middleware, other adapter, or rustauth
 //!   crates (`make boundaries`).
 
+mod anthropic;
 mod gateway;
 mod http;
 mod openai;
+mod schema;
 mod sse;
 
 pub use crate::gateway::{Gateway, UNSUPPORTED};
