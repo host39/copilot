@@ -194,6 +194,21 @@ impl FileService {
             .ok_or_else(|| not_found(id))
     }
 
+    /// At most `len` bytes of the file from byte `offset`, for a download that sends the file in
+    /// pieces; empty past its end.
+    pub async fn piece(
+        &self,
+        actor: &Actor,
+        id: FileId,
+        offset: u64,
+        len: u64,
+    ) -> DomainResult<Bytes> {
+        self.files
+            .piece(actor.user_id, id, offset, len)
+            .await?
+            .ok_or_else(|| not_found(id))
+    }
+
     /// Renames the file or includes it in (or leaves it out of) the project context.
     pub async fn update(
         &self,

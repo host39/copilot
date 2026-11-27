@@ -1,24 +1,28 @@
-//! `UploadSlots`: the uploads whose bodies are being read now.
+//! `Slots`: the uploads whose bodies are being read now, and the downloads being sent.
 //!
 //! An upload is read whole into memory (at most `MAX_UPLOAD_MB`, and the database driver copies
-//! it once more), so the routes take a slot before they read the body: at most
-//! `UPLOADS_PER_USER` per user and `UPLOADS_AT_ONCE` in all. A request past either limit waits
-//! for a free slot without reading its body; dropping the request frees its place in line. The
-//! per-user limit comes first, so one user's waiting uploads never hold slots others could use.
+//! it once more), so the upload routes take a slot before they read the body: at most
+//! `UPLOADS_PER_USER` per user and `UPLOADS_AT_ONCE` in all. A download holds a few pieces of
+//! its file at a time, and takes a slot of its own set (`DOWNLOADS_PER_USER`,
+//! `DOWNLOADS_AT_ONCE`) until its body is sent. A request past either limit waits for a free
+//! slot without reading its body; dropping the request frees its place in line. The per-user
+//! limit comes first, so one user's waiting requests never hold slots others could use.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use copilot_core::UserId;
-use copilot_core::shared::constants::{UPLOADS_AT_ONCE, UPLOADS_PER_USER};
+use copilot_core::shared::constants::{
+    DOWNLOADS_AT_ONCE, DOWNLOADS_PER_USER, UPLOADS_AT_ONCE, UPLOADS_PER_USER,
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// The upload slots of the server. Cheap to share (`Arc`).
+/// One set of slots of the server (uploads or downloads). Cheap to share (`Arc`).
 #[derive(Debug)]
-pub struct UploadSlots {
+pub struct Slots {
     total: Arc<Semaphore>,
     per_user: usize,
-    /// The users with uploads in flight or waiting.
+    /// The users with requests in flight or waiting.
     users: Mutex<HashMap<UserId, User>>,
 }
 
@@ -29,13 +33,17 @@ struct User {
     slots: usize,
 }
 
-impl Default for UploadSlots {
-    fn default() -> Self {
+impl Slots {
+    /// `UPLOADS_PER_USER` per user, `UPLOADS_AT_ONCE` in all.
+    pub fn uploads() -> Self {
         Self::new(UPLOADS_PER_USER, UPLOADS_AT_ONCE)
     }
-}
 
-impl UploadSlots {
+    /// `DOWNLOADS_PER_USER` per user, `DOWNLOADS_AT_ONCE` in all.
+    pub fn downloads() -> Self {
+        Self::new(DOWNLOADS_PER_USER, DOWNLOADS_AT_ONCE)
+    }
+
     pub fn new(per_user: usize, total: usize) -> Self {
         Self {
             total: Arc::new(Semaphore::new(total)),
@@ -44,9 +52,9 @@ impl UploadSlots {
         }
     }
 
-    /// Waits for a slot for one upload of `user`. The slot is free again when dropped, and so
+    /// Waits for a slot for one request of `user`. The slot is free again when dropped, and so
     /// is a place in line when the wait is dropped.
-    pub async fn acquire(self: &Arc<Self>, user: UserId) -> UploadSlot {
+    pub async fn acquire(self: &Arc<Self>, user: UserId) -> Slot {
         let semaphore = {
             let mut users = self.lock();
             let entry = users.entry(user).or_insert_with(|| User {
@@ -57,7 +65,7 @@ impl UploadSlots {
             entry.semaphore.clone()
         };
         // Counted above: dropping it (with the wait) gives the count back.
-        let mut slot = UploadSlot {
+        let mut slot = Slot {
             slots: self.clone(),
             user,
             mine: None,
@@ -69,7 +77,7 @@ impl UploadSlots {
         slot
     }
 
-    /// Users with uploads in flight or waiting.
+    /// Users with requests in flight or waiting.
     #[cfg(test)]
     fn users(&self) -> usize {
         self.lock().len()
@@ -80,16 +88,16 @@ impl UploadSlots {
     }
 }
 
-/// One upload's place: held while its body is read and stored.
+/// One request's place: held while an upload's body is read and stored, or a download's is sent.
 #[derive(Debug)]
-pub struct UploadSlot {
-    slots: Arc<UploadSlots>,
+pub struct Slot {
+    slots: Arc<Slots>,
     user: UserId,
     mine: Option<OwnedSemaphorePermit>,
     shared: Option<OwnedSemaphorePermit>,
 }
 
-impl Drop for UploadSlot {
+impl Drop for Slot {
     fn drop(&mut self) {
         let mut users = self.slots.lock();
         self.shared.take();
@@ -124,7 +132,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_user_waits_past_their_own_limit() {
-        let slots = Arc::new(UploadSlots::new(2, 8));
+        let slots = Arc::new(Slots::new(2, 8));
         let alice = user();
         let first = slots.acquire(alice).await;
         let _second = slots.acquire(alice).await;
@@ -141,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_upload_waits_past_the_total() {
-        let slots = Arc::new(UploadSlots::new(2, 2));
+        let slots = Arc::new(Slots::new(2, 2));
         let first = slots.acquire(user()).await;
         let _second = slots.acquire(user()).await;
         assert!(ready(slots.acquire(user())).await.is_none());
@@ -151,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn users_without_uploads_leave_no_entry() {
-        let slots = Arc::new(UploadSlots::new(1, 8));
+        let slots = Arc::new(Slots::new(1, 8));
         let alice = user();
         let held = slots.acquire(alice).await;
         // A waiter that gives up (the client went away) keeps nothing.

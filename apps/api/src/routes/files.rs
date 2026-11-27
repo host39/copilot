@@ -1,14 +1,21 @@
 //! Files: project files, chat attachments, and their bytes (`FileService`). Uploads are
 //! `multipart/form-data` with one part named `file` (`UPLOAD_FIELD`), read in chunks and refused
 //! as soon as they pass `MAX_UPLOAD_MB`, and only once the request holds an upload slot
-//! (`UploadSlots`, a few per user and in all); the service then checks the type (extension and
-//! magic bytes) and the storage quota. The content route sends the safety headers of "Files" in
-//! `docs/design/copilot.md`: an attachment, never rendered inline, with the exact allowed type.
+//! (`Slots`, a few per user and in all); a body that arrives slower than the upload pace
+//! (`UPLOAD_GRACE_SECS`, then `UPLOAD_MIN_BYTES_PER_SEC`) is refused, so a stalled client gives
+//! its slot back. The service then checks the type (extension and magic bytes) and the storage
+//! quota. The content route sends the file in pieces (`DOWNLOAD_CHUNK_BYTES`, one query each)
+//! under a download slot, with the safety headers of "Files" in `docs/design/copilot.md`: an
+//! attachment, never rendered inline, with the exact allowed type.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::{Body, Bytes};
 use axum::extract::multipart::{Multipart, MultipartError, MultipartRejection};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
     X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderName, HeaderValue, StatusCode};
@@ -17,15 +24,23 @@ use copilot_contracts::{
     DetailsResponse, ErrorResponse, FileResponse, ListResponse, MoveFileRequest, UPLOAD_FIELD,
     UpdateFileRequest, UploadFileForm,
 };
+use copilot_core::shared::constants::{
+    DOWNLOAD_CHUNK_BYTES, DOWNLOAD_STALL_SECS, UPLOAD_GRACE_SECS, UPLOAD_MIN_BYTES_PER_SEC,
+};
 use copilot_core::{
-    ChatId, DomainError, FileId, FileOwner, FileUpdate, ProjectId, StoredFile, served_type,
+    Actor, ChatId, DomainError, FileId, FileOwner, FileService, FileUpdate, ProjectId, StoredFile,
+    served_type,
 };
 use copilot_middleware::{HttpError, JsonBody};
+use futures_util::stream;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::config::AppState;
 use crate::helpers::auth::Caller;
+use crate::helpers::slots::Slot;
 use crate::routes::path::Id;
 
 const MEBIBYTE: usize = 1024 * 1024;
@@ -108,20 +123,63 @@ fn unreadable(error: &MultipartError) -> HttpError {
     }
 }
 
-/// Reads the one `file` part: its file name and bytes. Any other part, a second `file` part, or
-/// a file past `max_mb` stops the read.
+/// A body that fell behind the upload pace (`408`).
+fn too_slow() -> HttpError {
+    HttpError::Status {
+        status: StatusCode::REQUEST_TIMEOUT,
+        body: Box::new(ErrorResponse::new(
+            "The upload was too slow. Try again on a faster connection.",
+            "UPLOAD_TOO_SLOW",
+        )),
+    }
+}
+
+/// How fast an upload body must arrive: by any moment, `UPLOAD_GRACE_SECS` after the read
+/// started plus one second per `UPLOAD_MIN_BYTES_PER_SEC` received. A client that trickles
+/// (or stops) falls behind and loses its slot; a slow but steady one keeps going.
+#[derive(Clone, Copy, Debug)]
+struct Pace {
+    started: Instant,
+    received: u64,
+}
+
+impl Pace {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            received: 0,
+        }
+    }
+
+    fn deadline(&self) -> Instant {
+        let earned =
+            Duration::from_secs_f64(self.received as f64 / UPLOAD_MIN_BYTES_PER_SEC as f64);
+        self.started + Duration::from_secs(UPLOAD_GRACE_SECS) + earned
+    }
+
+    /// `future`, or [`too_slow`] once the body falls behind.
+    async fn keep<T>(&self, future: impl Future<Output = T>) -> Result<T, HttpError> {
+        tokio::time::timeout_at(self.deadline(), future)
+            .await
+            .map_err(|_| too_slow())
+    }
+}
+
+/// Reads the one `file` part: its file name and bytes. Any other part, a second `file` part, a
+/// file past `max_mb`, or a body behind `pace` stops the read.
 async fn upload(
     multipart: Result<Multipart, MultipartRejection>,
     max_mb: u64,
-) -> Result<(String, axum::body::Bytes), HttpError> {
+    mut pace: Pace,
+) -> Result<(String, Bytes), HttpError> {
     let mut multipart = multipart.map_err(|_| malformed())?;
     let max_bytes = usize::try_from(max_mb)
         .unwrap_or(usize::MAX)
         .saturating_mul(MEBIBYTE);
     let mut found = None;
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
+    while let Some(mut field) = pace
+        .keep(multipart.next_field())
+        .await?
         .map_err(|error| unreadable(&error))?
     {
         if field.name() != Some(UPLOAD_FIELD) || found.is_some() {
@@ -129,13 +187,18 @@ async fn upload(
         }
         let name = field.file_name().unwrap_or_default().to_owned();
         let mut bytes = Vec::new();
-        while let Some(chunk) = field.chunk().await.map_err(|error| unreadable(&error))? {
+        while let Some(chunk) = pace
+            .keep(field.chunk())
+            .await?
+            .map_err(|error| unreadable(&error))?
+        {
             if bytes.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(too_large(max_mb));
             }
             bytes.extend_from_slice(&chunk);
+            pace.received = pace.received.saturating_add(chunk.len() as u64);
         }
-        found = Some((name, axum::body::Bytes::from(bytes)));
+        found = Some((name, Bytes::from(bytes)));
     }
     found.ok_or_else(malformed)
 }
@@ -148,7 +211,8 @@ async fn store(
 ) -> Result<(StatusCode, axum::Json<DetailsResponse<FileResponse>>), HttpError> {
     // Held until the file is stored: the body is in memory until then.
     let _slot = state.uploads.acquire(caller.user_id).await;
-    let (name, bytes) = upload(multipart, state.config.files.max_upload_mb).await?;
+    let max_mb = state.config.files.max_upload_mb;
+    let (name, bytes) = upload(multipart, max_mb, Pace::start()).await?;
     let file = state.files.upload(caller, owner, &name, bytes).await?;
     let data = response(&file);
     Ok((StatusCode::CREATED, axum::Json(DetailsResponse { data })))
@@ -166,6 +230,7 @@ async fn store(
         (status = CREATED, description = "The stored file", body = DetailsResponse<FileResponse>),
         (status = BAD_REQUEST, description = "Not one file part, too large, or a type that is not supported", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such project", body = ErrorResponse),
+        (status = REQUEST_TIMEOUT, description = "The body arrived slower than the upload pace (`UPLOAD_TOO_SLOW`)", body = ErrorResponse),
         (status = UNPROCESSABLE_ENTITY, description = "The caller's file storage is full (`STORAGE_FULL`)", body = ErrorResponse)
     )
 )]
@@ -216,6 +281,7 @@ pub async fn list(
         (status = CREATED, description = "The stored attachment", body = DetailsResponse<FileResponse>),
         (status = BAD_REQUEST, description = "Not one file part, too large, a type that is not supported, or audio that plays longer than 5 minutes", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such chat", body = ErrorResponse),
+        (status = REQUEST_TIMEOUT, description = "The body arrived slower than the upload pace (`UPLOAD_TOO_SLOW`)", body = ErrorResponse),
         (status = UNPROCESSABLE_ENTITY, description = "The caller's file storage is full (`STORAGE_FULL`)", body = ErrorResponse)
     )
 )]
@@ -366,8 +432,57 @@ pub async fn content(
     Caller(caller): Caller,
     Id(id): Id,
 ) -> Result<Response, HttpError> {
-    let (file, bytes) = state.files.content(&caller, FileId::new(id)).await?;
-    Ok((headers(&file), bytes).into_response())
+    let file = state.files.get(&caller, FileId::new(id)).await?;
+    let slot = state.downloads.acquire(caller.user_id).await;
+    let body = pieces(state.files.clone(), caller, &file, slot);
+    let mut response = (headers(&file), body).into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_LENGTH, HeaderValue::from(file.size_bytes()));
+    Ok(response)
+}
+
+/// The file's bytes as a body read in pieces of `DOWNLOAD_CHUNK_BYTES`, one query each, so a
+/// download holds a few pieces at a time and no pool connection between them. A task reads the
+/// pieces and holds `slot`; it stops when the body is sent, when the client goes away, or when
+/// the client takes no piece for `DOWNLOAD_STALL_SECS`. A failed read ends the body early, so
+/// the client sees a short download.
+fn pieces(files: Arc<FileService>, caller: Actor, file: &StoredFile, slot: Slot) -> Body {
+    let (sender, receiver) = mpsc::channel::<Result<Bytes, DomainError>>(1);
+    let (id, size) = (file.id(), file.size_bytes());
+    tokio::spawn(async move {
+        let _slot = slot;
+        let stall = Duration::from_secs(DOWNLOAD_STALL_SECS);
+        let mut offset = 0;
+        while offset < size {
+            let piece = files.piece(&caller, id, offset, DOWNLOAD_CHUNK_BYTES).await;
+            let piece = match piece {
+                Ok(piece) if piece.is_empty() => {
+                    Err(DomainError::not_found("File", id.to_string()))
+                }
+                other => other,
+            };
+            match &piece {
+                Ok(piece) => offset += piece.len() as u64,
+                Err(error) => {
+                    tracing::warn!(error = %error, file_id = %id, offset, "api.files.download.failed")
+                }
+            }
+            let failed = piece.is_err();
+            match tokio::time::timeout(stall, sender.send(piece)).await {
+                Ok(Ok(())) if !failed => {}
+                Ok(_) => return,
+                Err(_) => {
+                    tracing::info!(file_id = %id, offset, "api.files.download.stalled");
+                    return;
+                }
+            }
+        }
+    });
+    Body::from_stream(stream::unfold(receiver, |mut receiver| async move {
+        let piece = receiver.recv().await?;
+        Some((piece, receiver))
+    }))
 }
 
 #[cfg(test)]
@@ -379,6 +494,7 @@ mod tests {
     use axum::http::{Method, Request, StatusCode};
     use copilot_core::{Clock, FileId, ProjectId, StoredFileParts, SystemClock, UserId};
     use copilot_database::DbPool;
+    use futures_util::StreamExt;
     use serde_json::{Value, json};
     use uuid::Uuid;
 
@@ -471,7 +587,12 @@ mod tests {
         max_mb: u64,
     ) -> Result<(String, axum::body::Bytes), HttpError> {
         let request = multipart("/", "token", parts);
-        upload(Multipart::from_request(request, &()).await, max_mb).await
+        upload(
+            Multipart::from_request(request, &()).await,
+            max_mb,
+            Pace::start(),
+        )
+        .await
     }
 
     /// The message and field of a validation error.
@@ -513,7 +634,8 @@ mod tests {
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from("{}"))
             .expect("request");
-        let (_, field) = validation(upload(Multipart::from_request(json, &()).await, 1).await);
+        let multipart = Multipart::from_request(json, &()).await;
+        let (_, field) = validation(upload(multipart, 1, Pace::start()).await);
         assert_eq!(field.as_deref(), Some("file"), "not multipart at all");
     }
 
@@ -526,7 +648,9 @@ mod tests {
                 "/",
                 axum::routing::post(
                     |multipart: Result<Multipart, MultipartRejection>| async move {
-                        upload(multipart, 25).await.map(|_| StatusCode::CREATED)
+                        upload(multipart, 25, Pace::start())
+                            .await
+                            .map(|_| StatusCode::CREATED)
                     },
                 ),
             )
@@ -536,6 +660,61 @@ mod tests {
             .await
             .expect("infallible router");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn the_pace_grants_time_for_what_arrived() {
+        let mut pace = Pace::start();
+        let grace = Duration::from_secs(UPLOAD_GRACE_SECS);
+        assert_eq!(pace.deadline() - pace.started, grace);
+        pace.received = UPLOAD_MIN_BYTES_PER_SEC * 10;
+        assert_eq!(
+            pace.deadline() - pace.started,
+            grace + Duration::from_secs(10)
+        );
+    }
+
+    /// A multipart body that sends its headers and then `byte` once per `every`, forever.
+    fn trickle(every: Duration) -> Request<Body> {
+        let head = Bytes::from(
+            "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\n",
+        );
+        let tail = stream::unfold(true, move |first| async move {
+            if !first {
+                tokio::time::sleep(every).await;
+            }
+            Some((Ok::<_, std::io::Error>(Bytes::from_static(b"a")), false))
+        });
+        let body = stream::once(async move { Ok(head) }).chain(tail);
+        Request::builder()
+            .header(CONTENT_TYPE, "multipart/form-data; boundary=b")
+            .body(Body::from_stream(body))
+            .expect("request")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_body_that_falls_behind_the_pace_is_refused() {
+        let started = Instant::now();
+        let request = trickle(Duration::from_secs(1));
+        let result = upload(
+            Multipart::from_request(request, &()).await,
+            25,
+            Pace::start(),
+        )
+        .await;
+        match result {
+            Err(HttpError::Status { status, body }) => {
+                assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+                assert_eq!(body.code.as_deref(), Some("UPLOAD_TOO_SLOW"));
+            }
+            other => panic!("expected a timeout, got {:?}", other.map(|(name, _)| name)),
+        }
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(UPLOAD_GRACE_SECS)
+                && took < Duration::from_secs(UPLOAD_GRACE_SECS + 2),
+            "one byte a second earns almost nothing past the grace period: {took:?}"
+        );
     }
 
     async fn call(
@@ -581,6 +760,40 @@ mod tests {
             .as_str()
             .expect("an id")
             .to_owned()
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires Postgres: run make test-db"]
+    async fn a_large_file_downloads_whole_in_pieces(pool: DbPool) {
+        let app = live_app(pool).await;
+        let alice = register(&app, "alice").await;
+        let research = project(&app, &alice, "Research").await;
+        let length = 2 * DOWNLOAD_CHUNK_BYTES as usize + 1_234;
+        let text: Vec<u8> = (0..length).map(|index| b'a' + (index % 26) as u8).collect();
+        let uploaded = upload_to(
+            &app,
+            &alice,
+            &format!("/api/projects/{research}/files"),
+            "big.txt",
+            &text,
+        )
+        .await;
+        assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.body);
+        let file = uploaded.body["data"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_owned();
+        let uri = format!("/api/files/{file}/content");
+
+        let (status, headers, body) =
+            read(app.clone(), request(Method::GET, &uri, Some(&alice), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[CONTENT_LENGTH], length.to_string().as_str());
+        assert_eq!(body.as_bytes(), text.as_slice(), "every piece, in order");
+
+        let bob = other_user(&app, &alice, "bob").await;
+        let (status, _, _) = read(app.clone(), request(Method::GET, &uri, Some(&bob), None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "another user's file");
     }
 
     #[sqlx::test(migrations = false)]

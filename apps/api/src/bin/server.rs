@@ -1,11 +1,13 @@
 //! Long-running HTTP server (the default entrypoint).
 
-use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use copilot_api::helpers::bootstrap::{ApiContext, drain};
+use copilot_api::helpers::serve::serve as run;
 use copilot_core::BoxError;
+use copilot_core::shared::constants::HEADER_READ_TIMEOUT_SECS;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -50,11 +52,6 @@ async fn serve(context: ApiContext) -> Result<(), BoxError> {
         "api.server.listening"
     );
 
-    // The peer address feeds lib-rustauth's per-IP limits and `AUTH_TRUSTED_PROXIES`.
-    let app = context
-        .app
-        .clone()
-        .into_make_service_with_connect_info::<SocketAddr>();
     // On a signal the server stops accepting connections and the runs drain: live runs get a
     // moment to finish (their streams with them), then the root token cancels the rest and ends
     // every open stream, so the graceful shutdown does not wait on them.
@@ -67,12 +64,17 @@ async fn serve(context: ApiContext) -> Result<(), BoxError> {
             drain(&runs).await;
         }
     });
-    let served = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown(signalled))
-        .await;
+    // The peer address feeds lib-rustauth's per-IP limits and `AUTH_TRUSTED_PROXIES`.
+    let header_timeout = Duration::from_secs(HEADER_READ_TIMEOUT_SECS);
+    run(
+        listener,
+        context.app.clone(),
+        header_timeout,
+        shutdown(signalled),
+    )
+    .await;
     context.close().await;
     draining.abort();
-    served?;
     tracing::info!("api.server.stopped");
     Ok(())
 }

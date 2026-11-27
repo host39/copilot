@@ -26,7 +26,7 @@ use crate::config::{AppConfig, AppState};
 use crate::helpers::auth::Identity;
 use crate::helpers::runs::RunRegistry;
 use crate::helpers::scheduler::{Scheduler, settle};
-use crate::helpers::uploads::UploadSlots;
+use crate::helpers::slots::Slots;
 use crate::helpers::worker::BlockingPool;
 use crate::{App, AppDependencies, assemble};
 
@@ -236,7 +236,8 @@ pub fn wire(
         schedules: Arc::new(schedules),
         engine: Arc::new(engine),
         runs: Arc::new(runs),
-        uploads: Arc::new(UploadSlots::default()),
+        uploads: Arc::new(Slots::uploads()),
+        downloads: Arc::new(Slots::downloads()),
         tasks: TaskTracker::new(),
     }
 }

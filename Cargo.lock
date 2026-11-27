@@ -379,6 +379,8 @@ dependencies = [
  "copilot-security",
  "futures-util",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "rmcp",
  "rustauth",
  "serde",
