@@ -795,6 +795,7 @@ One row per user, written on the first `PATCH /api/settings`; a missing row read
 | `env_sealed` | `bytea` | null; a stdio server's sealed JSON map of environment variables, its whole environment |
 | `cwd` | `text` | null; a stdio server's working directory, relative to `MCP_STDIO_DIR` |
 | `args` | `text[]` | null; a stdio server's arguments, each passed as it is. A `CHECK` (`tool_servers_transport_check_columns`) keeps an `http` server to `url` and a `stdio` server to `command`, `args`, `cwd` (and `env_sealed`) with `auth_mode` `none` |
+| `oauth_client_issuer` | `text` | null; the authorization server the pre-registered client belongs to, set by its first sign-in and cleared when the client is saved again (P7 review, appended; needs `oauth_client_id`) |
 
 #### `oauth_flows`
 
@@ -805,8 +806,10 @@ Sign-ins in progress (P7.2); the readonly role reads none of it.
 | `created_at`, `expires_at` | `timestamptz` | not null; a flow lives `SIGN_IN_FLOW_SECS`; expired rows go when the next sign-in starts |
 | `id` | `uuid` | primary key; the row `sealed` is bound to |
 | `user_id`, `tool_server_id` | `uuid` | not null; `FOREIGN KEY (tool_server_id, user_id) REFERENCES tool_servers (id, user_id) ON DELETE CASCADE`; `UNIQUE (tool_server_id)` (a new start replaces the flow) |
-| `state_hash` | `bytea` | not null, unique; SHA-256 of the `state` (32 bytes) |
-| `sealed` | `bytea` | not null; the PKCE verifier, recorded issuer, and token request, sealed |
+| `state_hash` | `bytea` | not null, unique; SHA-256 of the `state` (32 bytes); random for a held flow, so no `state` reaches it |
+| `sealed` | `bytea` | not null; the PKCE verifier, recorded issuer, and token request, sealed; for a held flow, the exchanged tokens and what a refresh needs |
+| `attempts` | `integer` | not null, default 0; confirmation tries of a held flow (P7 review, appended) |
+| `confirm_hash` | `bytea` | null; SHA-256 of a held flow's confirmation code (32 bytes): set when the callback came back and the flow waits for its owner |
 
 #### `projects`
 
@@ -977,7 +980,7 @@ Deletes cascade through the database in one transaction: deleting an `auth.users
 
 ### Readonly Role
 
-`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, `tools_cached`, `oauth_client_id`, `oauth_client_secret_sealed`, `oauth_tokens_sealed`, `command`, `args`, and `env_sealed`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, `oauth_flows`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
+`SCHEMA_TABLES` registers only `providers` (omitting `api_key_sealed` and `base_url`), `models`, `tool_servers` (omitting `headers_sealed`, `url`, `tools_cached`, `oauth_client_id`, `oauth_client_secret_sealed`, `oauth_client_issuer`, `oauth_tokens_sealed`, `command`, `args`, and `env_sealed`), `schedules` (omitting `name`, `prompt`, `instructions`, and `last_error`), and `files` (omitting `name` and `sha256`). `user_settings`, `projects`, `chats`, `messages`, `turn_contexts`, `file_contents`, `oauth_flows`, and the join tables are not registered, so the readonly role cannot read private conversations or instructions, anything else a user wrote or uploaded, or an address that may carry a credential in its path. Each `migrate` run first revokes the role's table and column grants in `public` and everything in rustauth's `auth` schema (no `USAGE`, no table grants), then grants `SELECT` back on the registered columns only. A table added later stays unreadable until it is registered: the default privileges for new tables in `public` are revoked, not granted. `tests/schema` checks every column of every table as the role.
 
 ### Portability
 
@@ -998,7 +1001,7 @@ Passwords (Argon2id), session tokens (stored as SHA-256), sliding and absolute s
 - Sealed format: version byte (`1`) || key id (1 byte) || 12-byte nonce || AES-256-GCM ciphertext with its 16-byte tag. AAD = `<table>.<column>:<row id>:<user_id>`, so a value copied into another row does not decrypt. The key id is the first byte of `SHA-256("copilot.secret-key.id" || key)`, so a later keyring finds the sealing key without a migration, and a changed key reads as "Key must be re-entered" before any decryption. Nonces are random (`getrandom`), one per seal. Every value that does not open (wrong version, key id, AAD, or tag, or truncated) gives `SECRET_UNREADABLE` and logs `security.seal.open.refused` with the reason, table, and column.
 - `SECRET_KEY` is required in every environment and must decode (standard base64, surrounding whitespace ignored) to exactly 32 bytes, or startup fails with `api.config.env.invalid SECRET_KEY` (`copilot_security::SecretKey::parse`). The decoded bytes and the key schedule are zeroized on drop.
 - If unsealing fails (key changed), the provider or tool server shows "Key must be re-entered" instead of a 500.
-- Responses never include secrets, only whether one is set. OAuth access and refresh tokens, a pre-registered client's secret, and a sign-in flow's PKCE verifier are sealed like keys (`oauth_tokens_sealed`, `oauth_client_secret_sealed`, `oauth_flows.sealed`, each bound to its row); a flow's `state` is stored only as its SHA-256.
+- Responses never include secrets, only whether one is set. OAuth access and refresh tokens, a pre-registered client's secret, and a sign-in flow's PKCE verifier (or, once it came back, its held tokens) are sealed like keys (`oauth_tokens_sealed`, `oauth_client_secret_sealed`, `oauth_flows.sealed`, each bound to its row); a flow's `state` and confirmation code are stored only as their SHA-256.
 - When a `PATCH` changes the origin (scheme, host, or port) of a provider base URL or a tool server URL, the service clears the sealed key or headers unless the same request supplies new ones; the UI says the key must be re-entered.
 
 ### Outbound Requests
@@ -1126,7 +1129,8 @@ Tuning values live in `copilot-core` `shared/constants.rs`, following the `DB_PO
 | `STDIO_STDERR_LINE_MAX_BYTES`, `STDIO_STDERR_MAX_LINES` | 1,024, 200 (per process; the rest of its stderr is read and counted) |
 | `TOOL_CACHE_DEFAULT_TTL_SECS` | 3600 |
 | `TOOL_CACHE_MAX_TTL_SECS` | 86400 |
-| `SIGN_IN_FLOW_SECS`, `TOKEN_EXPIRY_SKEW_SECS` | 600 (a sign-in in progress), 60 (an access token this close to expiry is refreshed first) |
+| `SIGN_IN_FLOW_SECS`, `TOKEN_EXPIRY_SKEW_SECS` | 600 (a sign-in in progress, and again a sign-in that came back and waits for its code), 60 (an access token this close to expiry is refreshed first) |
+| `SIGN_IN_CONFIRM_ATTEMPTS` | 5 (confirmation codes a held sign-in takes before it is dropped; P7 review) |
 | `OAUTH_TIMEOUT_SECS`, `OAUTH_RESPONSE_MAX_BYTES`, `OAUTH_CLIENT_MAX_CHARS` | 15, 65536, 512 |
 | `MAX_TOOL_ROUNDS` | 8 |
 | `ANSWER_SLACK`, `ANSWER_MAX_BYTES`, `ANSWER_MAX_PARTS` | 4, 8 MiB, 256 |
