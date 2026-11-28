@@ -41,3 +41,6 @@ Thumbs.db
 
 # Python (hook scripts)
 __pycache__/
+
+# TypeScript build caches (`tsc -b`)
+*.tsbuildinfo
