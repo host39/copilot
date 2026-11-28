@@ -9,7 +9,8 @@ use crate::shared::ids::{ModelId, ProviderId};
 pub(crate) struct ReplayContext {
     pub(crate) provider_id: ProviderId,
     pub(crate) model_id: ModelId,
-    /// The `gemini` preset also needs the same model (thought signatures are per model).
+    /// The `gemini` preset (thought signatures are per model) and the Responses API (encrypted
+    /// reasoning items reach reasoning models only) also need the same model.
     pub(crate) same_model: bool,
     pub(crate) hash: ContextHash,
     /// The request offers tools; without them, stored tool-use blocks cannot be sent back.

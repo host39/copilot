@@ -111,7 +111,10 @@ async fn thinks_with_a_summary_and_encrypted_reasoning() {
     assert!(summary.starts_with("The user wrote"), "{summary}");
     let reasoning = &of(&events, "response.output_item.done")[0]["item"];
     assert_eq!(reasoning["type"], "reasoning");
-    assert_eq!(reasoning["encrypted_content"], encrypt(&summary));
+    assert_eq!(
+        reasoning["encrypted_content"],
+        encrypt("fake-chat", &summary)
+    );
     assert!(
         of(&events, "response.output_item.added")[0]["item"]
             .get("encrypted_content")
@@ -174,7 +177,7 @@ async fn calls_a_tool_and_reads_its_output_in_the_next_request() {
     let mut changed = body.clone();
     changed["input"][1]["encrypted_content"] = json!("tampered");
     assert_eq!(responses(changed).await.status, StatusCode::BAD_REQUEST);
-    let mut missing = body;
+    let mut missing = body.clone();
     missing["input"][1]
         .as_object_mut()
         .expect("an item")
@@ -186,6 +189,29 @@ async fn calls_a_tool_and_reads_its_output_in_the_next_request() {
             .as_str()
             .expect("a message")
             .contains("Items are not persisted when `store` is set to false")
+    );
+
+    // The reasoning went to the model that wrote it; another model refuses it, and a model
+    // without reasoning says it takes none.
+    let mut audio = body.clone();
+    audio["model"] = json!("fake-audio");
+    let answer = responses(audio).await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+    assert!(
+        answer.json()["error"]["message"]
+            .as_str()
+            .expect("a message")
+            .starts_with("Reasoning input items can only be provided to a reasoning")
+    );
+    let mut reasoner = body;
+    reasoner["model"] = json!("fake-reasoner");
+    let answer = responses(reasoner).await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+    assert!(
+        answer.json()["error"]["message"]
+            .as_str()
+            .expect("a message")
+            .contains("could not be verified")
     );
 }
 

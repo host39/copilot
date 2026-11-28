@@ -626,6 +626,72 @@ fn replays_only_with_the_same_provider_and_context_hash() {
 }
 
 #[test]
+fn responses_state_replays_only_to_the_model_that_wrote_it() {
+    let mut setup = Setup::new();
+    assert_eq!(setup.provider.api(), Some(OpenAiApi::Responses));
+    setup.server_tool("search");
+    setup.user("Hi");
+    let state = json!({
+        "api": "responses",
+        "items": [
+            {"type": "reasoning", "encrypted_content": "gAAA", "summary": []},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello"}]},
+        ],
+    });
+    let earlier = setup.answer(
+        vec![Part::Text {
+            text: "Hello".to_owned(),
+        }],
+        MessageStatus::Complete,
+    );
+    setup.user("Find it");
+    let found = call("gh__search", "search", "{}");
+    let current = setup.answer(vec![Part::ToolCall(found.clone())], MessageStatus::Complete);
+    setup.results(vec![ok(&found, "found")]);
+    let context = setup.build();
+    let stored = |message: &Message| {
+        Message::restore(MessageParts {
+            context_hash: Some(context.hash),
+            provider_state: Some(state.clone()),
+            ..message.to_parts()
+        })
+    };
+    setup.history[1] = stored(&earlier);
+    setup.history[3] = stored(&current);
+    let same = setup.request_with(&context);
+    assert_eq!(same.messages[1].replay, Some(state.clone()));
+    assert_eq!(same.messages[3].replay, Some(state.clone()));
+
+    // The chat switches to another model on the same connection with the same flags: the hash
+    // stays the same, and neither the earlier answer nor the current turn replays.
+    setup.model = Model::restore(ModelParts {
+        id: ModelId::generate(),
+        remote_id: "gpt-4.1".to_owned(),
+        ..parts(&setup.model)
+    });
+    setup.chat = setup.chat.clone().with_model(Some(setup.model.id()));
+    assert_eq!(
+        setup.build().hash,
+        context.hash,
+        "the hash leaves out the model"
+    );
+    let switched = setup.request_with(&context);
+    assert_eq!(switched.model, "gpt-4.1");
+    assert_eq!(switched.messages[1].replay, None, "an earlier answer");
+    assert_eq!(switched.messages[3].replay, None, "the current turn");
+    assert_eq!(switched.messages[1].parts, [text("Hello")]);
+
+    // On Chat Completions the same connection still replays across models.
+    setup.provider = setup
+        .provider
+        .clone()
+        .with_api(OpenAiApi::ChatCompletions)
+        .unwrap();
+    let chat = setup.request_with(&context);
+    assert_eq!(chat.messages[1].replay, Some(state));
+}
+
+#[test]
 fn the_current_turn_replays_with_the_providers_call_ids() {
     let mut setup = Setup::new();
     setup.server_tool("search");

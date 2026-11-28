@@ -1,0 +1,17 @@
+# P7 Review: Fixes After the Phase 7 Reviews
+
+Branch: `claude/copilot-project-planning-6y3fep` (shared with the other checkout; merged before each push). Base: P7.1 to P7.3 as pushed at `eef9745`. Roadmap step: `p7-review`.
+
+## Status
+
+In progress. Eight findings (two high, four medium, two low) from the combined and security reviews of P7.1 (the Responses API), P7.2 (MCP OAuth sign-in), and P7.3 (stdio servers). Each is confirmed against the code or by running it before it is fixed.
+
+## Sub-Steps
+
+- [x] P7R.1 Responses state replays only to the model that wrote it (high). **Confirmed:** `ReplayContext.same_model` was set only for the `gemini` preset, and the context hash covers the capability flags and the reasoning level but not the model, so on a connection whose models report no metadata (OpenAI's `/models`) every model gets the same flags and the same hash. A chat that moved from a reasoning model to another model on the same connection replayed the earlier answers' output items, encrypted reasoning included, and the current turn replayed whatever the hash (a decision after a model switch). OpenAI refuses reasoning items for a model without reasoning, and since the hash never changes the chat would fail on every later turn. **Fix:** `same_model` is now on for the `gemini` preset and for every connection on the Responses API (`context::same_model`), so Responses state goes back only to the model that wrote it; after a switch the answers are rebuilt from their parts (text and calls with Copilot's call ids), exactly as after an API switch. Chat Completions connections still replay across models (their state is per connection, and Claude drops what a model cannot read). **Fake model server:** a reasoning item's `encrypted_content` is now bound to the model that gave it (`encrypt(model, summary)`); a reasoning item another model gave answers `400`, with OpenAI's "Reasoning input items can only be provided to a reasoning or computer use model" when the request's model has no reasoning. **Smoke:** a new Responses step pauses a `think tool echo` turn on `fake-chat`, switches the chat to `fake-audio`, and approves; it failed with that `400` before the fix (checked by reverting it) and completes with "Tool said: after a switch" now. Tests: `context::tests::responses_state_replays_only_to_the_model_that_wrote_it` (same model replays the earlier answer and the current turn; another model with the same hash replays neither and sends the text; Chat Completions still replays), the fake's Responses router test (another model's reasoning refused, both messages), and `make smoke`.
+
+## Decisions
+
+- **Same model for all of Responses, not only reasoning items.** Recording the model in the state and dropping only the reasoning items would keep message and call items across a switch, but those carry item ids that point at the dropped reasoning (the API refuses such ids), so they would lose their ids anyway; rebuilding from parts gives the same request with one rule that core already applies to Gemini.
+
+## Verification

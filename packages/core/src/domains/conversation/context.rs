@@ -20,7 +20,7 @@ use crate::domains::conversation::replay::ReplayContext;
 use crate::domains::file::{FileKind, StoredFile, largest};
 use crate::domains::project::Project;
 use crate::domains::provider::{
-    Capabilities, Dialect, Model, Preset, Provider, reasoning_off_with_tools,
+    Capabilities, Dialect, Model, OpenAiApi, Preset, Provider, reasoning_off_with_tools,
 };
 use crate::domains::schedule::{Schedule, ScheduleTool};
 use crate::domains::settings::UserSettings;
@@ -154,7 +154,7 @@ pub fn request(inputs: &ContextInputs<'_>, context: &TurnContext) -> DomainResul
         replay: Some(ReplayContext {
             provider_id: inputs.provider.id(),
             model_id: inputs.model.id(),
-            same_model: inputs.provider.preset() == Preset::Gemini,
+            same_model: same_model(inputs.provider),
             hash: context.hash,
             sends_tools,
         }),
@@ -321,6 +321,14 @@ fn reasoning(
     }
     let levels = &inputs.capabilities.reasoning_levels;
     level.filter(|level| levels.is_empty() || levels.contains(level))
+}
+
+/// Whether provider state replays only to the model that wrote it: Gemini's thought signatures
+/// are per model, and a Responses answer's items carry encrypted reasoning that only reasoning
+/// models take (OpenAI refuses reasoning items sent to any other model). The context hash leaves
+/// out the model, so this is what keeps a model switch on one connection from replaying them.
+fn same_model(provider: &Provider) -> bool {
+    provider.preset() == Preset::Gemini || provider.api() == Some(OpenAiApi::Responses)
 }
 
 fn dialect(inputs: &ContextInputs<'_>) -> Dialect {

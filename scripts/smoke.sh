@@ -13,7 +13,8 @@
 #      call, and check the result and "Tool said: ..."; then the same over stdio, with
 #      `fake-llm --stdio` as a stdio tool server that the API starts for the Test and the run;
 #   4. an `openai` preset connection on its default API, Responses: the text flow, a refusal,
-#      and an approved tool round whose encrypted reasoning the fake checks on replay;
+#      an approved tool round whose encrypted reasoning the fake checks on replay, and a decision
+#      after the chat moved to another model (the reasoning must not follow it);
 #   5. the same text flow over an Anthropic connection to the fake server.
 #
 # Both servers stop and the database is dropped when the script exits (SMOKE_KEEP=1 keeps the
@@ -223,10 +224,11 @@ token="$(field .data.token)"
 pass "registered the administrator with the setup token"
 
 # connect <kind> <preset> <name> <base URL> [api]: adds a connection (on `api` when given),
-# refreshes it, enables fake-chat, and sets $model to fake-chat's id and $connected_api to the
-# API it uses (`messages` for Anthropic).
+# refreshes it, enables fake-chat, and sets $model to fake-chat's id, $connected_api to the API it
+# uses (`messages` for Anthropic), and $connected_provider to the connection's id.
 model=""
 connected_api=""
+connected_provider=""
 connect() {
   local kind="$1" preset="$2" name="$3" base="$4" api="${5:-}" provider choice=""
   [[ -n "$api" ]] && choice=",\"api\":\"$api\""
@@ -237,6 +239,7 @@ connect() {
   api="$(jq -r '.data.api // "messages"' <<<"$body")"
   connected_api="$api"
   provider="$(field .data.id)"
+  connected_provider="$provider"
   request POST "/providers/$provider/refresh"
   expect 200 "refresh the $kind models"
   [[ "$(field .data.added)" == 3 ]] || fail "$kind refresh should add three models: $body"
@@ -412,6 +415,32 @@ check "responses: the approved call runs and the replayed round reads its result
 grep -q 'fake-llm.responses.reasoning-replayed' "$RUN_DIR/fake-llm.log" ||
   fail "the round after the approval should replay the encrypted reasoning"
 pass "responses: the encrypted reasoning went back verbatim (Tool said: over responses)"
+
+# A decision after the chat moved to another model on the same connection: the paused answer's
+# items (encrypted reasoning from fake-chat) must not reach fake-audio, which the fake refuses as
+# OpenAI does ("Reasoning input items can only be provided to a reasoning ... model"), so the
+# answer goes back rebuilt from its parts.
+request GET "/providers/$connected_provider/models"
+expect 200 "list the responses models"
+audio_model="$(field '.items[] | select(.remoteId == "fake-audio") | .id')"
+request PATCH "/models/$audio_model" '{"enabled":true}'
+expect 200 "enable fake-audio (responses)"
+request POST /chats "{\"modelId\":\"$responses_model\",\"toolOverrides\":[{\"serverId\":\"$server\",\"enabled\":true}]}"
+expect 201 "create a responses chat that switches models"
+switch_chat="$(field .data.id)"
+stream "/chats/$switch_chat/messages" '{"text":"think tool echo {\"text\":\"after a switch\"}"}'
+check "responses: the call before the switch asks for approval" '
+  any(.[]; .type == "message.finished" and .status == "awaiting_approval")'
+message="$(jq -er '.[] | select(.type == "tool.requested") | .messageId' <<<"$events")"
+call="$(jq -er '.[] | select(.type == "tool.requested") | .callId' <<<"$events")"
+request PATCH "/chats/$switch_chat" "{\"modelId\":\"$audio_model\"}"
+expect 200 "switch the paused chat to fake-audio"
+stream "/chats/$switch_chat/messages/$message/decisions" "{\"decisions\":[{\"callId\":\"$call\",\"decision\":\"approve\"}]}"
+check "responses: the decision after a model switch completes on the new model" '
+  any(.[]; .type == "tool.finished" and .status == "ok")
+  and any(.[]; .type == "message.finished" and .status == "complete")'
+[[ "$(text)" == "Tool said: after a switch" ]] || fail "responses after a model switch: streamed $(text)"
+pass "responses: a model switch sends the paused answer rebuilt, without the other model's reasoning"
 
 # --- 5. Anthropic -----------------------------------------------------------------------------
 

@@ -5,8 +5,10 @@
 //! - **Requests** need a listed `model` (`404 model_not_found` otherwise) and `input` (a string
 //!   or a list of items). The fake stores nothing, as with `store: false`, so it refuses what the
 //!   real API refuses then: `previous_response_id` (`404`), a reasoning item without
-//!   `encrypted_content` (`404`, "Items are not persisted when `store` is set to false"), and a
-//!   reasoning item whose `encrypted_content` this server did not give for its summary (`400`).
+//!   `encrypted_content` (`404`, "Items are not persisted when `store` is set to false"), a
+//!   reasoning item whose `encrypted_content` this server did not give for its summary (`400`),
+//!   and a reasoning item another model gave (`400`; for a model without reasoning, OpenAI's
+//!   "Reasoning input items can only be provided to a reasoning or computer use model").
 //!   Every `function_call` needs a `function_call_output` in the same input, and every output a
 //!   call before it (`400` otherwise, with OpenAI's messages).
 //! - **Streams** are named events whose data repeats the name in `type`: `response.created` and
@@ -32,7 +34,7 @@ use serde_json::{Value, json};
 use crate::http::{now, pieces, stream, with_id};
 use crate::openai::{error, failure, refusal};
 use crate::reply::{Block, Ending, Plan, Reply, Turn, chunks, newest, plan, signature};
-use crate::{AppState, model};
+use crate::{AppState, MODELS, model};
 
 /// The header that carries a request id.
 const REQUEST_ID: &str = "x-request-id";
@@ -62,7 +64,7 @@ fn answer(state: &AppState, headers: &HeaderMap, body: &[u8], sequence: u64) -> 
         }
         Plan::Answer { reply, slow } => {
             tracing::info!(model = name, streamed, ending = ?reply.ending, "fake-llm.responses.answered");
-            let items = Items::new(&reply, sequence);
+            let items = Items::new(&reply, sequence, &name);
             if streamed {
                 stream(
                     events(&reply, &items, sequence, &name),
@@ -142,9 +144,13 @@ fn turn(request: &Value) -> Result<Turn, (StatusCode, String)> {
         }
         _ => return Err(bad("Missing required parameter: 'input'.".to_owned())),
     };
+    let name = request
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let mut replayed = 0_usize;
     for item in &items {
-        if reasoning(item)? {
+        if reasoning(item, name)? {
             replayed += 1;
         }
     }
@@ -204,10 +210,12 @@ fn turn(request: &Value) -> Result<Turn, (StatusCode, String)> {
     Ok(turn)
 }
 
-/// A replayed reasoning item must carry the `encrypted_content` this server gave it: without
-/// one the real API looks the item up, and a stateless response was never stored. `true` for a
-/// reasoning item that passed.
-fn reasoning(item: &Value) -> Result<bool, (StatusCode, String)> {
+/// A replayed reasoning item must carry the `encrypted_content` this server gave it, for the
+/// model of this request: without one the real API looks the item up, and a stateless response
+/// was never stored; a model without reasoning takes no reasoning items at all (only `think`
+/// makes the fake's other models reason, so their own items still pass). `true` for a reasoning
+/// item that passed.
+fn reasoning(item: &Value, name: &str) -> Result<bool, (StatusCode, String)> {
     if kind(item) != "reasoning" {
         return Ok(false);
     }
@@ -224,7 +232,20 @@ fn reasoning(item: &Value) -> Result<bool, (StatusCode, String)> {
             ),
         ));
     };
-    if encrypted != encrypt(&summary(item)) {
+    let summary = summary(item);
+    if encrypted != encrypt(name, &summary) {
+        if model(name).is_some_and(|model| !model.reasoning)
+            && MODELS
+                .iter()
+                .any(|other| encrypted == encrypt(other.id, &summary))
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Reasoning input items can only be provided to a reasoning or computer use model. \
+                 Remove reasoning items from your input and try again."
+                    .to_owned(),
+            ));
+        }
         return Err((
             StatusCode::BAD_REQUEST,
             format!("The encrypted content for item {id} could not be verified."),
@@ -311,10 +332,14 @@ fn summary(item: &Value) -> String {
         .join("\n\n")
 }
 
-/// The fake's `encrypted_content` for a reasoning summary: a hash of it, so a replayed item
-/// that was changed or lost its content can be told apart from one sent back verbatim.
-pub fn encrypt(summary: &str) -> String {
-    format!("fake-encrypted-{}", signature(summary))
+/// The fake's `encrypted_content` for a reasoning summary of `model`: a hash of both, so a
+/// replayed item that was changed, lost its content, or went to another model can be told apart
+/// from one sent back verbatim to the model that wrote it.
+pub fn encrypt(model: &str, summary: &str) -> String {
+    format!(
+        "fake-encrypted-{}",
+        signature(&format!("{model}\n{summary}"))
+    )
 }
 
 /// The finished output items of a reply, in order.
@@ -323,7 +348,7 @@ struct Items {
 }
 
 impl Items {
-    fn new(reply: &Reply, sequence: u64) -> Self {
+    fn new(reply: &Reply, sequence: u64, model: &str) -> Self {
         let mut items = Vec::new();
         for (index, block) in reply.blocks.iter().enumerate() {
             items.push(match block {
@@ -332,7 +357,7 @@ impl Items {
                     "type": "reasoning",
                     "status": "completed",
                     "summary": [{ "type": "summary_text", "text": text }],
-                    "encrypted_content": encrypt(text),
+                    "encrypted_content": encrypt(model, text),
                 }),
                 Block::Text(text)
                 | Block::Audio {
