@@ -4,7 +4,7 @@ Branch: `claude/copilot-project-planning-6y3fep` (shared with the other checkout
 
 ## Status
 
-In progress. Eight findings (two high, four medium, two low) from the combined and security reviews of P7.1 (the Responses API), P7.2 (MCP OAuth sign-in), and P7.3 (stdio servers). Each is confirmed against the code or by running it before it is fixed.
+Done: P7R.1 to P7R.4. Eight findings (two high, four medium, two low) from the combined and security reviews of P7.1 (the Responses API), P7.2 (MCP OAuth sign-in), and P7.3 (stdio servers). Each was confirmed against the code or by running it before it was fixed, and all eight were fixed; where a reviewer's proposed fix would not have closed the hole (a client document per issuer, an owner-only completion endpoint alone, a cookie with an unbound native path, `init: true`), the reason is recorded and another fix was made. Verification and CI are in [Verification](#verification).
 
 ## Sub-Steps
 
@@ -24,3 +24,10 @@ In progress. Eight findings (two high, four medium, two low) from the combined a
 - **Hardening only with stdio on.** A non-dumpable server also has no core dumps and cannot be traced by its own user, which an operator may want while debugging; without stdio programs no process of the server's user runs inside its container.
 
 ## Verification
+
+- `make check` (format, lint, type-check, tests, boundaries) and `make test-db` pass locally on Postgres 18; the new and changed tests are named in each sub-step.
+- `make smoke` passes, with the new Responses step (a decision after a model switch); with the replay fix reverted it failed with the fake's `400`.
+- `make e2e` passes (the phone-size chat and tool approval run on the Responses API).
+- The stdio tests also pass as a user other than root (`setpriv --reuid=65534`), where the hardening check runs; as root it only hardens.
+- Bruno on a throwaway database (`DB_NAME=copilot_b_bruno_p7r`, `PORT=3937`, dropped afterwards): 173 requests, 433 assertions, including the new `09-34` to `09-38`.
+- Footprint: `cargo tree -i aws-lc-rs` finds nothing; `nix` was already in the server's graph (through `process-wrap`), so no crate was added; the web first load is 152,771 bytes gzip (budget 170,000).

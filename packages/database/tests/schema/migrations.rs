@@ -12,6 +12,8 @@ const APPENDED: &[(&str, &str)] = &[
     // add_tool_server_sign_in
     ("tool_servers", "oauth_expires_at"),
     ("tool_servers", "oauth_refreshable"),
+    // confirm_tool_server_sign_in
+    ("oauth_flows", "attempts"),
 ];
 
 #[sqlx::test(migrations = false)]
