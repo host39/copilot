@@ -52,6 +52,7 @@ import type { MessageStatus } from "@contracts/generated/MessageStatus";
 import type { ModelResponse } from "@contracts/generated/ModelResponse";
 import type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
 import type { OAuthClientInput } from "@contracts/generated/OAuthClientInput";
+import type { OAuthConfirmRequest } from "@contracts/generated/OAuthConfirmRequest";
 import type { OAuthStartResponse } from "@contracts/generated/OAuthStartResponse";
 import type { OAuthStatus } from "@contracts/generated/OAuthStatus";
 import type { OnAsk } from "@contracts/generated/OnAsk";
@@ -146,6 +147,7 @@ export type { MessageStatus } from "@contracts/generated/MessageStatus";
 export type { ModelResponse } from "@contracts/generated/ModelResponse";
 export type { MoveFileRequest } from "@contracts/generated/MoveFileRequest";
 export type { OAuthClientInput } from "@contracts/generated/OAuthClientInput";
+export type { OAuthConfirmRequest } from "@contracts/generated/OAuthConfirmRequest";
 export type { OAuthStartResponse } from "@contracts/generated/OAuthStartResponse";
 export type { OAuthStatus } from "@contracts/generated/OAuthStatus";
 export type { OnAsk } from "@contracts/generated/OnAsk";
@@ -548,7 +550,12 @@ export const oauthStatusSchema = z.object({
   clientId: z.string().nullable(),
   clientSecret: keyStateSchema,
   expiresAt: timestamp.nullable(),
+  redirectUri: z.string().nullable(),
 }) satisfies z.ZodType<OAuthStatus>;
+
+export const oauthConfirmRequestSchema = z.object({
+  code: z.string(),
+}) satisfies z.ZodType<OAuthConfirmRequest>;
 
 export const oauthClientInputSchema = z.object({
   clientId: z.string(),

@@ -26,8 +26,8 @@ use copilot_contracts::{
     CreatedBy, Credentials, Decision, DecisionScope, DecisionsRequest, DetailsResponse,
     ErrorResponse, FileResponse, FinishReason, HealthResponse, KeyState, ListResponse,
     MessagePartDto, MessageResponse, MessageStatus, ModelResponse, MoveFileRequest,
-    OAuthClientInput, OAuthStartResponse, OAuthStatus, OnAsk, PageResponse, PartKind, Preset,
-    ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderApi,
+    OAuthClientInput, OAuthConfirmRequest, OAuthStartResponse, OAuthStatus, OnAsk, PageResponse,
+    PartKind, Preset, ProjectDetailsResponse, ProjectListQuery, ProjectResponse, ProviderApi,
     ProviderDetailsResponse, ProviderKind, ProviderResponse, ProviderUsage, ReadyResponse,
     ReasoningLevel, RefreshResponse, Refusal, ResultContent, Role, RunStatus, ScheduleListQuery,
     SchedulePreviewRequest, SchedulePreviewResponse, ScheduleResponse, ScheduleRunResponse,
@@ -674,6 +674,7 @@ fn tool_servers(fixtures: &mut Fixtures) {
             client_id: None,
             client_secret: KeyState::Missing,
             expires_at: None,
+            redirect_uri: None,
         }),
         protocol_version: None,
         tools: None,
@@ -686,6 +687,9 @@ fn tool_servers(fixtures: &mut Fixtures) {
         client_id: Some("copilot-client".to_owned()),
         client_secret: KeyState::Set,
         expires_at: Some(at(9)),
+        redirect_uri: Some(
+            "https://copilot.example.com/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g".to_owned(),
+        ),
     };
     let oauth = ToolServerResponse {
         id: id(9),
@@ -786,8 +790,15 @@ fn tool_servers(fixtures: &mut Fixtures) {
                 client_id: None,
                 client_secret: KeyState::Unreadable,
                 expires_at: Some(at(8)),
+                redirect_uri: None,
             },
         ],
+    );
+    fixtures.types(
+        "OAuthConfirmRequest",
+        &[OAuthConfirmRequest {
+            code: "BCDF-GHJK".to_owned(),
+        }],
     );
     let client = OAuthClientInput {
         client_id: "copilot-client".to_owned(),

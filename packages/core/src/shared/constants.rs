@@ -44,6 +44,9 @@ pub const TOOL_CACHE_MAX_TTL_SECS: u64 = 86_400;
 /// How long a tool server sign-in may take: its `state` and PKCE verifier are kept this long
 /// (`docs/design/copilot.md`, Tool Server Sign-In).
 pub const SIGN_IN_FLOW_SECS: i64 = 600;
+/// Wrong confirmation codes a held sign-in takes before it is dropped (the code has about 34
+/// bits, and the held flow lives `SIGN_IN_FLOW_SECS`).
+pub const SIGN_IN_CONFIRM_ATTEMPTS: u32 = 5;
 /// An access token this close to its expiry counts as expired, so it is refreshed before a
 /// request rather than failing in the middle of a run.
 pub const TOKEN_EXPIRY_SKEW_SECS: i64 = 60;

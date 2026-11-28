@@ -11,7 +11,7 @@ mod stdio;
 mod values;
 
 pub use crate::domains::tool::auth::{
-    AuthMode, ClientConfig, Pending, Session, SignIn, SignInFlow, SignInState,
+    AuthMode, ClientConfig, Held, Pending, Session, SignIn, SignInFlow, SignInState, issuer_tag,
 };
 pub use crate::domains::tool::entities::{Location, ToolCache, ToolServer, ToolServerParts};
 pub use crate::domains::tool::headers::ToolHeaders;
@@ -21,9 +21,9 @@ pub use crate::domains::tool::selection::{
     UnavailableServer, offered,
 };
 pub use crate::domains::tool::service::{
-    CLIENT_ID_REQUIRED, CLIENT_NAME, Callback, ClientChange, ClientInput, CredentialChange,
-    NewToolServer, SIGN_IN_UNAVAILABLE, SignInConfig, SignInOutcome, SignInResult, SignInStart,
-    ToolServerDetails, ToolServerUpdate, ToolService, ToolTest,
+    CLIENT_ID_REQUIRED, CLIENT_ISSUER_CHANGED, CLIENT_NAME, Callback, ClientChange, ClientInput,
+    CredentialChange, NewToolServer, SIGN_IN_UNAVAILABLE, SignInConfig, SignInOutcome,
+    SignInResult, SignInStart, ToolServerDetails, ToolServerUpdate, ToolService, ToolTest,
 };
 pub use crate::domains::tool::stdio::{
     STDIO_DISABLED, StdioCommand, StdioEnv, StdioInput, StdioPolicy, StdioUpdate, Transport,

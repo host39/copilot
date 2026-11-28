@@ -180,6 +180,9 @@ pub struct OAuthStatus {
     pub client_secret: KeyState,
     /// When the access token expires, when the server said.
     pub expires_at: Option<DateTime<Utc>>,
+    /// The redirect URI to register for the pre-registered client, once its first sign-in found
+    /// the authorization server it belongs to (`<PUBLIC_URL>/api/oauth/callback/<issuer tag>`).
+    pub redirect_uri: Option<String>,
 }
 
 /// A pre-registered OAuth client (a client id the authorization server issued for Copilot).
@@ -200,6 +203,24 @@ impl fmt::Debug for OAuthClientInput {
             .debug_struct("OAuthClientInput")
             .field("client_id", &self.client_id)
             .field("client_secret", &redacted(self.client_secret.as_ref()))
+            .finish()
+    }
+}
+
+/// `POST /tool-servers/{id}/oauth/confirm`: the code the browser showed after the sign-in came
+/// back, which finishes it.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthConfirmRequest {
+    pub code: String,
+}
+
+impl fmt::Debug for OAuthConfirmRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OAuthConfirmRequest")
+            .field("code", &"***")
             .finish()
     }
 }

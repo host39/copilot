@@ -6,6 +6,7 @@ import {
   type CapabilitiesResponse,
   type CreateToolServerRequest,
   capabilitiesBodySchema,
+  type OAuthConfirmRequest,
   type OAuthStartResponse,
   oauthStartBodySchema,
   type ToolServerResponse,
@@ -80,6 +81,17 @@ export async function reviewToolServer(serverId: string): Promise<ToolServerResp
 export async function startSignIn(serverId: string): Promise<OAuthStartResponse> {
   return (await apiFetch(API.toolServerSignIn(serverId), oauthStartBodySchema, { method: "POST" }))
     .data;
+}
+
+/**
+ * `POST /tool-servers/{id}/oauth/confirm`: finishes a sign-in that came back, with the code the
+ * returning browser showed. Only the server's owner can; anyone else gets `404`.
+ */
+export async function confirmSignIn(serverId: string, code: string): Promise<ToolServerResponse> {
+  const body: OAuthConfirmRequest = { code };
+  return (
+    await apiFetch(API.toolServerConfirm(serverId), toolServerBodySchema, { method: "POST", body })
+  ).data;
 }
 
 /** `DELETE /tool-servers/{id}/oauth`: forgets the server's sign-in. */

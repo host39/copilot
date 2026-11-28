@@ -2,10 +2,12 @@
 //! (`ToolHeaders`), or an OAuth sign-in (`docs/design/copilot.md`, Tool Server Sign-In).
 //!
 //! An OAuth sign-in is stored sealed and bound to its row: the pre-registered client's secret in
-//! `oauth_client_secret_sealed`, and the tokens with everything a refresh needs in
-//! `oauth_tokens_sealed` ([`Session`]). A sign-in in progress lives in `oauth_flows`
-//! ([`SignInFlow`]): the PKCE verifier and the issuer to check sealed, the `state` only as its
-//! SHA-256, so a database read never yields a usable `state`.
+//! `oauth_client_secret_sealed` (bound to one authorization server, `oauth_client_issuer`), and
+//! the tokens with everything a refresh needs in `oauth_tokens_sealed` ([`Session`]). A sign-in in
+//! progress lives in `oauth_flows` ([`SignInFlow`]): the PKCE verifier and the issuer to check
+//! sealed, the `state` only as its SHA-256, so a database read never yields a usable `state`.
+//! After the callback, the flow holds the exchanged tokens ([`Held`]) until the owner confirms
+//! them with the code the returning browser was shown, stored only as its SHA-256.
 
 use std::fmt;
 use std::str::FromStr;
@@ -61,11 +63,15 @@ impl FromStr for AuthMode {
 }
 
 /// A pre-registered OAuth client the user entered for a server (`oauth_client_id`, and the
-/// secret of a confidential client sealed in `oauth_client_secret_sealed`).
+/// secret of a confidential client sealed in `oauth_client_secret_sealed`). A client belongs to
+/// one authorization server: `issuer` (`oauth_client_issuer`) is the one its first sign-in
+/// discovered, and a sign-in that discovers another one is refused, so the secret never goes to
+/// a token endpoint it was not entered for. Saving the client again forgets it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientConfig {
     pub id: String,
     pub secret_sealed: Option<Vec<u8>>,
+    pub issuer: Option<String>,
 }
 
 /// A stored sign-in: the sealed [`Session`] (`oauth_tokens_sealed`), when its access token
@@ -133,6 +139,19 @@ impl Session {
 
     /// The JSON that gets sealed.
     pub fn to_json(&self) -> Vec<u8> {
+        serde_json::to_vec(&Value::Object(self.object())).expect("a JSON object serializes")
+    }
+
+    /// An opened `oauth_tokens_sealed`.
+    pub fn parse(secret: &Secret) -> DomainResult<Self> {
+        let invalid = || internal("core.tools.sign-in.invalid");
+        object(secret)
+            .as_ref()
+            .and_then(Self::read)
+            .ok_or_else(invalid)
+    }
+
+    fn object(&self) -> Map<String, Value> {
         let mut object = client_json(&self.client);
         object.insert("v".to_owned(), json!(1));
         object.insert("issuer".to_owned(), json!(self.issuer));
@@ -144,29 +163,29 @@ impl Session {
         object.insert("scope".to_owned(), json!(self.scope));
         object.insert("access".to_owned(), json!(text(&self.access)));
         object.insert("refresh".to_owned(), json!(self.refresh.as_ref().map(text)));
-        serde_json::to_vec(&Value::Object(object)).expect("a JSON object serializes")
+        object
     }
 
-    /// An opened `oauth_tokens_sealed`.
-    pub fn parse(secret: &Secret) -> DomainResult<Self> {
-        let invalid = || internal("core.tools.sign-in.invalid");
-        let object = object(secret).ok_or_else(invalid)?;
-        Ok(Self {
-            issuer: string(&object, "issuer").ok_or_else(invalid)?,
-            token_endpoint: url(&object, "tokenEndpoint").ok_or_else(invalid)?,
-            client: client(&object).ok_or_else(invalid)?,
-            resource: string(&object, "resource").ok_or_else(invalid)?,
-            scope: string(&object, "scope"),
-            access: string(&object, "access")
-                .map(Secret::new)
-                .ok_or_else(invalid)?,
-            refresh: string(&object, "refresh").map(Secret::new),
+    fn read(object: &Map<String, Value>) -> Option<Self> {
+        Some(Self {
+            issuer: string(object, "issuer")?,
+            token_endpoint: url(object, "tokenEndpoint")?,
+            client: client(object)?,
+            resource: string(object, "resource")?,
+            scope: string(object, "scope"),
+            access: string(object, "access").map(Secret::new)?,
+            refresh: string(object, "refresh").map(Secret::new),
         })
     }
 }
 
 /// A sign-in in progress (`oauth_flows`): bound to one user's server, used at most once, and
 /// gone after `SIGN_IN_FLOW_SECS`. Its row id is also the row the sealed [`Pending`] is bound to.
+///
+/// Before the callback it waits for the `state` (`confirm_hash` is `None`, `sealed` is a
+/// [`Pending`]); after it, the callback replaced it with a held flow: a `state_hash` nobody knows,
+/// `sealed` the exchanged tokens ([`Held`]), and `confirm_hash` the SHA-256 of the code the
+/// returning browser was shown, which the owner must send back ([`confirmation_hash`]).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignInFlow {
     pub id: Uuid,
@@ -174,8 +193,12 @@ pub struct SignInFlow {
     pub server_id: ToolServerId,
     /// SHA-256 of the `state` parameter.
     pub state_hash: Vec<u8>,
-    /// The sealed [`Pending`].
+    /// The sealed [`Pending`], or [`Held`] once `confirm_hash` is set.
     pub sealed: Vec<u8>,
+    /// SHA-256 of the confirmation code of a held flow.
+    pub confirm_hash: Option<Vec<u8>>,
+    /// Wrong confirmation codes so far (`SIGN_IN_CONFIRM_ATTEMPTS` end the flow).
+    pub attempts: u32,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -257,6 +280,92 @@ impl Pending {
                 .ok_or_else(invalid)?,
         })
     }
+}
+
+/// What a held flow keeps sealed until its owner confirms it: the session the exchange gave
+/// (tokens and what a refresh needs), when its access token expires, and the server's URL when
+/// the sign-in started (a confirmation after the URL changed is refused). `Debug` hides the
+/// tokens.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Held {
+    pub session: Session,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub url: String,
+}
+
+impl Held {
+    pub fn to_json(&self) -> Vec<u8> {
+        let mut object = self.session.object();
+        object.insert(
+            "expiresAt".to_owned(),
+            json!(self.expires_at.map(|at| at.to_rfc3339())),
+        );
+        object.insert("url".to_owned(), json!(self.url));
+        serde_json::to_vec(&Value::Object(object)).expect("a JSON object serializes")
+    }
+
+    pub fn parse(secret: &Secret) -> DomainResult<Self> {
+        let invalid = || internal("core.tools.sign-in-held.invalid");
+        let object = object(secret).ok_or_else(invalid)?;
+        let expires_at = match object.get("expiresAt") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+                    .ok_or_else(invalid)?
+                    .with_timezone(&Utc),
+            ),
+        };
+        Ok(Self {
+            session: Session::read(&object).ok_or_else(invalid)?,
+            expires_at,
+            url: string(&object, "url").ok_or_else(invalid)?,
+        })
+    }
+}
+
+/// The letters of a confirmation code: no vowels (no words) and none that look alike.
+const CONFIRMATION_LETTERS: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+/// Letters in a confirmation code (two groups of four): about 34.6 bits.
+const CONFIRMATION_LENGTH: usize = 8;
+
+/// A new confirmation code, `ABCD-EFGH`: shown once, in the browser that came back from the
+/// authorization server, and typed or sent back by the flow's owner.
+pub fn confirmation() -> DomainResult<Secret> {
+    let mut bytes = [0_u8; CONFIRMATION_LENGTH];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| DomainError::internal("core.tools.sign-in.random-failed", error))?;
+    let letters = u8::try_from(CONFIRMATION_LETTERS.len()).expect("a short alphabet");
+    // 256 is not a multiple of 20; the slight bias costs a fraction of a bit.
+    let mut code = String::with_capacity(CONFIRMATION_LENGTH + 1);
+    for (index, byte) in bytes.iter().enumerate() {
+        if index == CONFIRMATION_LENGTH / 2 {
+            code.push('-');
+        }
+        code.push(char::from(
+            CONFIRMATION_LETTERS[usize::from(byte % letters)],
+        ));
+    }
+    Ok(Secret::new(code))
+}
+
+/// The SHA-256 a confirmation code is stored and compared under: its letters and digits only,
+/// upper case, so `abcd efgh` matches `ABCD-EFGH`.
+pub fn confirmation_hash(code: &str) -> Vec<u8> {
+    let normalized: String = code
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_uppercase())
+        .collect();
+    Sha256::digest(normalized.as_bytes()).to_vec()
+}
+
+/// The path segment that names `issuer` in its redirect URI (`<PUBLIC_URL>/api/oauth/callback/
+/// <tag>`): base64url of the first 16 bytes of its SHA-256. A distinct redirect URI per
+/// authorization server lets the callback tell which one sent the browser back (RFC 9700, 4.4).
+pub fn issuer_tag(issuer: &str) -> String {
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(issuer.as_bytes())[..16])
 }
 
 /// The values a sign-in starts with: the PKCE verifier and the `state`, 32 random bytes each in
@@ -446,6 +555,64 @@ mod tests {
         };
         let parsed = Pending::parse(&Secret::new(pending.to_json())).unwrap();
         assert_eq!(parsed, pending);
+    }
+
+    #[test]
+    fn round_trips_a_held_sign_in() {
+        let held = Held {
+            session: session(),
+            expires_at: Some(now() + Duration::hours(1)),
+            url: "https://mcp.example.com/mcp".to_owned(),
+        };
+        let parsed = Held::parse(&Secret::new(held.to_json())).unwrap();
+        assert_eq!(parsed, held);
+        let open = Held {
+            expires_at: None,
+            ..held
+        };
+        assert_eq!(Held::parse(&Secret::new(open.to_json())).unwrap(), open);
+        assert!(!format!("{open:?}").contains("access-1"));
+        assert!(
+            Held::parse(&Secret::new(session().to_json())).is_err(),
+            "no URL"
+        );
+    }
+
+    #[test]
+    fn confirmation_codes_are_random_readable_and_forgiving() {
+        let first = confirmation().unwrap();
+        let second = confirmation().unwrap();
+        assert_ne!(first, second);
+        let code = first.text().unwrap();
+        assert_eq!(code.len(), 9);
+        assert_eq!(&code[4..5], "-");
+        assert!(
+            code.chars()
+                .filter(|character| *character != '-')
+                .all(|character| CONFIRMATION_LETTERS.contains(&(character as u8)))
+        );
+        assert_eq!(
+            confirmation_hash("BCDF-GHJK"),
+            confirmation_hash(" bcdf ghjk")
+        );
+        assert_ne!(
+            confirmation_hash("BCDF-GHJK"),
+            confirmation_hash("BCDF-GHJL")
+        );
+        assert_eq!(confirmation_hash("x").len(), 32);
+    }
+
+    #[test]
+    fn tags_each_issuer_with_its_own_path_segment() {
+        let tag = issuer_tag("https://auth.example.com");
+        assert_eq!(tag.len(), 22);
+        assert!(
+            tag.chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+        );
+        assert_eq!(tag, issuer_tag("https://auth.example.com"));
+        assert_ne!(tag, issuer_tag("https://auth.example.com/"));
+        assert_ne!(tag, issuer_tag("https://evil.example.com"));
     }
 
     #[test]

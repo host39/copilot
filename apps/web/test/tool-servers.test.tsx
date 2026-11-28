@@ -31,10 +31,12 @@ import {
 } from "@web/routes/settings/tool-server/modes";
 import ToolServerPage from "@web/routes/settings/tool-server/page";
 import {
+  confirmationCode,
   doneMessage,
   needsSignIn,
   openSignIn,
   signInBadge,
+  signInMark,
 } from "@web/routes/settings/tool-server/sign-in";
 import {
   commandLine,
@@ -156,7 +158,13 @@ const oauthServer: ToolServerResponse = {
   ...server,
   credentials: "missing",
   authMode: "oauth",
-  oauth: { state: "needs_sign_in", clientId: null, clientSecret: "missing", expiresAt: null },
+  oauth: {
+    state: "needs_sign_in",
+    clientId: null,
+    clientSecret: "missing",
+    expiresAt: null,
+    redirectUri: null,
+  },
 };
 
 describe("the server forms", () => {
@@ -476,6 +484,7 @@ describe("the tool server screens", () => {
             clientId: "copilot-client",
             clientSecret: "set",
             expiresAt: AT,
+            redirectUri: "https://copilot.example.com/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g",
           },
         },
       ],
@@ -485,6 +494,19 @@ describe("the tool server screens", () => {
     expect(signedIn).toContain("Sign out");
     expect(signedIn).toContain('value="copilot-client"');
     expect(signedIn).toContain("A secret is stored.");
+    expect(signedIn).toContain("Redirect URI to register for this client");
+    expect(signedIn).toContain(
+      "https://copilot.example.com/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g"
+    );
+    expect(html).not.toContain("Redirect URI to register");
+    expect(html).not.toContain('name="code"');
+  });
+
+  test("a page opened from the done page asks for the browser's code", () => {
+    const html = render(`/settings/tools/${ID}?code`, [[keys.toolServer(ID), oauthServer]]);
+    expect(html).toContain("Code from the browser");
+    expect(html).toContain('name="code"');
+    expect(html).toContain("Finish sign-in");
   });
 
   test("the list names servers that need a sign-in", () => {
@@ -527,7 +549,13 @@ describe("sign-in", () => {
     expect(
       needsSignIn({
         ...oauthServer,
-        oauth: { state: "signed_in", clientId: null, clientSecret: "missing", expiresAt: null },
+        oauth: {
+          state: "signed_in",
+          clientId: null,
+          clientSecret: "missing",
+          expiresAt: null,
+          redirectUri: null,
+        },
       })
     ).toBe(false);
     expect(needsSignIn(server)).toBe(false);
@@ -564,6 +592,71 @@ describe("sign-in", () => {
     expect(done).toContain("Open the tool server");
     const forged = page("result=signed-in&server=javascript:alert(1)");
     expect(forged).not.toContain("Open the tool server");
+  });
+
+  test("a sign-in that came back shows its code only to a browser without a session", () => {
+    expect(confirmationCode("#BCDF-GHJK")).toBe("BCDF-GHJK");
+    expect(confirmationCode("#bcdf-ghjk")).toBe("BCDF-GHJK");
+    expect(confirmationCode("")).toBeNull();
+    expect(confirmationCode("#<script>")).toBeNull();
+    expect(confirmationCode("#BCDF-GHJK-LMNP")).toBeNull();
+    expect(doneMessage("confirm").title).toBe("Finish signing in");
+    expect(doneMessage("confirm").body).toContain("close this page");
+    expect(doneMessage("other-account").title).toBe("Sign-in not finished");
+
+    const page = (entry: string) => {
+      const client = new QueryClient();
+      return renderToString(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[entry]}>
+            <Routes>
+              <Route path={path.oauthDone} element={<SignInDonePage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    };
+    const entry = `${path.oauthDone}?result=confirm&server=${ID}#BCDF-GHJK`;
+    clearToken();
+    const system = page(entry);
+    expect(system).toContain("Finish signing in");
+    expect(system).toContain("BCDF-GHJK");
+    expect(system).toContain("Open the tool server");
+    // Signed in to Copilot in this browser: the page sends the code itself.
+    setToken("token");
+    const web = page(entry);
+    expect(web).toContain("Finishing the sign-in");
+    expect(web).not.toContain("BCDF-GHJK");
+    clearToken();
+    const garbled = page(`${path.oauthDone}?result=confirm&server=${ID}#nope`);
+    expect(garbled).toContain("Sign-in failed");
+  });
+
+  test("a wait for a sign-in ends when the server's sign-in changes", () => {
+    const before = signInMark(oauthServer);
+    expect(signInMark(oauthServer)).toBe(before);
+    const signedAgain = signInMark({
+      ...oauthServer,
+      oauth: {
+        state: "signed_in",
+        clientId: null,
+        clientSecret: "missing",
+        expiresAt: AT,
+        redirectUri: null,
+      },
+    });
+    expect(signedAgain).not.toBe(before);
+    const renewed = signInMark({
+      ...oauthServer,
+      oauth: {
+        state: "signed_in",
+        clientId: null,
+        clientSecret: "missing",
+        expiresAt: "2026-11-26T11:00:00Z",
+        redirectUri: null,
+      },
+    });
+    expect(renewed).not.toBe(signedAgain);
   });
 });
 

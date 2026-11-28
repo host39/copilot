@@ -472,6 +472,7 @@ async fn oauth_server(
         .with_client(Some(ClientConfig {
             id: "client-1".to_owned(),
             secret_sealed: Some(vec![7, 7]),
+            issuer: None,
         }));
     ToolServerRepository::insert(store, &server).await.unwrap();
     server
@@ -681,9 +682,140 @@ fn flow(server: &ToolServer, byte: u8, expires: i64) -> SignInFlow {
         server_id: server.id(),
         state_hash: vec![byte; 32],
         sealed: vec![byte, byte],
+        confirm_hash: None,
+        attempts: 0,
         created_at: at(0),
         expires_at: at(expires),
     }
+}
+
+/// A flow whose callback came back: it waits for the code whose hash is `[byte; 32]`.
+fn held(server: &ToolServer, byte: u8, expires: i64) -> SignInFlow {
+    SignInFlow {
+        confirm_hash: Some(vec![byte; 32]),
+        ..flow(server, byte, expires)
+    }
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_held_flow_waits_for_its_owner_and_counts_tries(pool: DbPool) {
+    let store = store(pool.clone()).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let waiting = flow(&server, 1, 10);
+    SignInRepository::insert(&store, &waiting).await.unwrap();
+    assert_eq!(
+        SignInRepository::held(&store, owner, server.id())
+            .await
+            .unwrap(),
+        None,
+        "a waiting flow is not held"
+    );
+    let kept = held(&server, 2, 10);
+    SignInRepository::insert(&store, &kept).await.unwrap();
+    assert_eq!(
+        SignInRepository::held(&store, owner, server.id())
+            .await
+            .unwrap(),
+        Some(kept.clone()),
+        "it replaced the waiting one"
+    );
+    assert_eq!(
+        SignInRepository::held(&store, other, server.id())
+            .await
+            .unwrap(),
+        None,
+        "only its owner's"
+    );
+    assert_eq!(
+        SignInRepository::take(&store, &kept.state_hash)
+            .await
+            .unwrap(),
+        None,
+        "no state reaches a held flow"
+    );
+    assert_eq!(SignInRepository::attempt(&store, kept.id).await.unwrap(), 1);
+    assert_eq!(SignInRepository::attempt(&store, kept.id).await.unwrap(), 2);
+    let counted = SignInRepository::held(&store, owner, server.id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(counted.attempts, 2);
+    assert!(SignInRepository::remove(&store, kept.id).await.unwrap());
+    assert!(
+        !SignInRepository::remove(&store, kept.id).await.unwrap(),
+        "once"
+    );
+    assert_eq!(
+        SignInRepository::attempt(&store, kept.id).await.unwrap(),
+        0,
+        "gone"
+    );
+    let short = sqlx::query(
+        "INSERT INTO oauth_flows (created_at, expires_at, id, user_id, tool_server_id, \
+         state_hash, sealed, confirm_hash) VALUES (now(), now(), $1, $2, $3, $4, '\\x01', '\\x01')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(owner.uuid())
+    .bind(server.id().uuid())
+    .bind(vec![9_u8; 32])
+    .execute(&pool)
+    .await;
+    assert!(short.is_err(), "a confirmation hash is a SHA-256");
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "requires Postgres: run make test-db"]
+async fn a_client_is_bound_once_to_its_authorization_server(pool: DbPool) {
+    let store = store(pool.clone()).await;
+    let owner = user(&store).await;
+    let other = user(&store).await;
+    let server = oauth_server(&store, owner).await;
+    let issuer = "https://auth.example.com";
+    let bind = |user, client: &'static str, issuer: &'static str| {
+        let store = store.clone();
+        let id = server.id();
+        async move {
+            ToolServerRepository::bind_client(&store, user, id, client, issuer)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(
+        !bind(other, "client-1", issuer).await,
+        "another user's server"
+    );
+    assert!(!bind(owner, "client-2", issuer).await, "another client");
+    assert!(bind(owner, "client-1", issuer).await);
+    assert!(
+        !bind(owner, "client-1", "https://evil.example.com").await,
+        "bound once"
+    );
+    let bound = stored(&store, &server).await;
+    assert_eq!(
+        bound.client().unwrap().issuer.as_deref(),
+        Some(issuer),
+        "read back with the client"
+    );
+
+    // A settings write carries the binding as the entity has it: saved again, it is gone.
+    let saved = bound.clone().with_client(Some(ClientConfig {
+        id: "client-1".to_owned(),
+        secret_sealed: None,
+        issuer: None,
+    }));
+    ToolServerRepository::update(&store, &saved).await.unwrap();
+    assert_eq!(stored(&store, &server).await.client().unwrap().issuer, None);
+    let orphan = sqlx::query(
+        "UPDATE tool_servers SET oauth_client_id = NULL, oauth_client_secret_sealed = NULL, \
+         oauth_client_issuer = 'https://auth.example.com' WHERE id = $1",
+    )
+    .bind(server.id().uuid())
+    .execute(&pool)
+    .await;
+    assert!(orphan.is_err(), "an issuer needs a client");
 }
 
 #[sqlx::test(migrations = false)]

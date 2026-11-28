@@ -6,15 +6,16 @@
 //! every project and chat (and their "Approve for this chat" rows). A test connects through the
 //! MCP adapter (`copilot-mcp`), lists the tools, stores them with the negotiated revision, and
 //! reports what changed; a failure is a `502` with the adapter's code. Signing in starts here
-//! (`/oauth/start` answers the URL to open) and finishes at the public `/api/oauth/callback`
-//! (`routes::oauth`).
+//! (`/oauth/start` answers the URL to open), comes back to the public `/api/oauth/callback`
+//! (`routes::oauth`), which holds the tokens and shows the browser a code, and finishes here
+//! when the server's owner sends that code (`/oauth/confirm`).
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use copilot_contracts::{
     CreateToolServerRequest, Credentials, DetailsResponse, ErrorResponse, ListResponse,
-    OAuthClientInput, OAuthStartResponse, OAuthStatus, ServerTool, StdioPatch, StdioProgram,
-    ToolChanges, ToolServerResponse, ToolTestResponse, UpdateToolServerRequest,
+    OAuthClientInput, OAuthConfirmRequest, OAuthStartResponse, OAuthStatus, ServerTool, StdioPatch,
+    StdioProgram, ToolChanges, ToolServerResponse, ToolTestResponse, UpdateToolServerRequest,
 };
 use copilot_core::{
     ClientChange, ClientInput, CredentialChange, KeyState, NewToolServer, SignInState, StdioInput,
@@ -36,6 +37,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(test))
         .routes(routes!(review))
         .routes(routes!(sign_in))
+        .routes(routes!(confirm))
         .routes(routes!(sign_out))
 }
 
@@ -47,6 +49,8 @@ struct Secrets {
     sign_in: Option<SignInState>,
     env: KeyState,
     env_names: Vec<String>,
+    /// The redirect URI to register for the pre-registered client, once it is bound.
+    redirect: Option<String>,
 }
 
 /// A server as the API shows it.
@@ -79,6 +83,7 @@ fn response(server: &ToolServer, secrets: Secrets) -> ToolServerResponse {
             client_id: server.client().map(|client| client.id.clone()),
             client_secret: secrets.client_secret.to_dto(),
             expires_at: server.sign_in().and_then(|sign_in| sign_in.expires_at),
+            redirect_uri: secrets.redirect.clone(),
         }),
         protocol_version: server.protocol_version().map(ToOwned::to_owned),
         tools: cache.map(|cache| {
@@ -114,6 +119,7 @@ fn shown(state: &AppState, server: &ToolServer) -> ToolServerResponse {
         sign_in: state.tools.sign_in_state(server),
         env: KeyState::stored(server.stdio().and_then(|stdio| stdio.env_sealed.as_deref())),
         env_names: state.tools.env_names(server),
+        redirect: state.tools.client_redirect(server).map(String::from),
     };
     response(server, secrets)
 }
@@ -222,6 +228,10 @@ pub async fn get(
         sign_in: details.sign_in,
         env: details.env,
         env_names: state.tools.env_names(&details.server),
+        redirect: state
+            .tools
+            .client_redirect(&details.server)
+            .map(String::from),
     };
     Ok(axum::Json(DetailsResponse {
         data: response(&details.server, secrets),
@@ -369,7 +379,7 @@ pub async fn review(
         (status = OK, description = "The authorization URL to open in the browser; the sign-in comes back to `/api/oauth/callback` within 10 minutes", body = DetailsResponse<OAuthStartResponse>),
         (status = BAD_REQUEST, description = "The server's authentication is not OAuth sign-in", body = ErrorResponse),
         (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse),
-        (status = UNPROCESSABLE_ENTITY, description = "Sign-in is off on this server (`SIGN_IN_UNAVAILABLE`, no `PUBLIC_URL`), or the authorization server offers no client id (`CLIENT_ID_REQUIRED`)", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "Sign-in is off on this server (`SIGN_IN_UNAVAILABLE`, no `PUBLIC_URL`), the authorization server offers no client id (`CLIENT_ID_REQUIRED`, the message names the redirect URI to register), or the server's sign-in moved to another authorization server than its pre-registered client's (`CLIENT_ISSUER_CHANGED`)", body = ErrorResponse),
         (status = BAD_GATEWAY, description = "Discovery or registration failed (`OAUTH_DISCOVERY`, `OAUTH_REGISTRATION`, `OAUTH_FAILED`, `OAUTH_BLOCKED`)", body = ErrorResponse)
     )
 )]
@@ -384,6 +394,36 @@ pub async fn sign_in(
             authorization_url: started.url.to_string(),
             expires_at: started.expires_at,
         },
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/tool-servers/{id}/oauth/confirm",
+    operation_id = "tool_servers_confirm_sign_in",
+    tag = "tool-servers",
+    security(("bearerAuth" = [])),
+    params(("id" = Uuid, Path, description = "The tool server's id")),
+    request_body = OAuthConfirmRequest,
+    responses(
+        (status = OK, description = "The server, signed in with the tokens its sign-in came back with", body = DetailsResponse<ToolServerResponse>),
+        (status = BAD_REQUEST, description = "No sign-in of the server is waiting for a code, the code does not match (5 tries), or the server changed since the sign-in started (`field` `code`)", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The caller has no such tool server", body = ErrorResponse),
+        (status = UNPROCESSABLE_ENTITY, description = "Sign-in is off on this server (`SIGN_IN_UNAVAILABLE`)", body = ErrorResponse)
+    )
+)]
+pub async fn confirm(
+    State(state): State<AppState>,
+    Caller(caller): Caller,
+    Id(id): Id,
+    JsonBody(body): JsonBody<OAuthConfirmRequest>,
+) -> Result<axum::Json<DetailsResponse<ToolServerResponse>>, HttpError> {
+    let server = state
+        .tools
+        .confirm(&caller, ToolServerId::new(id), &body.code)
+        .await?;
+    Ok(axum::Json(DetailsResponse {
+        data: shown(&state, &server),
     }))
 }
 
@@ -1040,9 +1080,12 @@ mod tests {
         );
         let params = query(url);
         assert_eq!(params["client_id"], "dyn-client");
+        let tag = copilot_core::issuer_tag(&auth.uri());
+        let callback = format!("/api/oauth/callback/{tag}");
         assert_eq!(
             params["redirect_uri"],
-            "http://localhost:4000/api/oauth/callback"
+            format!("http://localhost:4000{callback}"),
+            "the authorization server's own redirect URI"
         );
         assert_eq!(params["code_challenge_method"], "S256");
         assert_eq!(params["resource"], mcp.url);
@@ -1051,36 +1094,74 @@ mod tests {
 
         // The authorization server sends the browser back; no session comes with it.
         let issuer = auth.uri();
-        let back = |state: &str| {
+        let back = |path: &str, state: &str| {
             let query: String = url::form_urlencoded::Serializer::new(String::new())
                 .append_pair("code", "code-1")
                 .append_pair("state", state)
                 .append_pair("iss", &issuer)
                 .finish();
-            request(
-                Method::GET,
-                &format!("/api/oauth/callback?{query}"),
-                None,
-                None,
-            )
+            request(Method::GET, &format!("{path}?{query}"), None, None)
         };
-        let tampered = send(app.clone(), back(&format!("{state}x"))).await;
+        let tampered = send(app.clone(), back(&callback, &format!("{state}x"))).await;
         assert_eq!(tampered.status, StatusCode::SEE_OTHER);
         assert_eq!(
             tampered.headers["location"],
             "http://localhost:4000/oauth/done?result=expired"
         );
-        let finished = send(app.clone(), back(&state)).await;
-        assert_eq!(finished.status, StatusCode::SEE_OTHER);
+        // Back at another redirect URI than its authorization server's: refused, and used up.
+        let elsewhere = send(app.clone(), back("/api/oauth/callback", &state)).await;
         assert_eq!(
-            finished.headers["location"],
-            format!("http://localhost:4000/oauth/done?result=signed-in&server={id}").as_str()
+            elsewhere.headers["location"],
+            format!("http://localhost:4000/oauth/done?result=failed&server={id}").as_str()
         );
-        let replayed = send(app.clone(), back(&state)).await;
+        let started = call(
+            &app,
+            &token,
+            Method::POST,
+            &format!("{uri}/oauth/start"),
+            None,
+        )
+        .await;
+        let state =
+            query(started.body["data"]["authorizationUrl"].as_str().unwrap())["state"].clone();
+        let finished = send(app.clone(), back(&callback, &state)).await;
+        assert_eq!(finished.status, StatusCode::SEE_OTHER);
+        let location = finished.headers["location"].to_str().unwrap().to_owned();
+        let (done, code) = location.split_once('#').expect("a confirmation code");
+        assert_eq!(
+            done,
+            format!("http://localhost:4000/oauth/done?result=confirm&server={id}")
+        );
+        assert_eq!(code.len(), 9, "{code}");
+        let replayed = send(app.clone(), back(&callback, &state)).await;
         assert_eq!(
             replayed.headers["location"], "http://localhost:4000/oauth/done?result=expired",
             "a state works once"
         );
+
+        // Nothing is stored until the owner sends the code the browser showed.
+        let waiting = call(&app, &token, Method::GET, &uri, None).await;
+        assert_eq!(waiting.body["data"]["oauth"]["state"], "needs_sign_in");
+        let wrong = call(
+            &app,
+            &token,
+            Method::POST,
+            &format!("{uri}/oauth/confirm"),
+            Some(json!({ "code": "BCDF-GHJK" })),
+        )
+        .await;
+        assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{}", wrong.body);
+        assert_eq!(wrong.body["field"], "code");
+        let confirmed = call(
+            &app,
+            &token,
+            Method::POST,
+            &format!("{uri}/oauth/confirm"),
+            Some(json!({ "code": code })),
+        )
+        .await;
+        assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+        assert_eq!(confirmed.body["data"]["oauth"]["state"], "signed_in");
 
         let details = call(&app, &token, Method::GET, &uri, None).await;
         assert_eq!(details.body["data"]["oauth"]["state"], "signed_in");
@@ -1157,7 +1238,8 @@ mod tests {
             assert_eq!(other.status, StatusCode::NOT_FOUND, "{method} {path}");
         }
 
-        // Bob's sign-in, completed by whoever opens the link, signs in Bob's server only.
+        // Bob's sign-in link, opened by Alice: her browser comes back and is shown the code, but
+        // only Bob's server waits for it, and Bob never sees it (RFC 9700, 4.7).
         let started = call(
             &app,
             &bob,
@@ -1169,23 +1251,86 @@ mod tests {
         let state =
             query(started.body["data"]["authorizationUrl"].as_str().unwrap())["state"].clone();
         let issuer = auth.uri();
-        let finished = send(
+        let tag = copilot_core::issuer_tag(&issuer);
+        let callback = |state: &str| {
+            format!(
+                "/api/oauth/callback/{tag}?code=code-1&state={state}&iss={}",
+                url::form_urlencoded::byte_serialize(issuer.as_bytes()).collect::<String>()
+            )
+        };
+        let opened = send(
             app.clone(),
-            request(
-                Method::GET,
-                &format!(
-                    "/api/oauth/callback?code=code-1&state={state}&iss={}",
-                    url::form_urlencoded::byte_serialize(issuer.as_bytes()).collect::<String>()
-                ),
-                Some(&alice),
-                None,
-            ),
+            request(Method::GET, &callback(&state), Some(&alice), None),
+        )
+        .await;
+        let location = opened.headers["location"].to_str().unwrap().to_owned();
+        let (_, code) = location.split_once('#').expect("a confirmation code");
+        let hers_now = call(
+            &app,
+            &alice,
+            Method::POST,
+            &format!("{his}/oauth/confirm"),
+            Some(json!({ "code": code })),
+        )
+        .await;
+        assert_eq!(hers_now.status, StatusCode::NOT_FOUND, "not Alice's server");
+        for _ in 0..5 {
+            call(
+                &app,
+                &bob,
+                Method::POST,
+                &format!("{his}/oauth/confirm"),
+                Some(json!({ "code": "BCDF-GHJK" })),
+            )
+            .await;
+        }
+        let late = call(
+            &app,
+            &bob,
+            Method::POST,
+            &format!("{his}/oauth/confirm"),
+            Some(json!({ "code": code })),
         )
         .await;
         assert_eq!(
-            finished.headers["location"],
-            format!("http://localhost:4000/oauth/done?result=signed-in&server={his_id}").as_str()
+            late.status,
+            StatusCode::BAD_REQUEST,
+            "guessing ended the sign-in"
         );
+        let nobody = call(&app, &bob, Method::GET, &his, None).await;
+        assert_eq!(nobody.body["data"]["oauth"]["state"], "needs_sign_in");
+
+        // Bob's own browser comes back: his code signs in his server only.
+        let started = call(
+            &app,
+            &bob,
+            Method::POST,
+            &format!("{his}/oauth/start"),
+            None,
+        )
+        .await;
+        let state =
+            query(started.body["data"]["authorizationUrl"].as_str().unwrap())["state"].clone();
+        let finished = send(
+            app.clone(),
+            request(Method::GET, &callback(&state), None, None),
+        )
+        .await;
+        let location = finished.headers["location"].to_str().unwrap().to_owned();
+        let (done, code) = location.split_once('#').expect("a confirmation code");
+        assert_eq!(
+            done,
+            format!("http://localhost:4000/oauth/done?result=confirm&server={his_id}")
+        );
+        let confirmed = call(
+            &app,
+            &bob,
+            Method::POST,
+            &format!("{his}/oauth/confirm"),
+            Some(json!({ "code": code })),
+        )
+        .await;
+        assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
         let his_details = call(&app, &bob, Method::GET, &his, None).await;
         assert_eq!(his_details.body["data"]["oauth"]["state"], "signed_in");
         let her_details = call(&app, &alice, Method::GET, &hers, None).await;

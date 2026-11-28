@@ -40,8 +40,8 @@ use crate::shared::secret::REDACTED;
 
 use crate::domains::tool::service::sign_in::OAuth;
 pub use crate::domains::tool::service::sign_in::{
-    CLIENT_ID_REQUIRED, CLIENT_NAME, Callback, SIGN_IN_UNAVAILABLE, SignInConfig, SignInOutcome,
-    SignInResult, SignInStart,
+    CLIENT_ID_REQUIRED, CLIENT_ISSUER_CHANGED, CLIENT_NAME, Callback, SIGN_IN_UNAVAILABLE,
+    SignInConfig, SignInOutcome, SignInResult, SignInStart,
 };
 
 /// Input of [`ToolService::create`]. `Debug` prints `***` for the token, header, and
@@ -458,11 +458,18 @@ impl ToolService {
             }
         }
         let mut credentials = changes.credentials;
+        let mut client_change = changes.client;
         if let Some(text) = &changes.url {
             let url = self.url(actor, text)?;
-            if server.url().is_none_or(|current| !url.same_origin(current)) && credentials.is_none()
-            {
-                credentials = Some(CredentialChange::Clear);
+            // Credentials entered for one origin never follow the URL to another: the headers,
+            // and the pre-registered client with its secret, unless this update sets new ones.
+            if server.url().is_none_or(|current| !url.same_origin(current)) {
+                if credentials.is_none() {
+                    credentials = Some(CredentialChange::Clear);
+                }
+                if client_change.is_none() && server.client().is_some() {
+                    client_change = Some(ClientChange::Clear);
+                }
             }
             server = server.with_url(url);
         }
@@ -492,7 +499,7 @@ impl ToolService {
         if let Some(mode) = changes.auth {
             server = server.with_auth(mode);
         }
-        match &changes.client {
+        match &client_change {
             Some(ClientChange::Set(input)) => {
                 if server.auth() != AuthMode::OAuth {
                     return Err(only_oauth());
@@ -868,9 +875,11 @@ impl ToolService {
                 .filter(|stored| stored.id == id)
                 .and_then(|stored| stored.secret_sealed.clone()),
         };
+        // Saved again, the client is bound to an authorization server anew at its next sign-in.
         Ok(ClientConfig {
             id: id.to_owned(),
             secret_sealed,
+            issuer: None,
         })
     }
 

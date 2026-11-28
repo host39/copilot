@@ -1,0 +1,39 @@
+meta {
+  name: 09-36 Confirm Without Sign-In
+  type: http
+  seq: 37
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{confirmServerId}}/oauth/confirm
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "code": "BCDF-GHJK"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.code: eq VALIDATION_ERROR
+  res.body.field: eq code
+}
+
+tests {
+  test("says to start the sign-in again", function () {
+    expect(res.body.error).to.include("Start it again");
+  });
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/oauth/confirm`
+
+  **This test verifies:** a code is refused when no sign-in of the server came back and waits for one.
+}

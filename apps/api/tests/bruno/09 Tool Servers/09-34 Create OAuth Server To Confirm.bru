@@ -1,0 +1,43 @@
+meta {
+  name: 09-34 Create OAuth Server To Confirm
+  type: http
+  seq: 35
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "name": "Bruno Confirm",
+    "url": "https://mcp.invalid/confirm/mcp",
+    "authMode": "oauth",
+    "oauthClient": { "clientId": "bruno-confirm-client" }
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("confirmServerId", res.body.data.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.data.oauth.state: eq needs_sign_in
+  res.body.data.oauth.clientId: eq bruno-confirm-client
+  res.body.data.oauth.redirectUri: isNull
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers` with `authMode: oauth` and a client
+
+  **This test verifies:** a new OAuth server's pre-registered client has no redirect URI yet: it is bound to an authorization server, and its redirect URI shown, only by its first sign-in.
+}

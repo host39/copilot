@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::domains::chat::{Chat, ChatParts};
 use crate::domains::tool::{
-    AuthMode, Location, SignIn, SignInFlow, SignInRepository, ToolServer, ToolServerParts,
-    ToolServerRepository,
+    AuthMode, ClientConfig, Location, SignIn, SignInFlow, SignInRepository, ToolServer,
+    ToolServerParts, ToolServerRepository,
 };
 use crate::ports::tool_host::ToolListing;
 use crate::shared::base_url::BaseUrl;
@@ -137,6 +138,31 @@ impl ToolServerRepository for MemoryStore {
         Ok(true)
     }
 
+    async fn bind_client(
+        &self,
+        user: UserId,
+        id: ToolServerId,
+        client_id: &str,
+        issuer: &str,
+    ) -> DomainResult<bool> {
+        let mut tables = self.tables();
+        let Some(stored) = tables.tool_servers.get_mut(&id).filter(|stored| {
+            stored.user_id() == user
+                && stored.auth() == AuthMode::OAuth
+                && stored
+                    .client()
+                    .is_some_and(|client| client.id == client_id && client.issuer.is_none())
+        }) else {
+            return Ok(false);
+        };
+        let client = stored.client().cloned().map(|client| ClientConfig {
+            issuer: Some(issuer.to_owned()),
+            ..client
+        });
+        *stored = stored.clone().with_client(client);
+        Ok(true)
+    }
+
     async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
         let mut tables = self.tables();
         if let Some(stored) = tables
@@ -168,9 +194,32 @@ impl SignInRepository for MemoryStore {
         let id = tables
             .sign_in_flows
             .values()
-            .find(|flow| flow.state_hash == state_hash)
+            .find(|flow| flow.state_hash == state_hash && flow.confirm_hash.is_none())
             .map(|flow| flow.id);
         Ok(id.and_then(|id| tables.sign_in_flows.remove(&id)))
+    }
+
+    async fn held(&self, user: UserId, server: ToolServerId) -> DomainResult<Option<SignInFlow>> {
+        let tables = self.tables();
+        Ok(tables
+            .sign_in_flows
+            .values()
+            .find(|flow| {
+                flow.user_id == user && flow.server_id == server && flow.confirm_hash.is_some()
+            })
+            .cloned())
+    }
+
+    async fn attempt(&self, id: Uuid) -> DomainResult<u32> {
+        let mut tables = self.tables();
+        Ok(tables.sign_in_flows.get_mut(&id).map_or(0, |flow| {
+            flow.attempts += 1;
+            flow.attempts
+        }))
+    }
+
+    async fn remove(&self, id: Uuid) -> DomainResult<bool> {
+        Ok(self.tables().sign_in_flows.remove(&id).is_some())
     }
 }
 

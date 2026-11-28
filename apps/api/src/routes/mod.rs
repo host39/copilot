@@ -102,7 +102,14 @@ mod tests {
             .keys()
             .filter(|path| public(path))
             .collect();
-        assert_eq!(public, ["/api/oauth/callback", "/api/oauth/client"]);
+        assert_eq!(
+            public,
+            [
+                "/api/oauth/callback",
+                "/api/oauth/callback/{tag}",
+                "/api/oauth/client"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -177,6 +184,7 @@ mod tests {
         ("POST", "/api/tool-servers/{id}/test"),
         ("POST", "/api/tool-servers/{id}/review"),
         ("POST", "/api/tool-servers/{id}/oauth/start"),
+        ("POST", "/api/tool-servers/{id}/oauth/confirm"),
         ("DELETE", "/api/tool-servers/{id}/oauth"),
         ("GET", "/api/schedules"),
         ("POST", "/api/schedules"),

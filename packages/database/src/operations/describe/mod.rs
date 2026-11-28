@@ -65,6 +65,10 @@ pub const SCHEMA_TABLES: &[TableDoc] = &[
                 reason: "Sealed OAuth client secret.",
             },
             OmittedColumn {
+                name: "oauth_client_issuer",
+                reason: "The authorization server a pre-registered client belongs to.",
+            },
+            OmittedColumn {
                 name: "oauth_tokens_sealed",
                 reason: "Sealed OAuth access and refresh tokens.",
             },

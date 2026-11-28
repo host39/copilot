@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { describeError } from "@web/api/errors";
 import { keys } from "@web/api/routes/keys";
 import {
+  confirmSignIn,
   deleteToolServer,
   fetchCapabilities,
   fetchToolServer,
@@ -43,6 +44,7 @@ import { ago } from "@web/routes/settings/format";
 import {
   type AddedState,
   clientSchema,
+  confirmSchema,
   credentialsSchema,
   type HeaderRow,
   settingsSchema,
@@ -59,6 +61,7 @@ import {
   SIGN_IN_POLL_MS,
   SIGN_IN_WAIT_MS,
   signInBadge,
+  signInMark,
 } from "@web/routes/settings/tool-server/sign-in";
 import {
   envNamesAfter,
@@ -69,7 +72,7 @@ import {
 } from "@web/routes/settings/tool-server/stdio";
 import { useEffect, useState } from "react";
 import { LuLogIn, LuPlugZap } from "react-icons/lu";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 const BACK = { to: path.toolServers, label: "Tool servers" };
 
@@ -657,17 +660,24 @@ function SwitchMode({ server, to }: { server: ToolServerResponse; to: AuthMode }
   );
 }
 
+/** A sign-in started from this page: until when it may take, and how the server looked then. */
+type Wait = { until: number; mark: string };
+
 /**
  * An OAuth server's sign-in: its state, Sign in (the authorization page opens in the browser;
- * a native app checks every few seconds until the sign-in in the system browser is done), Sign
- * out, and an optional pre-registered client.
+ * a native app then waits for the sign-in in the system browser and asks for the code that page
+ * shows), Sign out, and an optional pre-registered client with the redirect URI to register for
+ * it. Sign in stays available while a sign-in is pending, so a refused or abandoned one can be
+ * started again at once.
  */
 function SignIn({ server }: { server: ToolServerResponse }) {
   const store = useStore();
+  const [params] = useSearchParams();
   const [notice, setNotice] = useState<string>();
-  const [waitUntil, setWaitUntil] = useState<number>();
+  const [wait, setWait] = useState<Wait>();
   const state = server.oauth?.state ?? "needs_sign_in";
-  const waiting = waitUntil !== undefined && state !== "signed_in";
+  const mark = signInMark(server);
+  const waiting = wait !== undefined;
   useQuery({
     queryKey: keys.toolServer(server.id),
     queryFn: ({ signal }) => fetchToolServer(server.id, signal),
@@ -675,26 +685,38 @@ function SignIn({ server }: { server: ToolServerResponse }) {
     refetchInterval: waiting ? SIGN_IN_POLL_MS : false,
   });
   useEffect(() => {
-    if (waitUntil === undefined) return;
-    if (state === "signed_in") {
-      setWaitUntil(undefined);
-      setNotice("Signed in.");
+    if (wait === undefined) return;
+    // Finished elsewhere (a browser signed in to Copilot sends the code itself).
+    if (mark !== wait.mark) {
+      setWait(undefined);
+      if (state === "signed_in") setNotice("Signed in.");
       return;
     }
-    const timer = window.setTimeout(() => setWaitUntil(undefined), waitUntil - Date.now());
+    const timer = window.setTimeout(() => setWait(undefined), wait.until - Date.now());
     return () => window.clearTimeout(timer);
-  }, [waitUntil, state]);
+  }, [wait, mark, state]);
   const start = useMutation({
     mutationFn: () => startSignIn(server.id),
     onMutate: () => setNotice(undefined),
     onSuccess: (started) => {
       if (isNative()) {
-        setWaitUntil(Date.now() + SIGN_IN_WAIT_MS);
-        setNotice("Finish signing in in your browser. This page updates when you are done.");
+        setWait({ until: Date.now() + SIGN_IN_WAIT_MS, mark });
+        setNotice(
+          "Finish signing in in your browser, then enter the code it shows here. This page also updates by itself."
+        );
       }
       openSignIn(started.authorizationUrl);
     },
   });
+  const confirm = useSubmit(
+    confirmSchema,
+    ({ code }) => confirmSignIn(server.id, code),
+    (saved) => {
+      store(saved);
+      setWait(undefined);
+      setNotice("Signed in.");
+    }
+  );
   const out = useMutation({
     mutationFn: () => signOut(server.id),
     onMutate: () => setNotice(undefined),
@@ -713,6 +735,7 @@ function SignIn({ server }: { server: ToolServerResponse }) {
   );
   const badge = signInBadge(state);
   const failure = start.error ?? out.error;
+  const redirectUri = server.oauth?.redirectUri;
 
   return (
     <div className="space-y-4">
@@ -728,11 +751,39 @@ function SignIn({ server }: { server: ToolServerResponse }) {
             Sign out
           </Button>
         )}
-        <Button busy={start.isPending || waiting} onClick={() => start.mutate()}>
-          {start.isPending || waiting ? null : <LuLogIn aria-hidden />}
+        <Button busy={start.isPending} onClick={() => start.mutate()}>
+          {start.isPending ? null : <LuLogIn aria-hidden />}
           {state === "signed_in" ? "Sign in again" : "Sign in"}
         </Button>
       </div>
+      {waiting || params.has("code") ? (
+        <form
+          noValidate
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setNotice(undefined);
+            const data = new FormData(event.currentTarget);
+            void confirm.submit({ code: text(data, "code") });
+          }}
+        >
+          <FormAlert>{confirm.alert}</FormAlert>
+          <TextField
+            label="Code from the browser"
+            name="code"
+            autoComplete="one-time-code"
+            autoCapitalize="characters"
+            spellCheck={false}
+            hint="The sign-in page in your browser shows it when you are done there, like ABCD-EFGH."
+            error={confirm.errors.code}
+          />
+          <div className="flex justify-end">
+            <Button type="submit" busy={confirm.busy} disabled={confirm.wait > 0}>
+              Finish sign-in
+            </Button>
+          </div>
+        </form>
+      ) : null}
       <form
         key={server.updatedAt}
         noValidate
@@ -753,6 +804,12 @@ function SignIn({ server }: { server: ToolServerResponse }) {
           defaultId={server.oauth?.clientId ?? undefined}
           secretStored={server.oauth?.clientSecret === "set"}
         />
+        {redirectUri ? (
+          <p className="text-sm text-muted">
+            Redirect URI to register for this client:{" "}
+            <code className="select-all break-all">{redirectUri}</code>
+          </p>
+        ) : null}
         <div className="flex justify-end">
           <Button variant="secondary" type="submit" busy={client.busy} disabled={client.wait > 0}>
             Save client

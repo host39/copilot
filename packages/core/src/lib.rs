@@ -49,14 +49,15 @@ pub use crate::domains::schedule::{
 };
 pub use crate::domains::settings::{SettingsRepository, SettingsService, UserSettings};
 pub use crate::domains::tool::{
-    ALIAS_MAX_CHARS, ApprovalMode, AuthMode, CLIENT_ID_REQUIRED, CLIENT_NAME, Callback,
-    ClientChange, ClientConfig, ClientInput, CredentialChange, EffectiveTool, EffectiveTools,
-    Location, NewToolServer, Pending, SIGN_IN_UNAVAILABLE, SLUG_MAX_CHARS, STDIO_DISABLED,
-    ServerOverride, Session, SignIn, SignInConfig, SignInFlow, SignInOutcome, SignInRepository,
-    SignInResult, SignInStart, SignInState, Slug, StdioCommand, StdioEnv, StdioInput, StdioPolicy,
-    StdioUpdate, ToolAlias, ToolCache, ToolChanges, ToolHeaders, ToolMode, ToolSelection,
-    ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository, ToolServerUpdate,
-    ToolService, ToolSpec, ToolTest, Transport, UnavailableServer, offered,
+    ALIAS_MAX_CHARS, ApprovalMode, AuthMode, CLIENT_ID_REQUIRED, CLIENT_ISSUER_CHANGED,
+    CLIENT_NAME, Callback, ClientChange, ClientConfig, ClientInput, CredentialChange,
+    EffectiveTool, EffectiveTools, Held, Location, NewToolServer, Pending, SIGN_IN_UNAVAILABLE,
+    SLUG_MAX_CHARS, STDIO_DISABLED, ServerOverride, Session, SignIn, SignInConfig, SignInFlow,
+    SignInOutcome, SignInRepository, SignInResult, SignInStart, SignInState, Slug, StdioCommand,
+    StdioEnv, StdioInput, StdioPolicy, StdioUpdate, ToolAlias, ToolCache, ToolChanges, ToolHeaders,
+    ToolMode, ToolSelection, ToolServer, ToolServerDetails, ToolServerParts, ToolServerRepository,
+    ToolServerUpdate, ToolService, ToolSpec, ToolTest, Transport, UnavailableServer, issuer_tag,
+    offered,
 };
 // Ports (interfaces implemented by adapters in other crates)
 pub use crate::ports::accounts::Accounts;

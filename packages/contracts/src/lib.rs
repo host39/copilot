@@ -73,7 +73,7 @@ pub use crate::settings::{SettingsResponse, UpdateSettingsRequest};
 pub use crate::shared::{BuiltinTool, KeyState, ReasoningLevel};
 pub use crate::tool::{
     ApprovalMode, AuthMode, CapabilitiesResponse, CreateToolServerRequest, Credentials,
-    OAuthClientInput, OAuthStartResponse, OAuthStatus, ServerTool, SignInState, StdioInput,
-    StdioPatch, StdioProgram, ToolChanges, ToolMode, ToolServerResponse, ToolTestResponse,
-    Transport, UpdateToolServerRequest,
+    OAuthClientInput, OAuthConfirmRequest, OAuthStartResponse, OAuthStatus, ServerTool,
+    SignInState, StdioInput, StdioPatch, StdioProgram, ToolChanges, ToolMode, ToolServerResponse,
+    ToolTestResponse, Transport, UpdateToolServerRequest,
 };

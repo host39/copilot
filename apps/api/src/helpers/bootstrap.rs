@@ -169,17 +169,18 @@ impl Adapters {
     }
 }
 
-/// Where tool server sign-ins come back to: `<PUBLIC_URL>/api/oauth/callback`, and the Client
-/// ID Metadata Document at `<PUBLIC_URL>/api/oauth/client` when `PUBLIC_URL` is `https` and
-/// `OAUTH_CLIENT_METADATA` allows it. `None` without `PUBLIC_URL`: sign-in is off.
+/// Where tool server sign-ins come back to: `<PUBLIC_URL>/api/oauth/callback` (with the
+/// authorization server's tag appended, except for the Client ID Metadata Document's sign-ins),
+/// and the Client ID Metadata Document at `<PUBLIC_URL>/api/oauth/client` when `PUBLIC_URL` is
+/// `https` and `OAUTH_CLIENT_METADATA` allows it. `None` without `PUBLIC_URL`: sign-in is off.
 pub fn sign_in(config: &AppConfig) -> Option<SignInConfig> {
     let public = config.public_url.as_ref()?;
-    let redirect_uri = public.join("/api/oauth/callback").ok()?;
+    let callback = public.join("/api/oauth/callback").ok()?;
     let client_metadata = (public.scheme() == "https" && config.client_metadata)
         .then(|| public.join("/api/oauth/client").ok())
         .flatten();
     Some(SignInConfig {
-        redirect_uri,
+        callback,
         client_metadata,
     })
 }

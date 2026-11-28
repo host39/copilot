@@ -17,4 +17,9 @@ clientSecret: KeyState,
 /**
  * When the access token expires, when the server said.
  */
-expiresAt: string | null, };
+expiresAt: string | null, 
+/**
+ * The redirect URI to register for the pre-registered client, once its first sign-in found
+ * the authorization server it belongs to (`<PUBLIC_URL>/api/oauth/callback/<issuer tag>`).
+ */
+redirectUri: string | null, };

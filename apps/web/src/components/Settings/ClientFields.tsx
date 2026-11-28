@@ -22,7 +22,7 @@ export function ClientFields({
         autoCapitalize="none"
         spellCheck={false}
         defaultValue={defaultId}
-        hint="Only when the server's sign-in needs a client you registered there yourself. Copilot registers itself when the server allows it."
+        hint="Only when the server's sign-in needs a client you registered there yourself, with the redirect URI Copilot names (here, after the first Sign in). Copilot registers itself when the server allows it."
         error={error}
       />
       <TextField

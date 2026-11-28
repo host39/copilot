@@ -674,6 +674,7 @@ mod tests {
             .with_client(Some(ClientConfig {
                 id: "client-1".to_owned(),
                 secret_sealed: None,
+                issuer: None,
             }))
             .with_sign_in(Some(SignIn {
                 sealed: vec![1, 2, 3],

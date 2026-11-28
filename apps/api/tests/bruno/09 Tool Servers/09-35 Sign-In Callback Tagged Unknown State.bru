@@ -1,0 +1,34 @@
+meta {
+  name: 09-35 Sign-In Callback Tagged Unknown State
+  type: http
+  seq: 36
+}
+
+get {
+  url: {{baseUrl}}/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g?state=bruno-unknown-state&code=bruno-code&iss=https%3A%2F%2Fauth.invalid
+  body: none
+  auth: none
+}
+
+settings {
+  followRedirects: false
+}
+
+assert {
+  res.status: eq 303
+  res.headers.location: contains /oauth/done?result=expired
+  res.headers["cache-control"]: eq no-store
+}
+
+tests {
+  test("never echoes the query or carries a code", function () {
+    expect(res.headers.location).to.not.include("bruno-code");
+    expect(res.headers.location).to.not.include("#");
+  });
+}
+
+docs {
+  **Endpoint:** `GET /api/oauth/callback/{tag}` (public)
+
+  **This test verifies:** the redirect URI of an authorization server (sign-ins with a pre-registered or registered client come back there) is public like the bare callback, and a `state` that names no sign-in goes to the done page as expired, with no confirmation code.
+}

@@ -3,12 +3,14 @@
     "clientId": "copilot-client",
     "clientSecret": "set",
     "expiresAt": "2026-11-26T12:09:00.123456Z",
+    "redirectUri": "https://copilot.example.com/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g",
     "state": "signed_in"
   },
   {
     "clientId": null,
     "clientSecret": "unreadable",
     "expiresAt": "2026-11-26T12:08:00.123456Z",
+    "redirectUri": null,
     "state": "expired"
   }
 ]

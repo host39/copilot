@@ -1720,6 +1720,16 @@ impl ToolServerRepository for Gauge {
             .await
     }
 
+    async fn bind_client(
+        &self,
+        user: UserId,
+        id: ToolServerId,
+        client_id: &str,
+        issuer: &str,
+    ) -> DomainResult<bool> {
+        ToolServerRepository::bind_client(self.store.as_ref(), user, id, client_id, issuer).await
+    }
+
     async fn stale(&self, user: UserId, id: ToolServerId) -> DomainResult<()> {
         ToolServerRepository::stale(self.store.as_ref(), user, id).await
     }

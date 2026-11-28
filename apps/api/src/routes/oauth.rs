@@ -3,20 +3,24 @@
 //! server carries none (in the native apps it is the system browser), and authorization servers
 //! fetch the client document themselves.
 //!
-//! - `GET /api/oauth/callback` finishes a sign-in (`ToolService::complete`): the `state` names
-//!   the flow, used once, and the browser is sent on to the web app's `/oauth/done` page with a
-//!   short result. The authorization server's error text is never shown.
+//! - `GET /api/oauth/callback` and `GET /api/oauth/callback/{tag}` take a sign-in's redirect
+//!   (`ToolService::complete`): the `state` names the flow, used once, and the path must be the
+//!   flow's own redirect URI (`{tag}` names its authorization server; the bare path belongs to
+//!   sign-ins with the client document). The browser is sent on to the web app's `/oauth/done`
+//!   page with a short result; when the code was exchanged, the confirmation code that finishes
+//!   the sign-in goes in the URL's fragment, which no server sees. The authorization server's
+//!   error text is never shown.
 //! - `GET /api/oauth/client` is this install's Client ID Metadata Document, for authorization
 //!   servers that accept a URL as the client id (`https` `PUBLIC_URL` only).
 //!
 //! Without `PUBLIC_URL` both answer `404`.
 
-use axum::extract::{RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, LOCATION, REFERRER_POLICY};
 use axum::response::{IntoResponse, Response};
 use copilot_contracts::ErrorResponse;
-use copilot_core::{CLIENT_NAME, Callback, DomainError, SignInOutcome, SignInResult};
+use copilot_core::{CLIENT_NAME, Callback, DomainError, Secret, SignInOutcome, SignInResult};
 use copilot_middleware::HttpError;
 use serde_json::{Value, json};
 use url::form_urlencoded;
@@ -27,10 +31,13 @@ use crate::config::AppState;
 
 /// Longest `state`, `code`, `iss`, or `error` value read from a callback.
 const PARAMETER_MAX_CHARS: usize = 2_048;
+/// Longest issuer tag read from a callback's path (a tag is 22 characters).
+const TAG_MAX_CHARS: usize = 64;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(callback))
+        .routes(routes!(tagged))
         .routes(routes!(client))
 }
 
@@ -46,7 +53,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         ("error" = Option<String>, Query, description = "The authorization server's error code")
     ),
     responses(
-        (status = SEE_OTHER, description = "To `<PUBLIC_URL>/oauth/done?result=signed-in|denied|expired|failed&server=<id>`"),
+        (status = SEE_OTHER, description = "To `<PUBLIC_URL>/oauth/done?result=confirm|denied|expired|failed&server=<id>`, with `#<confirmation code>` after `confirm`"),
         (status = NOT_FOUND, description = "Sign-in is off (no `PUBLIC_URL`)", body = ErrorResponse)
     )
 )]
@@ -54,14 +61,61 @@ pub async fn callback(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, HttpError> {
+    finish(&state, None, query.as_deref()).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/oauth/callback/{tag}",
+    operation_id = "oauth_callback_tagged",
+    tag = "tool-servers",
+    params(
+        ("tag" = String, Path, description = "The authorization server's tag: sign-ins with a pre-registered or registered client come back here"),
+        ("state" = Option<String>, Query, description = "The sign-in's `state`"),
+        ("code" = Option<String>, Query, description = "The authorization code"),
+        ("iss" = Option<String>, Query, description = "The issuer (RFC 9207)"),
+        ("error" = Option<String>, Query, description = "The authorization server's error code")
+    ),
+    responses(
+        (status = SEE_OTHER, description = "As `/oauth/callback`"),
+        (status = NOT_FOUND, description = "Sign-in is off (no `PUBLIC_URL`)", body = ErrorResponse)
+    )
+)]
+pub async fn tagged(
+    State(state): State<AppState>,
+    Path(tag): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, HttpError> {
+    // A tag is base64url; anything else names no authorization server and fails as a mismatch.
+    let tag = if tag.len() <= TAG_MAX_CHARS
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        tag
+    } else {
+        "-".to_owned()
+    };
+    finish(&state, Some(tag), query.as_deref()).await
+}
+
+/// Takes a callback that came back to `/oauth/callback` (`tag` `None`) or
+/// `/oauth/callback/{tag}` and sends the browser on to `/oauth/done`.
+async fn finish(
+    state: &AppState,
+    tag: Option<String>,
+    query: Option<&str>,
+) -> Result<Response, HttpError> {
     let Some(public) = state.config.public_url.clone() else {
         return Err(off());
     };
-    let callback = parse(query.as_deref().unwrap_or_default());
+    let mut callback = parse(query.unwrap_or_default());
+    callback.tag = tag;
     let outcome = if callback.state.is_empty() {
         SignInOutcome {
             server_id: None,
             result: SignInResult::Expired,
+            confirmation: None,
         }
     } else {
         state.tools.complete(&callback).await
@@ -75,6 +129,10 @@ pub async fn callback(
         if let Some(server) = outcome.server_id {
             pairs.append_pair("server", &server.to_string());
         }
+    }
+    // Only the browser that came back gets the code: a fragment never reaches a server's logs.
+    if let Some(code) = outcome.confirmation.as_ref().and_then(Secret::text) {
+        target.set_fragment(Some(code));
     }
     Ok((
         StatusCode::SEE_OTHER,
@@ -126,7 +184,9 @@ pub async fn client(State(state): State<AppState>) -> Result<Response, HttpError
         "client_id": document.as_str(),
         "client_name": CLIENT_NAME,
         "client_uri": public.as_str(),
-        "redirect_uris": [config.redirect_uri.as_str()],
+        // Only the bare callback: sign-ins with this document come back there, and only from
+        // authorization servers that send `iss` (`ToolService::sign_in`).
+        "redirect_uris": [config.callback.as_str()],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
@@ -172,7 +232,11 @@ mod tests {
     #[tokio::test]
     async fn is_off_without_a_public_url() {
         let app = app(None).await;
-        for uri in ["/api/oauth/callback?state=x&code=y", "/api/oauth/client"] {
+        for uri in [
+            "/api/oauth/callback?state=x&code=y",
+            "/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g?state=x&code=y",
+            "/api/oauth/client",
+        ] {
             let response = get(app.clone(), uri).await;
             assert_eq!(response.status, StatusCode::NOT_FOUND, "{uri}");
         }
@@ -217,6 +281,8 @@ mod tests {
             "/api/oauth/callback?code=c",
             "/api/oauth/callback",
             "/api/oauth/callback?error=access_denied&error_description=%3Cscript%3E",
+            "/api/oauth/callback/f7mcEwYDYdtgG-u6lN8a0g?code=c",
+            "/api/oauth/callback/not%20a%20tag",
         ] {
             let response = send(app.clone(), request(Method::GET, uri, None, None)).await;
             assert_eq!(response.status, StatusCode::SEE_OTHER, "{uri}");

@@ -1,0 +1,32 @@
+meta {
+  name: 09-37 Other User Confirm
+  type: http
+  seq: 38
+}
+
+post {
+  url: {{baseUrl}}/api/tool-servers/{{confirmServerId}}/oauth/confirm
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{otherToken}}
+}
+
+body:json {
+  {
+    "code": "BCDF-GHJK"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.code: eq ENTITY_NOT_FOUND
+}
+
+docs {
+  **Endpoint:** `POST /api/tool-servers/{id}/oauth/confirm` as user B
+
+  **This test verifies:** only the server's owner can finish its sign-in: a sign-in link user A sent to user B never signs in A's server with B's code.
+}

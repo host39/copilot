@@ -132,6 +132,11 @@ export const clientSchema = z
   })
   .transform((input) => oauthClient(input.clientId, input.clientSecret) ?? null);
 
+/** The code form of a sign-in that came back: the code the browser showed, as typed. */
+export const confirmSchema = z.object({
+  code: z.string().trim().min(1, "Enter the code the browser showed."),
+});
+
 /** The credentials the rows and token make: blank rows and a blank token are left out. */
 export function credentials(bearer: string, rows: readonly HeaderRow[]): Credentials {
   const headers: Record<string, string> = {};

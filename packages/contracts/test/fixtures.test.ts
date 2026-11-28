@@ -21,6 +21,7 @@ const ENVELOPES = new Set(["DetailsResponse", "ListResponse", "PageResponse"]);
 const SCHEMA_NAMES: Record<string, string> = {
   MessagePartDto: "messagePartSchema",
   OAuthClientInput: "oauthClientInputSchema",
+  OAuthConfirmRequest: "oauthConfirmRequestSchema",
   OAuthStartResponse: "oauthStartResponseSchema",
   OAuthStatus: "oauthStatusSchema",
 };
