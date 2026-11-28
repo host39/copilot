@@ -30,4 +30,5 @@ Done: P7R.1 to P7R.4. Eight findings (two high, four medium, two low) from the c
 - `make e2e` passes (the phone-size chat and tool approval run on the Responses API).
 - The stdio tests also pass as a user other than root (`setpriv --reuid=65534`), where the hardening check runs; as root it only hardens.
 - Bruno on a throwaway database (`DB_NAME=copilot_b_bruno_p7r`, `PORT=3937`, dropped afterwards): 173 requests, 433 assertions, including the new `09-34` to `09-38`.
+- CI green: Code quality (Rust and Postgres, Lint and web) at `f3b2b42`, Native apps at `c26a226` (the last commit in its path filter), Image at `62493d1` (the last one in its filter, with the `nix` change to `Cargo.lock`).
 - Footprint: `cargo tree -i aws-lc-rs` finds nothing; `nix` was already in the server's graph (through `process-wrap`), so no crate was added; the web first load is 152,771 bytes gzip (budget 170,000).
