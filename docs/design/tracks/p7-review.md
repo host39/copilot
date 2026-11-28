@@ -14,7 +14,6 @@ In progress. Eight findings (two high, four medium, two low) from the combined a
 ## Decisions
 
 - **Same model for all of Responses, not only reasoning items.** Recording the model in the state and dropping only the reasoning items would keep message and call items across a switch, but those carry item ids that point at the dropped reasoning (the API refuses such ids), so they would lose their ids anyway; rebuilding from parts gives the same request with one rule that core already applies to Gemini.
-
 - **No init process in the container.** The reviewer proposed `init: true` (Docker's `tini`) so orphans are reaped. That init starts with the container's whole environment and the same user, and it is an ordinary dumpable process, so a stdio program could read `SECRET_KEY` from `/proc/1/environ`, undoing the fix above. The server stays PID 1, reaps the groups it kills, and the self-hosting guide says not to add an init. A helper that leaves its process group (a daemon after `setsid`) is neither killed nor reaped; `pids_limit` bounds it, and the guide sends such programs behind a bridge.
 - **Hardening only with stdio on.** A non-dumpable server also has no core dumps and cannot be traced by its own user, which an operator may want while debugging; without stdio programs no process of the server's user runs inside its container.
 
