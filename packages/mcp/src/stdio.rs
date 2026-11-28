@@ -10,9 +10,16 @@
 //! At the end of its run (or its listing) the process is stopped as the MCP specification
 //! describes: its stdin closes, then `SIGTERM`, then `SIGKILL`, each after `STOP_GRACE`; whatever
 //! is left of its process group is killed. A [`Process`] that is dropped instead (a run that
-//! ends without closing its session) kills the whole group at once. Its stderr goes to the log
-//! line by line (`mcp.stdio.stderr`, at `debug`: it is the program's own text and may echo tool
-//! arguments), bounded per line and per process.
+//! ends without closing its session) kills the whole group at once and reaps it on a thread of
+//! its own, so members left to the server (when it runs as PID 1 in a container, or is a child
+//! subreaper) never stay zombies. Its stderr goes to the log line by line (`mcp.stdio.stderr`, at
+//! `debug`: it is the program's own text and may echo tool arguments), bounded per line and per
+//! process.
+//!
+//! A cleared environment is not enough on its own: a program runs as the server's user and could
+//! read the server's `/proc/<pid>/environ` (or attach to it) and find `SECRET_KEY` and the
+//! database password there. [`harden`] makes the server non-dumpable, which hands those files to
+//! root and refuses same-user tracing; the composition root calls it when stdio servers are on.
 
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
@@ -22,6 +29,9 @@ use std::time::Duration;
 
 use copilot_core::shared::constants::{STDIO_STDERR_LINE_MAX_BYTES, STDIO_STDERR_MAX_LINES};
 use copilot_core::{DomainError, DomainResult, StdioEnv, StdioLaunch, ToolServerId};
+use nix::errno::Errno;
+use nix::sys::wait::waitpid;
+use nix::unistd::Pid;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop, ProcessGroup};
 use rmcp::RoleClient;
 use rmcp::transport::async_rw::AsyncRwTransport;
@@ -42,6 +52,18 @@ const SIGKILL: i32 = 9;
 
 /// The MCP transport over a process's stdout and stdin.
 pub(crate) type Pipes = AsyncRwTransport<RoleClient, ChildStdout, ChildStdin>;
+
+/// Marks this process non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`), for a server that runs stdio
+/// programs: its `/proc/<pid>` files (`environ`, `mem`, and the rest) then belong to root, and
+/// processes of the same user may no longer trace it, so a program it starts cannot read
+/// `SECRET_KEY` or the database password out of it. The programs themselves stay dumpable
+/// (`execve` resets the flag). Core dumps of the server are off from then on. Linux only;
+/// elsewhere it does nothing.
+pub fn harden() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    nix::sys::prctl::set_dumpable(false).map_err(io::Error::from)?;
+    Ok(())
+}
 
 /// Starts the program of `launch` in its directory under `base`, after the gate allowed it.
 /// Returns the MCP transport over its stdout and stdin, whose lines are capped at `max_bytes`,
@@ -95,6 +117,7 @@ pub(crate) async fn spawn(
     );
     let process = Process {
         child: Some(child),
+        group: pid,
         server_id,
     };
     let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
@@ -115,6 +138,8 @@ pub(crate) async fn spawn(
 #[derive(Debug)]
 pub(crate) struct Process {
     child: Option<Box<dyn ChildWrapper>>,
+    /// The process group's id: the leader's process id.
+    group: Option<u32>,
     server_id: ToolServerId,
 }
 
@@ -149,12 +174,36 @@ impl Process {
 }
 
 impl Drop for Process {
-    /// Kills the whole group at once; tokio reaps the leader (`kill_on_drop`).
+    /// Kills the whole group at once and reaps it: the leader, and the members that became the
+    /// server's children when the leader died (the server is their new parent when it runs as
+    /// PID 1, as in the image, or is a child subreaper). Tokio would reap only the leader.
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
+            if let Some(group) = self.group {
+                reap(group);
+            }
             tracing::info!(server_id = %self.server_id, how = "dropped", "mcp.stdio.stopped");
         }
+    }
+}
+
+/// Waits, on a thread of its own, for every child of this process in process group `group`
+/// until none is left (`waitpid(-group)`, as `process-wrap` does when it waits for a group), so
+/// killed members never stay zombies. Only this process's own children are waited for; members
+/// another process adopted are reaped there.
+fn reap(group: u32) {
+    let Ok(group) = i32::try_from(group) else {
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("stdio-reap".to_owned())
+        .spawn(move || {
+            // Each answer is one reaped member (or an interrupted wait); `ECHILD` ends it.
+            while let Ok(_) | Err(Errno::EINTR) = waitpid(Pid::from_raw(-group), None) {}
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(error = %error, "mcp.stdio.reap-failed");
     }
 }
 

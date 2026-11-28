@@ -483,6 +483,7 @@ dependencies = [
  "copilot-logger",
  "copilot-security",
  "futures-util",
+ "nix",
  "process-wrap",
  "reqwest",
  "rmcp",

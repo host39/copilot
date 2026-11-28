@@ -116,6 +116,7 @@ impl ServerHandler for Program {
             tool("child", "Starts a child that never ends."),
             tool("sleep", "Waits."),
             tool("shout", "Writes lines to stderr."),
+            tool("peek", "Reads its parent's environment."),
         ]))
     }
 
@@ -170,6 +171,16 @@ impl ServerHandler for Program {
                     writeln!(stderr, "line {line}\x1b[31m red").expect("stderr is open");
                 }
                 text("shouted".to_owned())
+            }
+            "peek" => {
+                let parent = std::os::unix::process::parent_id();
+                match std::fs::read(format!("/proc/{parent}/environ")) {
+                    Ok(bytes) if String::from_utf8_lossy(&bytes).contains(SECRET) => {
+                        text("read: the secret".to_owned())
+                    }
+                    Ok(_) => text("read: no secret".to_owned()),
+                    Err(error) => text(format!("refused: {:?}", error.kind())),
+                }
             }
             other => {
                 return Err(ErrorData::invalid_params(
@@ -358,6 +369,9 @@ fn tests() {
         dropping_the_session_kills_the_process().await;
         a_call_that_runs_too_long_times_out().await;
         stderr_goes_to_the_log_bounded(&logs).await;
+        // These two change the whole test process, so they come last.
+        a_dropped_group_is_reaped_by_its_new_parent().await;
+        a_hardened_server_hides_its_environment().await;
     });
 }
 
@@ -373,7 +387,9 @@ async fn lists_and_calls_tools_in_the_server_directory() {
         .collect();
     assert_eq!(
         names,
-        ["echo", "env", "cwd", "pid", "child", "sleep", "shout"]
+        [
+            "echo", "env", "cwd", "pid", "child", "sleep", "shout", "peek"
+        ]
     );
     assert!(!listing.protocol_version.is_empty());
     let started = read_pid(&f.dir("team/files").join("started"));
@@ -613,6 +629,75 @@ async fn stderr_goes_to_the_log_bounded(logs: &Logs) {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Whether `/proc/<pid>` is gone: the process ended and its status was read (no zombie left).
+fn reaped(pid: u32) -> bool {
+    !Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// A dropped session kills the program's group; the members the program started become this
+/// process's children when the program dies (as with the server as PID 1 in the image: here the
+/// test process makes itself a child subreaper), and must be reaped, not left as zombies.
+async fn a_dropped_group_is_reaped_by_its_new_parent() {
+    nix::sys::prctl::set_child_subreaper(true).expect("a child subreaper");
+    let f = Fixture::new();
+    let gate = Arc::new(Gate::default());
+    let endpoint = endpoint(&["serve"], "orphans", &gate);
+    let session = f
+        .host
+        .open(vec![endpoint.clone()])
+        .await
+        .expect("a session");
+    let pid: u32 = call(&*session, &endpoint, "pid", json!({}))
+        .await
+        .parse()
+        .expect("a pid");
+    let child: u32 = call(&*session, &endpoint, "child", json!({}))
+        .await
+        .parse()
+        .expect("a pid");
+    drop(session);
+    let started = Instant::now();
+    while !(reaped(pid) && reaped(child)) {
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the dropped group was not reaped (leader {pid} gone: {}, child {child} gone: {})",
+            reaped(pid),
+            reaped(child)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A program runs as the server's user, so only `harden` keeps it from reading the server's
+/// environment out of `/proc`. Root may read any process's files, so the check needs another
+/// user (CI runs as one).
+async fn a_hardened_server_hides_its_environment() {
+    let f = Fixture::new();
+    let gate = Arc::new(Gate::default());
+    let endpoint = endpoint(&["serve"], "peek", &gate);
+    let peek = || async {
+        let session = f
+            .host
+            .open(vec![endpoint.clone()])
+            .await
+            .expect("a session");
+        let seen = call(&*session, &endpoint, "peek", json!({})).await;
+        session.close().await;
+        seen
+    };
+    if nix::unistd::geteuid().is_root() {
+        copilot_mcp::harden().expect("hardened");
+        return;
+    }
+    assert_eq!(
+        peek().await,
+        "read: the secret",
+        "a cleared environment alone does not hide the server's"
+    );
+    copilot_mcp::harden().expect("hardened");
+    assert_eq!(peek().await, "refused: PermissionDenied");
 }
 
 /// Every log event of the run, as JSON lines in memory.

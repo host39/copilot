@@ -195,9 +195,10 @@ Many MCP servers (most of those started with `npx` or `uvx`) speak stdio rather 
 What Copilot guarantees:
 
 - **No shell, no inherited environment.** The program runs as `Command::new(path).args(args).env_clear().envs(yours).current_dir(dir)`: arguments are never expanded or split, and the program gets only the variables you entered (stored encrypted under `SECRET_KEY`, never shown again), not `SECRET_KEY`, the database password, or `PATH`. That is why the path must be absolute.
+- **The server's environment stays hidden.** The program runs as the server's user, which could otherwise read the server's environment from `/proc/<pid>/environ` or attach a debugger to it. With `MCP_STDIO_ENABLED` on, the server marks itself non-dumpable when it starts: its `/proc` files then belong to root and processes of its user may not trace it. This holds only while nothing else of that user holds the secrets: do not add an init process (Docker's `init: true`, `tini`) to the Copilot container, because it starts with the same environment and user and the programs could read it there; outside Docker, keep the environment file readable by root only (systemd reads it before it switches users).
 - **Its own directory.** Each server works in `<MCP_STDIO_DIR>/<working directory>` (its id when you leave it empty), created owner-only on first use; a path that leaves `MCP_STDIO_DIR`, also through a symbolic link, is refused.
 - **Administrators only, checked every time.** Only administrators add stdio servers or change their programs, and only while `MCP_STDIO_ENABLED` is on. Before every start of a program Copilot reads both again: turning the setting off, or demoting or disabling the administrator who owns the server, stops it from starting at once, even in a chat that is already running. A stdio server belongs to its administrator, so it is only ever offered in that administrator's own projects, chats, and schedules.
-- **Lifetime.** One process per server per chat turn (or test), started on the first call. It must finish the MCP handshake within 30 seconds or it is killed. When the turn ends, its stdin closes, then it gets `SIGTERM`, then `SIGKILL`, 2 seconds apart, and the rest of its process group is killed too, so helpers it started end with it.
+- **Lifetime.** One process per server per chat turn (or test), started on the first call. It must finish the MCP handshake within 30 seconds or it is killed. When the turn ends, its stdin closes, then it gets `SIGTERM`, then `SIGKILL`, 2 seconds apart, and the rest of its process group is killed too, so helpers it started end with it; Copilot also reaps them, as PID 1 of its container. A helper that leaves the process group (a daemon that calls `setsid`) is neither killed nor reaped: `pids_limit` bounds such leftovers, and programs that start daemons belong behind a bridge.
 - **Logs.** The program's stderr goes to the server log as `mcp.stdio.stderr` at `debug` level (it may contain what the program was asked), at most 200 lines of 1 KiB per process; `mcp.stdio.started` and `mcp.stdio.stopped` are logged at `info`. Set `LOG_LEVEL=debug` while you set a program up.
 
 **Resource limits.** Copilot bounds how many programs run: one per stdio server per turn, turns are limited per user (`MAX_ACTIVE_RUNS_PER_USER`, 3) and scheduled runs overall (`MAX_SCHEDULED_RUNS`, 2), a scheduled run stops after 30 minutes, each tool call after 60 seconds, and each MCP message is capped at 4 MiB. It does not limit a program's CPU, memory, or child processes: the programs share the server's container or service. Limit that, for example in `deploy/compose.override.yml`:
@@ -274,7 +275,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-Programs then run as `copilot` with what that user may read; `ProtectSystem=strict` leaves them only `/var/lib/copilot` to write.
+Programs then run as `copilot` with what that user may read; `ProtectSystem=strict` leaves them only `/var/lib/copilot` to write. Keep `/etc/copilot/copilot.env` owned by root with mode `600`: systemd reads it before it switches to `copilot`, and the programs could read it otherwise.
 
 ### Behind a Bridge
 

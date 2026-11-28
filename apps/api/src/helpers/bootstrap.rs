@@ -135,7 +135,8 @@ impl Adapters {
     /// (`copilot_security::clients(Purpose::Providers)`), and the MCP tool servers and their
     /// OAuth sign-in through `copilot-mcp` on the hardened tool clients
     /// (`clients(Purpose::Tools)`), with stdio servers' directories under `MCP_STDIO_DIR` when
-    /// `MCP_STDIO_ENABLED` is on.
+    /// `MCP_STDIO_ENABLED` is on, which also makes this process non-dumpable
+    /// (`copilot_mcp::harden`).
     pub fn create(config: &AppConfig) -> Result<Self, BoxError> {
         let providers = copilot_security::clients(Purpose::Providers)?;
         let tools = copilot_security::clients(Purpose::Tools)?;
@@ -143,6 +144,9 @@ impl Adapters {
         if config.stdio_enabled
             && let Some(dir) = &config.stdio_dir
         {
+            // The programs run as this process's user: without this they could read its
+            // environment (`SECRET_KEY`, the database password) from `/proc`.
+            copilot_mcp::harden()?;
             host = host.with_stdio(dir.clone());
         }
         Ok(Self {

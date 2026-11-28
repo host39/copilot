@@ -59,4 +59,4 @@ pub use crate::errors::{
 };
 pub use crate::host::{Limits, McpHost};
 pub use crate::oauth::McpAuth;
-pub use crate::stdio::TOOL_SERVER_START;
+pub use crate::stdio::{TOOL_SERVER_START, harden};

@@ -14,6 +14,9 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 copilot-core = { workspace = true }
 futures-util = { workspace = true }
+# The server hides its environment from stdio programs (`harden`) and reaps a dropped stdio
+# server's process group.
+nix = { workspace = true }
 # A stdio server's process group (killed together with the program's own children).
 process-wrap = { workspace = true }
 reqwest = { workspace = true }
@@ -39,6 +42,9 @@ copilot-logger = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 # A scripted authorization server for the sign-in tests (`tests/oauth.rs`).
 wiremock = { workspace = true }
+# `tests/stdio.rs` makes its test process a child subreaper (to see what is left unreaped) and
+# checks whether it runs as root (who may read any process's environment).
+nix = { workspace = true, features = ["user"] }
 
 # `tests/stdio.rs` is its own stdio MCP server: run with `serve`, the test binary answers MCP on
 # its stdin and stdout, so the tests spawn a real child process without any other program.
